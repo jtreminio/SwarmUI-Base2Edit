@@ -12,8 +12,10 @@ Edit an image in the refiner stage, allowing you to generate and edit in a singl
 
 ## Full Prompt Example
 
-> <base>1girl, looking at viewer, smiling
-> <refiner>Reskin this into a realistic photograph
+```
+<base>1girl, looking at viewer, smiling
+<refiner>Reskin this into a realistic photograph
+```
 
 ## Options
 
