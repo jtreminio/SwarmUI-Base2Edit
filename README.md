@@ -7,7 +7,7 @@ Edit an image in the refiner stage, allowing you to generate and edit in a singl
 1. Configure a base model and a refiner model
 2. Set **Refiner Control to 1** for maximum effectiveness
 3. Toggle the **Base2Edit** group ON
-4. Use `<refiner>` tags for edit instructions: `<refiner>Reskin this into a realistic photograph</refiner>`
+4. Use `<refiner>` tags for edit instructions: `<refiner>Reskin this into a realistic photograph`
 5. Generate
 
 ## Full Prompt Example
