@@ -1,22 +1,45 @@
 # SwarmUI Base2Edit Extension
 
-Edit an image in the refiner stage, allowing you to generate and edit in a single generation.
+Add an edit stage to your image generation workflow. Generate an image, then automatically edit it - all in one go.
 
 ## Usage
 
-1. Configure a base model and a refiner model
-2. Set **Refiner Control to 1** for maximum effectiveness
-3. Toggle the **Base2Edit** group ON
-4. Use `<refiner>` tags for edit instructions: `<refiner>Reskin this into a realistic photograph`
-5. Generate
+The edit stage uses the new `<edit>` prompt tag. Everything inside `<edit>` becomes your edit instructions - the rest of your prompt is ignored during the edit stage.
 
-## Full Prompt Example
+You can choose when the edit happens:
+- **After Base** - Edit right after the initial generation, before any upscaling or refining
+- **After Refiner** - Edit the final image after all other stages are done
+
+## Quick Start
+
+1. Toggle the **Base2Edit** group ON
+2. Choose the edit model you want
+3. Add `<edit>` to your prompt with what you want changed
+4. Generate!
+
+## Example Prompt
 
 ```
-<base>1girl, looking at viewer, smiling
-<refiner>Reskin this into a realistic photograph
+1girl, looking at viewer, smiling
+<edit>Reskin this into a realistic photograph
 ```
+
+The base model (and refiner if you enabled it) generates the girl, then the edit stage transforms it into a photo.
 
 ## Options
 
-**Keep Base Image** - Saves the base image (before editing) alongside the final output.
+- **Keep Pre-Edit Image** - Save the image before editing so you can compare
+- **Apply Edit After** - Choose to edit after Base or after Refiner
+- **Edit Control** - How strongly to apply the edit (1.0 = full effect, lower = more subtle)
+
+### Edit Overrides
+
+The edit stage runs with its own settings. You can override:
+- Model
+- VAE  
+- Steps
+- CFG Scale
+- Sampler
+- Scheduler
+
+If you don't set these, it uses whatever's currently active.
