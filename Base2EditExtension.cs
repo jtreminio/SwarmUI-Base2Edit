@@ -14,7 +14,6 @@ public class Base2EditExtension : Extension
     private const int EditSeedOffset = 2;
 
     public static T2IParamGroup Base2EditGroup;
-    public static T2IParamGroup EditOverridesGroup;
 
     public static T2IRegisteredParam<bool> KeepPreEditImage;
     public static T2IRegisteredParam<string> ApplyEditAfter;
@@ -96,16 +95,6 @@ public class Base2EditExtension : Extension
             FeatureFlag: "comfyui"
         ));
 
-        EditOverridesGroup = new(
-            Name: "Edit Param Overrides",
-            Description: "Parameter overrides specific to the edit stage. If not set, current values are used.",
-            Toggles: false,
-            Open: false,
-            OrderPriority: 50,
-            IsAdvanced: true,
-            Parent: Base2EditGroup
-        );
-
         EditModel = T2IParamTypes.Register<T2IModel>(new T2IParamType(
             Name: "Edit Model",
             Description: "The model to use for the edit stage.\n"
@@ -119,8 +108,8 @@ public class Base2EditExtension : Extension
                 return ["(Use Current)", .. bases];
             },
             Subtype: "Stable-Diffusion",
-            Group: EditOverridesGroup,
-            OrderPriority: -10,
+            Group: Base2EditGroup,
+            OrderPriority: 10,
             FeatureFlag: "comfyui",
             ChangeWeight: 9,
             DoNotPreview: true
@@ -139,67 +128,60 @@ public class Base2EditExtension : Extension
                 return ["Automatic", "None", .. T2IParamTypes.CleanModelList(vaeNames)];
             },
             Subtype: "VAE",
-            Group: EditOverridesGroup,
-            OrderPriority: -9,
+            Group: Base2EditGroup,
+            OrderPriority: 11,
             FeatureFlag: "comfyui",
-            IsAdvanced: true,
             ChangeWeight: 7,
             DoNotPreview: true
         ));
 
         EditSteps = T2IParamTypes.Register<int>(new T2IParamType(
             Name: "Edit Steps",
-            Description: "Number of steps for the edit stage. If not set, uses the current Steps value.",
+            Description: "Number of steps for the edit stage.",
             Default: "20",
             Min: 1,
             Max: 200,
             ViewMax: 100,
             Step: 1,
             ViewType: ParamViewType.SLIDER,
-            Group: EditOverridesGroup,
-            OrderPriority: -5,
-            FeatureFlag: "comfyui",
-            Toggleable: true,
-            IsAdvanced: true
+            Group: Base2EditGroup,
+            OrderPriority: 12,
+            FeatureFlag: "comfyui"
         ));
 
         EditCFGScale = T2IParamTypes.Register<double>(new T2IParamType(
             Name: "Edit CFG Scale",
-            Description: "CFG Scale for the edit stage. If not set, uses the current CFG Scale value.",
+            Description: "CFG Scale for the edit stage.",
             Default: "7",
             Min: 0,
             Max: 100,
             ViewMax: 20,
             Step: 0.5,
             ViewType: ParamViewType.SLIDER,
-            Group: EditOverridesGroup,
-            OrderPriority: -4,
+            Group: Base2EditGroup,
+            OrderPriority: 13,
             FeatureFlag: "comfyui",
-            Toggleable: true,
-            IsAdvanced: true,
             ChangeWeight: -3
         ));
 
         EditSampler = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "Edit Sampler",
-            Description: "Sampler to use for the edit stage. If not set, uses the current Sampler value.",
+            Description: "Sampler to use for the edit stage.",
             Default: "euler",
             GetValues: (_) => ComfyUIBackendExtension.Samplers,
-            Group: EditOverridesGroup,
-            OrderPriority: -2,
-            FeatureFlag: "comfyui",
-            Toggleable: true
+            Group: Base2EditGroup,
+            OrderPriority: 14,
+            FeatureFlag: "comfyui"
         ));
 
         EditScheduler = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "Edit Scheduler",
-            Description: "Scheduler to use for the edit stage. If not set, uses the current Scheduler value.",
+            Description: "Scheduler to use for the edit stage.",
             Default: "normal",
             GetValues: (_) => ComfyUIBackendExtension.Schedulers,
-            Group: EditOverridesGroup,
-            OrderPriority: -1.5,
-            FeatureFlag: "comfyui",
-            Toggleable: true
+            Group: Base2EditGroup,
+            OrderPriority: 15,
+            FeatureFlag: "comfyui"
         ));
     }
 
@@ -221,13 +203,17 @@ public class Base2EditExtension : Extension
 
     private static bool ShouldRunEditStage(WorkflowGenerator g, string expectedApplyAfter)
     {
+        if (!g.UserInput.TryGet(ApplyEditAfter, out string applyAfter))
+        {
+            return false;
+        }
+
         string rawPrompt = g.UserInput.Get(T2IParamTypes.Prompt, "");
         if (!EditPromptParser.HasEditSection(rawPrompt))
         {
             return false;
         }
 
-        string applyAfter = g.UserInput.Get(ApplyEditAfter, "Refiner");
         return applyAfter == expectedApplyAfter;
     }
 
@@ -345,23 +331,16 @@ public class Base2EditExtension : Extension
 
     private static EditParameters GetEditParameters(WorkflowGenerator g)
     {
-        int baseSteps = g.UserInput.Get(T2IParamTypes.Steps, 20, sectionId: SectionID_Edit);
-        double baseCfg = g.UserInput.Get(T2IParamTypes.CFGScale, 7.0, sectionId: SectionID_Edit);
-        string sampler = g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, null, sectionId: SectionID_Edit, includeBase: false)
-            ?? g.UserInput.Get(EditSampler, null);
-        string scheduler = g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, null, sectionId: SectionID_Edit, includeBase: false)
-            ?? g.UserInput.Get(EditScheduler, null);
-
         return new EditParameters(
             Width: g.UserInput.GetImageWidth(),
             Height: g.UserInput.GetImageHeight(),
-            Steps: g.UserInput.Get(EditSteps, baseSteps),
-            Cfg: g.UserInput.Get(EditCFGScale, baseCfg),
+            Steps: g.UserInput.Get(EditSteps, 20),
+            Cfg: g.UserInput.Get(EditCFGScale, 7.0),
             Control: g.UserInput.Get(EditControl, 1.0),
             Guidance: g.UserInput.Get(T2IParamTypes.FluxGuidanceScale, -1),
             Seed: g.UserInput.Get(T2IParamTypes.Seed) + EditSeedOffset,
-            Sampler: sampler,
-            Scheduler: scheduler);
+            Sampler: g.UserInput.Get(EditSampler, "euler"),
+            Scheduler: g.UserInput.Get(EditScheduler, "normal"));
     }
 
     private record EditConditioning(JArray Positive, JArray Negative);
