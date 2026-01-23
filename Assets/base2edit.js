@@ -75,23 +75,11 @@ function base2editWrapButtonsForImage() {
     };
 }
 
-function base2editEnsureDefaultButtonChoice() {
-    if (typeof defaultButtonChoices === 'undefined') {
-        return;
-    }
-    let choiceList = defaultButtonChoices.split(',').map(item => item.trim());
-    if (!choiceList.includes(base2editButtonLabel)) {
-        choiceList.splice(1, 0, base2editButtonLabel);
-        defaultButtonChoices = choiceList.join(',');
-    }
-}
-
 function base2editInitImageButtons() {
     if (typeof buttonsForImage !== 'function') {
         return false;
     }
     base2editWrapButtonsForImage();
-    base2editEnsureDefaultButtonChoice();
     return true;
 }
 
