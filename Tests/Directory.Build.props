@@ -1,0 +1,15 @@
+<Project>
+  <!--
+    SwarmUI.csproj copies a lot of content into its output.
+    If this test project's build outputs live under /src/**,
+    those outputs can get picked up by SwarmUI content globs and recursively copied,
+    eventually failing with "path is too long".
+
+    So: keep test outputs outside /src.
+  -->
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../../../../tmp/test-bin/Base2Edit.Tests/</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../../../tmp/test-obj/Base2Edit.Tests/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>
+
