@@ -107,6 +107,19 @@ public static class EditStageModelPreparation
 
     private static T2IModel ResolveSdModel(string selection, T2IModel baseModel, T2IModel refinerModel)
     {
+        static bool MatchesSelection(T2IModel model, string sel)
+        {
+            if (model is null || string.IsNullOrWhiteSpace(sel))
+            {
+                return false;
+            }
+            if (string.Equals(model.Name, sel, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            return string.Equals(T2IParamTypes.CleanModelName(model.Name), sel, StringComparison.OrdinalIgnoreCase);
+        }
+
         if (string.Equals(selection, "(Use Base)", StringComparison.OrdinalIgnoreCase))
         {
             return baseModel;
@@ -117,12 +130,12 @@ public static class EditStageModelPreparation
             return refinerModel;
         }
 
-        if (baseModel is not null && string.Equals(baseModel.Name, selection, StringComparison.OrdinalIgnoreCase))
+        if (MatchesSelection(baseModel, selection))
         {
             return baseModel;
         }
 
-        if (refinerModel is not null && string.Equals(refinerModel.Name, selection, StringComparison.OrdinalIgnoreCase))
+        if (MatchesSelection(refinerModel, selection))
         {
             return refinerModel;
         }
@@ -136,10 +149,10 @@ public static class EditStageModelPreparation
                 return direct;
             }
 
-            // Fallback: case-insensitive match against known models.
+            // Fallback: match against model name or cleaned display name
             foreach ((string _, T2IModel model) in handler.Models)
             {
-                if (model is not null && string.Equals(model.Name, selection, StringComparison.OrdinalIgnoreCase))
+                if (MatchesSelection(model, selection))
                 {
                     return model;
                 }
