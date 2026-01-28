@@ -13,7 +13,7 @@ public class Base2EditExtension : Extension
     public static T2IParamGroup Base2EditGroup;
     public static T2IRegisteredParam<bool> KeepPreEditImage;
     public static T2IRegisteredParam<string> ApplyEditAfter;
-    public static T2IRegisteredParam<T2IModel> EditModel;
+    public static T2IRegisteredParam<string> EditModel;
     public static T2IRegisteredParam<T2IModel> EditVAE;
     public static T2IRegisteredParam<int> EditSteps;
     public static T2IRegisteredParam<double> EditCFGScale;
@@ -92,19 +92,18 @@ public class Base2EditExtension : Extension
             FeatureFlag: "comfyui"
         ));
 
-        EditModel = T2IParamTypes.Register<T2IModel>(new T2IParamType(
+        EditModel = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "Edit Model",
             Description: "The model to use for the edit stage.\n"
-                + "'(Use Current)' uses whatever model is active at the injection point.",
-            Default: "(Use Current)",
-            IgnoreIf: "(Use Current)",
+                + "'(Use Base)' uses your base model.\n"
+                + "'(Use Refiner)' uses your configured refiner model (or the base model if no refiner override is set).",
+            Default: "(Use Refiner)",
             GetValues: (Session s) =>
             {
                 List<T2IModel> baseList = [.. Program.MainSDModels.ListModelsFor(s).OrderBy(m => m.Name)];
                 List<string> bases = T2IParamTypes.CleanModelList(baseList.Select(m => m.Name));
-                return ["(Use Current)", .. bases];
+                return ["(Use Base)", "(Use Refiner)", .. bases];
             },
-            Subtype: "Stable-Diffusion",
             Group: Base2EditGroup,
             OrderPriority: 10,
             FeatureFlag: "comfyui",

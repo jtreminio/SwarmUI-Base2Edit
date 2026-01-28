@@ -72,7 +72,10 @@ public class Base2EditWorkflowTests
         _ = WorkflowTestHarness.Base2EditSteps();
         var input = new T2IParamInput(null);
         input.Set(T2IParamTypes.Prompt, "global <edit>do the edit");
-        input.Set(Base2EditExtension.ApplyEditAfter, applyAfter);
+        if (!string.IsNullOrWhiteSpace(applyAfter))
+        {
+            input.Set(Base2EditExtension.ApplyEditAfter, applyAfter);
+        }
         input.Set(T2IParamTypes.Seed, 1L);
         input.Set(T2IParamTypes.Width, 512);
         input.Set(T2IParamTypes.Height, 512);
@@ -106,7 +109,7 @@ public class Base2EditWorkflowTests
             WorkflowTestHarness.GenerateWithStepsAndState(input, BaseSteps());
 
         Assert.Null(gen.FinalImageOut);
-        Assert.Single(WorkflowUtils.NodesOfType(workflow, "VAEDecode"));
+        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "VAEDecode"));
         var refLatent = WorkflowUtils.RequireNodeOfType(workflow, "ReferenceLatent");
         var sampler = WorkflowUtils.RequireNodeOfType(workflow, "KSamplerAdvanced");
 
@@ -124,7 +127,7 @@ public class Base2EditWorkflowTests
             WorkflowTestHarness.GenerateWithStepsAndState(input, BaseSteps());
 
         Assert.NotNull(gen.FinalImageOut);
-        Assert.Equal(2, WorkflowUtils.NodesOfType(workflow, "VAEDecode").Count);
+        Assert.Single(WorkflowUtils.NodesOfType(workflow, "VAEDecode"));
         WorkflowNode refLatent = WorkflowUtils.RequireNodeOfType(workflow, "ReferenceLatent");
         WorkflowNode sampler = WorkflowUtils.RequireNodeOfType(workflow, "KSamplerAdvanced");
 
@@ -138,6 +141,21 @@ public class Base2EditWorkflowTests
         Assert.Equal(2, finalOut.Count);
         string finalNodeId = $"{finalOut[0]}";
         Assert.Equal("VAEDecode", RequireClassType(workflow, finalNodeId));
+    }
+
+    [Fact]
+    public void EditStage_defaults_to_refiner_when_apply_after_missing()
+    {
+        // If ApplyEditAfter isn't present, Base2Edit should still run on the final step
+        // (the param default is "Refiner") as long as an <edit> section exists.
+        T2IParamInput input = BuildEditInput(null);
+        input.Set(Base2EditExtension.KeepPreEditImage, true);
+
+        (JObject workflow, WorkflowGenerator gen) =
+            WorkflowTestHarness.GenerateWithStepsAndState(input, BaseSteps());
+
+        Assert.NotNull(gen.FinalImageOut);
+        Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "SaveImage"));
     }
 
     [Fact]

@@ -38,6 +38,11 @@ public class EditStage
 
     public static void Run(WorkflowGenerator g, bool isFinalStep)
     {
+        if (!isFinalStep)
+        {
+            CaptureBaseStageModelState(g);
+        }
+
         if (!isFinalStep && ShouldRunEditStage(g, "Base"))
         {
             RunEditStage(g, isFinalStep: false);
@@ -50,10 +55,7 @@ public class EditStage
 
     private static bool ShouldRunEditStage(WorkflowGenerator g, string expectedApplyAfter)
     {
-        if (!g.UserInput.TryGet(Base2EditExtension.ApplyEditAfter, out string applyAfter))
-        {
-            return false;
-        }
+        string applyAfter = g.UserInput.Get(Base2EditExtension.ApplyEditAfter, "Refiner");
 
         if (!EditPromptParser.HasEditSection(g.UserInput.Get(T2IParamTypes.Prompt, "")))
         {
@@ -70,8 +72,21 @@ public class EditStage
             EditPromptParser.Extract(g.UserInput.Get(T2IParamTypes.NegativePrompt, ""))
         );
         var modelState = PrepareEditModelAndVae(g);
-        EnsureImageAvailable(g, modelState.PreEditVae);
-        SavePreEditImageIfNeeded(g);
+
+        bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
+            || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
+        bool needsPreEditImage = shouldSavePreEdit || modelState.MustReencode || g.FinalSamples is null;
+
+        if (needsPreEditImage)
+        {
+            EnsureImageAvailable(g, modelState.PreEditVae);
+        }
+
+        if (shouldSavePreEdit)
+        {
+            SavePreEditImageIfNeeded(g);
+        }
+
         ReencodeIfNeeded(g, modelState);
         var editParams = new EditParameters(
             Width: g.UserInput.GetImageWidth(),
@@ -125,16 +140,41 @@ public class EditStage
             return new EditModelState(model, clip, vae, preEditVae, mustReencode);
         }
 
-        // Core workflow generation auto-applies "Base-only" LoRAs during any model load.
-        // To prevent <base>/<refiner> LoRAs from leaking into the edit stage,
-        // temporarily remove ALL LoRA inputs while we load the edit model,
-        // then restore them immediately afterward.
-        (model, clip, vae) = EditStageModelPreparation.LoadEditModelWithIsolatedLoras(
-            g,
-            editModel,
-            sectionId: Base2EditExtension.SectionID_Edit,
-            getEditPromptLoras: ExtractEditPromptLoras
-        );
+        // If the <edit> section defines LoRAs, load the model in an isolated context and apply those LoRAs
+        // via dedicated model+LoRA nodes. Otherwise, load the model directly (no LoRA node).
+        (List<string> Loras, List<string> Weights, List<string> TencWeights) loras = ([], [], []);
+        bool hasEditPromptLoras = false;
+        if (EditPromptMentionsLora(g))
+        {
+            try
+            {
+                loras = ExtractEditPromptLoras(g);
+                hasEditPromptLoras = loras.Loras.Count > 0;
+            }
+            catch (Exception ex)
+            {
+                Logs.Error($"Base2Edit: Failed to parse <edit> LoRAs, continuing without edit-stage LoRAs: {ex}");
+                hasEditPromptLoras = false;
+            }
+        }
+
+        if (hasEditPromptLoras)
+        {
+            (model, clip, vae) = EditStageModelPreparation.LoadEditModelWithIsolatedLoras(
+                g,
+                editModel,
+                sectionId: Base2EditExtension.SectionID_Edit,
+                getEditPromptLoras: _ => (loras.Loras, loras.Weights, loras.TencWeights)
+            );
+        }
+        else
+        {
+            (model, clip, vae) = EditStageModelPreparation.LoadEditModelWithoutLoras(
+                g,
+                editModel,
+                sectionId: Base2EditExtension.SectionID_Edit
+            );
+        }
 
         if (g.UserInput.TryGet(Base2EditExtension.EditVAE, out T2IModel altEditVae) && altEditVae is not null && altEditVae.Name != "Automatic")
         {
@@ -165,6 +205,51 @@ public class EditStage
         string[] available = [.. Program.T2IModelSets["LoRA"].ListModelNamesFor(g.UserInput.SourceSession)];
 
         return LoraParsing.ParseEditPromptLoras(combined, available);
+    }
+
+    private static bool EditPromptMentionsLora(WorkflowGenerator g)
+    {
+        string getOriginalOrCurrent(T2IRegisteredParam<string> param)
+        {
+            string key = $"original_{param.Type.ID}";
+            if (g.UserInput.ExtraMeta.TryGetValue(key, out object obj) && obj is not null)
+            {
+                return obj.ToString();
+            }
+
+            return g.UserInput.Get(param, "");
+        }
+
+        string editPos = EditPromptParser.Extract(getOriginalOrCurrent(T2IParamTypes.Prompt));
+        string editNeg = EditPromptParser.Extract(getOriginalOrCurrent(T2IParamTypes.NegativePrompt));
+        string combined = $"{editPos} {editNeg}";
+        return combined.IndexOf("<lora:", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static void CaptureBaseStageModelState(WorkflowGenerator g)
+    {
+        // Best-effort snapshot; used only as a fallback for later steps.
+        const string kModel = "base2edit.base_model_ref";
+        const string kClip = "base2edit.base_clip_ref";
+        const string kVae = "base2edit.base_vae_ref";
+
+        if (g?.UserInput?.ExtraMeta is null)
+        {
+            return;
+        }
+
+        if (!g.UserInput.ExtraMeta.ContainsKey(kModel) && g.FinalModel is JArray fm && fm.Count == 2)
+        {
+            g.UserInput.ExtraMeta[kModel] = new JArray(fm[0], fm[1]);
+        }
+        if (!g.UserInput.ExtraMeta.ContainsKey(kClip) && g.FinalClip is JArray fc && fc.Count == 2)
+        {
+            g.UserInput.ExtraMeta[kClip] = new JArray(fc[0], fc[1]);
+        }
+        if (!g.UserInput.ExtraMeta.ContainsKey(kVae) && g.FinalVae is JArray fv && fv.Count == 2)
+        {
+            g.UserInput.ExtraMeta[kVae] = new JArray(fv[0], fv[1]);
+        }
     }
 
     private static void EnsureImageAvailable(WorkflowGenerator g, JArray preEditVae)

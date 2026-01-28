@@ -120,4 +120,168 @@ public class Base2EditLoraWorkflowWiringTests
             Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash = priorIncludeHash;
         }
     }
+
+    [Fact]
+    public void Edit_prompt_without_lora_uses_model_directly_without_lora_loader()
+    {
+        _ = WorkflowTestHarness.Base2EditSteps();
+
+        if (ComfyUIBackendExtension.SetClipDevice is null)
+        {
+            ComfyUIBackendExtension.SetClipDevice = T2IParamTypes.Register<string>(new T2IParamType(
+                Name: "Set CLIP Device (UnitTest Stub)",
+                Description: "Stub param registered only for unit tests.",
+                Default: "cpu",
+                FeatureFlag: "set_clip_device",
+                Group: T2IParamTypes.GroupAdvancedModelAddons,
+                IsAdvanced: true,
+                Toggleable: true,
+                GetValues: (_) => ["cpu"]
+            ));
+        }
+
+        Dictionary<string, T2IModelHandler> priorModelSets = Program.T2IModelSets;
+        bool priorIncludeHash = Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash;
+        List<WorkflowGenerator.WorkflowGenStep> priorModelGenSteps = [.. WorkflowGenerator.ModelGenSteps];
+        ConcurrentDictionary<string, Func<string, Dictionary<string, JObject>>> priorExtraModelProviders = ModelsAPI.ExtraModelProviders;
+
+        try
+        {
+            Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash = false;
+            ModelsAPI.ExtraModelProviders = new ConcurrentDictionary<string, Func<string, Dictionary<string, JObject>>>(
+                [
+                    new KeyValuePair<string, Func<string, Dictionary<string, JObject>>>("unit_test", _ => new Dictionary<string, JObject>())
+                ]);
+            WorkflowGenerator.ModelGenSteps = [];
+
+            var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
+            Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+            {
+                ["Stable-Diffusion"] = sdHandler
+            };
+
+            var sdModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Model.safetensors", "UnitTest_Model.safetensors");
+            sdHandler.Models[sdModel.Name] = sdModel;
+
+            var input = new T2IParamInput(null);
+            input.Set(T2IParamTypes.Model, sdModel);
+            input.Set(Base2EditExtension.EditModel, "(Use Base)");
+            input.Set(T2IParamTypes.Prompt, "global <edit>no lora here");
+            input.Set(Base2EditExtension.ApplyEditAfter, "Base");
+            input.Set(T2IParamTypes.Seed, 1L);
+            input.Set(T2IParamTypes.Width, 512);
+            input.Set(T2IParamTypes.Height, 512);
+
+            IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+                new[] { WorkflowTestHarness.MinimalGraphSeedStep() }
+                    .Concat(WorkflowTestHarness.Base2EditSteps());
+
+            JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+            IReadOnlyList<WorkflowNode> loaders = WorkflowUtils.NodesOfType(workflow, "CheckpointLoaderSimple");
+            Assert.Single(loaders);
+            string loaderId = loaders[0].Id;
+
+            IReadOnlyList<WorkflowNode> loraLoaders = WorkflowUtils.NodesOfType(workflow, "LoraLoader");
+            Assert.Empty(loraLoaders);
+
+            // Assert downstream nodes use the raw loader outputs.
+            IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
+            Assert.True(encoders.Count >= 2, "Expected at least positive+negative SwarmClipTextEncodeAdvanced nodes.");
+            foreach (WorkflowNode enc in encoders)
+            {
+                JObject inputsObj = (JObject)enc.Node["inputs"];
+                Assert.True(TokenEquals(inputsObj["clip"], new JArray(loaderId, 1)), "Encoder.clip must come from CheckpointLoaderSimple.clip");
+            }
+
+            IReadOnlyList<WorkflowNode> samplers = WorkflowUtils.NodesOfType(workflow, "KSamplerAdvanced");
+            Assert.Single(samplers);
+            JObject samplerInputs = (JObject)samplers[0].Node["inputs"];
+            Assert.True(TokenEquals(samplerInputs["model"], new JArray(loaderId, 0)), "Sampler.model must come from CheckpointLoaderSimple.model");
+        }
+        finally
+        {
+            WorkflowGenerator.ModelGenSteps = priorModelGenSteps;
+            ModelsAPI.ExtraModelProviders = priorExtraModelProviders;
+            Program.T2IModelSets = priorModelSets;
+            Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash = priorIncludeHash;
+        }
+    }
+
+    [Fact]
+    public void Use_refiner_selection_loads_refiner_model_for_edit_stage()
+    {
+        _ = WorkflowTestHarness.Base2EditSteps();
+
+        if (ComfyUIBackendExtension.SetClipDevice is null)
+        {
+            ComfyUIBackendExtension.SetClipDevice = T2IParamTypes.Register<string>(new T2IParamType(
+                Name: "Set CLIP Device (UnitTest Stub)",
+                Description: "Stub param registered only for unit tests.",
+                Default: "cpu",
+                FeatureFlag: "set_clip_device",
+                Group: T2IParamTypes.GroupAdvancedModelAddons,
+                IsAdvanced: true,
+                Toggleable: true,
+                GetValues: (_) => ["cpu"]
+            ));
+        }
+
+        Dictionary<string, T2IModelHandler> priorModelSets = Program.T2IModelSets;
+        bool priorIncludeHash = Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash;
+        List<WorkflowGenerator.WorkflowGenStep> priorModelGenSteps = [.. WorkflowGenerator.ModelGenSteps];
+        ConcurrentDictionary<string, Func<string, Dictionary<string, JObject>>> priorExtraModelProviders = ModelsAPI.ExtraModelProviders;
+
+        try
+        {
+            Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash = false;
+            ModelsAPI.ExtraModelProviders = new ConcurrentDictionary<string, Func<string, Dictionary<string, JObject>>>(
+                [
+                    new KeyValuePair<string, Func<string, Dictionary<string, JObject>>>("unit_test", _ => new Dictionary<string, JObject>())
+                ]);
+            WorkflowGenerator.ModelGenSteps = [];
+
+            var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
+            Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+            {
+                ["Stable-Diffusion"] = sdHandler
+            };
+
+            var baseModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+            var refinerModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Refiner.safetensors", "UnitTest_Refiner.safetensors");
+            sdHandler.Models[baseModel.Name] = baseModel;
+            sdHandler.Models[refinerModel.Name] = refinerModel;
+
+            var input = new T2IParamInput(null);
+            input.Set(T2IParamTypes.Model, baseModel);
+            input.Set(T2IParamTypes.RefinerModel, refinerModel);
+            input.Set(Base2EditExtension.EditModel, "(Use Refiner)");
+            input.Set(T2IParamTypes.Prompt, "global <edit>no lora here");
+            input.Set(Base2EditExtension.ApplyEditAfter, "Base");
+            input.Set(T2IParamTypes.Seed, 1L);
+            input.Set(T2IParamTypes.Width, 512);
+            input.Set(T2IParamTypes.Height, 512);
+
+            IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+                new[] { WorkflowTestHarness.MinimalGraphSeedStep() }
+                    .Concat(WorkflowTestHarness.Base2EditSteps());
+
+            JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+            IReadOnlyList<WorkflowNode> loaders = WorkflowUtils.NodesOfType(workflow, "CheckpointLoaderSimple");
+            Assert.Single(loaders);
+
+            JObject loaderInputs = (JObject)loaders[0].Node["inputs"];
+            Assert.True(loaderInputs.TryGetValue("ckpt_name", out JToken ckptNameTok), "Expected CheckpointLoaderSimple.inputs.ckpt_name");
+            string ckptName = $"{ckptNameTok}";
+            Assert.Contains("UnitTest_Refiner", ckptName);
+        }
+        finally
+        {
+            WorkflowGenerator.ModelGenSteps = priorModelGenSteps;
+            ModelsAPI.ExtraModelProviders = priorExtraModelProviders;
+            Program.T2IModelSets = priorModelSets;
+            Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash = priorIncludeHash;
+        }
+    }
 }

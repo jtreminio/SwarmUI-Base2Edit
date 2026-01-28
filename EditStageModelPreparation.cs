@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
+using SwarmUI.Core;
 using SwarmUI.Text2Image;
 
 namespace Base2Edit;
@@ -10,7 +12,7 @@ public static class EditStageModelPreparation
 {
     public static bool TryResolveEditModel(
         WorkflowGenerator g,
-        T2IRegisteredParam<T2IModel> editModelParam,
+        T2IRegisteredParam<string> editModelParam,
         out T2IModel editModel,
         out bool mustReencode
     ) {
@@ -20,23 +22,24 @@ public static class EditStageModelPreparation
             return false;
         }
 
-        bool hasAltEditModel = g.UserInput.TryGet(editModelParam, out T2IModel altEditModel) && altEditModel is not null;
-        editModel = hasAltEditModel
-            ? altEditModel
-            : (g.FinalLoadedModel ?? g.UserInput.Get(T2IParamTypes.Model, null));
+        string selection = g.UserInput.Get(editModelParam, "(Use Refiner)");
+        T2IModel baseModel = g.UserInput.Get(T2IParamTypes.Model, null);
+        T2IModel refinerModel = g.UserInput.TryGet(T2IParamTypes.RefinerModel, out T2IModel rm) && rm is not null
+            ? rm
+            : baseModel;
 
+        editModel = ResolveSdModel(selection, baseModel, refinerModel);
         if (editModel is null)
         {
             return false;
         }
 
-        if (hasAltEditModel)
-        {
-            mustReencode = altEditModel.ModelClass?.CompatClass != g.FinalLoadedModel?.ModelClass?.CompatClass;
-            g.FinalLoadedModel = altEditModel;
-            g.FinalLoadedModelList = [altEditModel];
-        }
+        T2IModel current = g.FinalLoadedModel ?? (g.IsRefinerStage ? refinerModel : baseModel);
+        mustReencode = editModel.ModelClass?.CompatClass != current?.ModelClass?.CompatClass;
 
+        // Ensure downstream steps that consult FinalLoadedModel reflect the model actually used for edit
+        g.FinalLoadedModel = editModel;
+        g.FinalLoadedModelList = [editModel];
         return true;
     }
 
@@ -81,6 +84,69 @@ public static class EditStageModelPreparation
             // Restore original LoRA selections after the "clean" edit model load
             snapshot.RestoreIfHad();
         }
+    }
+
+    public static (JArray Model, JArray Clip, JArray Vae) LoadEditModelWithoutLoras(
+        WorkflowGenerator g,
+        T2IModel editModel,
+        int sectionId
+    ) {
+        LoraParamSnapshot snapshot = new(g);
+        try
+        {
+            snapshot.Remove();
+            (T2IModel _, JArray model, JArray clip, JArray vae) =
+                g.CreateStandardModelLoader(editModel, "Edit", sectionId: sectionId);
+            return (model, clip, vae);
+        }
+        finally
+        {
+            snapshot.RestoreIfHad();
+        }
+    }
+
+    private static T2IModel ResolveSdModel(string selection, T2IModel baseModel, T2IModel refinerModel)
+    {
+        if (string.Equals(selection, "(Use Base)", StringComparison.OrdinalIgnoreCase))
+        {
+            return baseModel;
+        }
+
+        if (string.Equals(selection, "(Use Refiner)", StringComparison.OrdinalIgnoreCase))
+        {
+            return refinerModel;
+        }
+
+        if (baseModel is not null && string.Equals(baseModel.Name, selection, StringComparison.OrdinalIgnoreCase))
+        {
+            return baseModel;
+        }
+
+        if (refinerModel is not null && string.Equals(refinerModel.Name, selection, StringComparison.OrdinalIgnoreCase))
+        {
+            return refinerModel;
+        }
+
+        if (Program.T2IModelSets is not null
+            && Program.T2IModelSets.TryGetValue("Stable-Diffusion", out T2IModelHandler handler)
+            && handler is not null
+        ) {
+            if (handler.Models.TryGetValue(selection, out T2IModel direct))
+            {
+                return direct;
+            }
+
+            // Fallback: case-insensitive match against known models.
+            foreach ((string _, T2IModel model) in handler.Models)
+            {
+                if (model is not null && string.Equals(model.Name, selection, StringComparison.OrdinalIgnoreCase))
+                {
+                    return model;
+                }
+            }
+        }
+
+        return null;
     }
 
     private sealed class LoraParamSnapshot
