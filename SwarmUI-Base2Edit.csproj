@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>SwarmUI-Base2Edit</AssemblyName>
+
+    <!-- This project exists mainly to give the IDE a "real project" for Base2Edit. -->
+    <NoWarn>CS0436</NoWarn>
+
+    <!-- Default local outputs to /tmp (overrideable via -p:BaseOutputPath / -p:BaseIntermediateOutputPath). -->
+    <BaseOutputPath>/tmp/swarmui-msbuild/ext-bin/</BaseOutputPath>
+    <BaseIntermediateOutputPath>/tmp/swarmui-msbuild/ext-obj/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+
+  <!-- Prefer referencing the already-built SwarmUI binaries so we don't compile SwarmUI source locally
+       (macOS can leave AppleDouble '._*.cs' files in /src that break compilation). -->
+  <ItemGroup Condition="Exists('../../bin/Debug/net8.0/SwarmUI.dll')">
+    <Reference Include="SwarmUI">
+      <HintPath>../../bin/Debug/net8.0/SwarmUI.dll</HintPath>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>../../bin/Debug/net8.0/Newtonsoft.Json.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Fallback if SwarmUI.dll doesn't exist yet. -->
+  <ItemGroup Condition="!Exists('../../bin/Debug/net8.0/SwarmUI.dll')">
+    <ProjectReference Include="..\..\SwarmUI.csproj">
+      <Properties>_EnableMacOSCodeSign=false</Properties>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Tests/**/*.cs" />
+    <Compile Remove="**/._*.cs" />
+    <None Remove="**/._*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Assets/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
