@@ -80,18 +80,25 @@ public class WorkflowTests
     private static WorkflowNode RequireSingleSampler(JObject workflow) =>
         RequireSingleNodeOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
 
-    private static T2IParamInput BuildEditInput(string applyAfter)
+    private static T2IParamInput BuildEditInput(string applyAfter, bool enableBase2EditGroup = true)
     {
         _ = WorkflowTestHarness.Base2EditSteps();
         var input = new T2IParamInput(null);
         input.Set(T2IParamTypes.Prompt, "global <edit>do the edit");
+        if (enableBase2EditGroup)
+        {
+            input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
+        }
+
         if (!string.IsNullOrWhiteSpace(applyAfter))
         {
             input.Set(Base2EditExtension.ApplyEditAfter, applyAfter);
         }
+
         input.Set(T2IParamTypes.Seed, 1L);
         input.Set(T2IParamTypes.Width, 512);
         input.Set(T2IParamTypes.Height, 512);
+
         return input;
     }
 
@@ -197,6 +204,18 @@ public class WorkflowTests
 
         Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "VAEDecode"));
         Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "SaveImage"));
+    }
+
+    [Fact]
+    public void EditStage_does_not_run_when_base2edit_group_is_not_enabled()
+    {
+        T2IParamInput input = BuildEditInput(null, enableBase2EditGroup: false);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "KSamplerAdvanced"));
+        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SwarmKSampler"));
     }
 
     [Fact]

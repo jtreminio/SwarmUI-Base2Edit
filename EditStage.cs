@@ -36,6 +36,11 @@ public class EditStage
 
     public static void Run(WorkflowGenerator g, bool isFinalStep)
     {
+        if (g?.UserInput is null || !g.UserInput.TryGet(Base2EditExtension.EditModel, out _))
+        {
+            return;
+        }
+
         if (!isFinalStep)
         {
             CaptureBaseStageModelState(g);
