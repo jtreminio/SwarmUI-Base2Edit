@@ -1,95 +1,107 @@
-promptTabComplete.registerPrefix('edit', 'Add a section of prompt text that is only used for the Edit stage.', (prefix) => {
-    return [];
-}, true);
+const Base2Edit = (() => {
+    const base2editButtonLabel = 'Base2Edit';
+    const base2editButtonTitle = 'Runs an edit-only Base2Edit pass on this image';
 
-const base2editButtonLabel = 'Base2Edit';
-const base2editButtonTitle = 'Runs an edit-only Base2Edit pass on this image';
-
-function base2editRunEditOnlyFromImage(src) {
-    if (!src) {
-        showError('Cannot run Base2Edit: no image selected.');
-        return;
-    }
-    let tmpImg = new Image();
-    tmpImg.crossOrigin = 'Anonymous';
-    tmpImg.onerror = () => {
-        showError('Cannot run Base2Edit: failed to load image.');
+    const registerEditPromptPrefix = () => {
+        promptTabComplete.registerPrefix(
+            'edit',
+            'Add a section of prompt text that is only used for the Edit stage.',
+            () => [],
+            true,
+        );
     };
-    tmpImg.onload = () => {
-        let width = tmpImg.naturalWidth;
-        let height = tmpImg.naturalHeight;
-        let runWithUrl = (url) => {
-            let input_overrides = {
-                'initimage': url,
-                'initimagecreativity': 0,
-                'images': 1,
-                'steps': 0,
-                'aspectratio': 'Custom',
-                'width': width,
-                'height': height,
-                'applyeditafter': 'Base',
-                'refinermethod': null,
-                'refinercontrolpercentage': null,
-                'refinerupscale': null
+
+    const runEditOnlyFromImage = (src) => {
+        if (!src) {
+            showError('Cannot run Base2Edit: no image selected.');
+            return;
+        }
+
+        const tmpImg = new Image();
+        tmpImg.crossOrigin = 'Anonymous';
+        tmpImg.onerror = () => showError('Cannot run Base2Edit: failed to load image.');
+        tmpImg.onload = () => {
+            const runWithUrl = (url) => {
+                mainGenHandler.doGenerate({
+                    initimage: url,
+                    initimagecreativity: 0,
+                    images: 1,
+                    steps: 0,
+                    aspectratio: 'Custom',
+                    width: tmpImg.naturalWidth,
+                    height: tmpImg.naturalHeight,
+                    applyeditafter: 'Base',
+                    refinermethod: null,
+                    refinercontrolpercentage: null,
+                    refinerupscale: null
+                });
             };
-            mainGenHandler.doGenerate(input_overrides);
+            if (src.startsWith('data:')) {
+                runWithUrl(src);
+                return;
+            }
+            toDataURL(src, runWithUrl);
         };
-        if (src.startsWith('data:')) {
-            runWithUrl(src);
+        tmpImg.src = src;
+    };
+
+    const isMediaSupported = (src) => {
+        return !(typeof isVideoExt === 'function' && isVideoExt(src))
+            && !(typeof isAudioExt === 'function' && isAudioExt(src));
+    };
+
+    const addButton = (buttons, src) => {
+        if (!isMediaSupported(src)) {
             return;
         }
-        toDataURL(src, runWithUrl);
+
+        buttons.push({
+            label: base2editButtonLabel,
+            title: base2editButtonTitle,
+            onclick: () => runEditOnlyFromImage(src),
+        });
     };
-    tmpImg.src = src;
-}
 
-window.base2editRunEditOnlyFromImage = base2editRunEditOnlyFromImage;
+    const wrapButtonsForImage = () => {
+        const originalButtonsForImage = buttonsForImage;
+        buttonsForImage = function(fullsrc, src, metadata) {
+            const buttons = originalButtonsForImage(fullsrc, src, metadata);
+            if (typeof window.base2editRunEditOnlyFromImage === 'function') {
+                addButton(buttons, src);
+            }
 
-function base2editIsMediaUnsupported(src) {
-    let isVideo = typeof isVideoExt === 'function' && isVideoExt(src);
-    let isAudio = typeof isAudioExt === 'function' && isAudioExt(src);
-    return isVideo || isAudio;
-}
+            return buttons;
+        };
+    };
 
-function base2editAddButton(buttons, src) {
-    if (base2editIsMediaUnsupported(src)) {
-        return;
-    }
-    buttons.push({
-        label: base2editButtonLabel,
-        title: base2editButtonTitle,
-        onclick: () => {
-            base2editRunEditOnlyFromImage(src);
+    const initImageButtons = () => {
+        if (typeof buttonsForImage !== 'function') {
+            return false;
         }
+
+        wrapButtonsForImage();
+        return true;
+    };
+
+    const waitForButtons = () => {
+        const checkInterval = setInterval(() => {
+            if (!initImageButtons()) {
+                return;
+            }
+
+            clearInterval(checkInterval);
+        }, 100);
+    };
+
+    const init = () => {
+        registerEditPromptPrefix();
+        window.base2editRunEditOnlyFromImage = runEditOnlyFromImage;
+        waitForButtons();
+    };
+
+    init();
+
+    return Object.freeze({
+        runEditOnlyFromImage
     });
-}
-
-function base2editWrapButtonsForImage() {
-    let originalButtonsForImage = buttonsForImage;
-    buttonsForImage = function(fullsrc, src, metadata) {
-        let buttons = originalButtonsForImage(fullsrc, src, metadata);
-        if (typeof base2editRunEditOnlyFromImage === 'function') {
-            base2editAddButton(buttons, src);
-        }
-        return buttons;
-    };
-}
-
-function base2editInitImageButtons() {
-    if (typeof buttonsForImage !== 'function') {
-        return false;
-    }
-    base2editWrapButtonsForImage();
-    return true;
-}
-
-function base2editWaitForButtons() {
-    let checkInterval = setInterval(() => {
-        if (!base2editInitImageButtons()) {
-            return;
-        }
-        clearInterval(checkInterval);
-    }, 100);
-}
-
-base2editWaitForButtons();
+})();
