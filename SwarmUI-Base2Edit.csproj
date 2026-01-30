@@ -13,25 +13,47 @@
     <!-- Default local outputs to /tmp (overrideable via -p:BaseOutputPath / -p:BaseIntermediateOutputPath). -->
     <BaseOutputPath>/tmp/swarmui-msbuild/ext-bin/</BaseOutputPath>
     <BaseIntermediateOutputPath>/tmp/swarmui-msbuild/ext-obj/</BaseIntermediateOutputPath>
+
+    <!--
+      IMPORTANT:
+      This extension must NOT compile SwarmUI from source as part of its build.
+      Some SwarmUI build setups generate extension intermediate files under src/obj/extensions/**,
+      and compiling SwarmUI.csproj can accidentally pull those in and cause CS0579 duplicate assembly attributes.
+
+      Developers who truly want to compile SwarmUI source as part of this project can opt-in:
+        dotnet build -p:EnableSwarmUISourceReference=true
+    -->
+    <EnableSwarmUISourceReference>false</EnableSwarmUISourceReference>
+
+    <!-- Try to locate an already-built SwarmUI binary output folder. -->
+    <SwarmUIBinDir Condition="Exists('../../bin/$(Configuration)/net8.0/SwarmUI.dll')">../../bin/$(Configuration)/net8.0</SwarmUIBinDir>
+    <SwarmUIBinDir Condition="'$(SwarmUIBinDir)'=='' and Exists('../../bin/live_release/SwarmUI.dll')">../../bin/live_release</SwarmUIBinDir>
+    <SwarmUIBinDir Condition="'$(SwarmUIBinDir)'=='' and Exists('../../bin/Release/net8.0/SwarmUI.dll')">../../bin/Release/net8.0</SwarmUIBinDir>
+    <SwarmUIBinDir Condition="'$(SwarmUIBinDir)'=='' and Exists('../../bin/Debug/net8.0/SwarmUI.dll')">../../bin/Debug/net8.0</SwarmUIBinDir>
   </PropertyGroup>
 
   <!-- Prefer referencing the already-built SwarmUI binaries so we don't compile SwarmUI source locally
        (macOS can leave AppleDouble '._*.cs' files in /src that break compilation). -->
-  <ItemGroup Condition="Exists('../../bin/Debug/net8.0/SwarmUI.dll')">
+  <ItemGroup Condition="'$(SwarmUIBinDir)' != ''">
     <Reference Include="SwarmUI">
-      <HintPath>../../bin/Debug/net8.0/SwarmUI.dll</HintPath>
+      <HintPath>$(SwarmUIBinDir)/SwarmUI.dll</HintPath>
     </Reference>
     <Reference Include="Newtonsoft.Json">
-      <HintPath>../../bin/Debug/net8.0/Newtonsoft.Json.dll</HintPath>
+      <HintPath>$(SwarmUIBinDir)/Newtonsoft.Json.dll</HintPath>
     </Reference>
   </ItemGroup>
 
-  <!-- Fallback if SwarmUI.dll doesn't exist yet. -->
-  <ItemGroup Condition="!Exists('../../bin/Debug/net8.0/SwarmUI.dll')">
+  <!-- Optional: allow IDEs to compile SwarmUI from source (OFF by default). -->
+  <ItemGroup Condition="'$(SwarmUIBinDir)' == '' and '$(EnableSwarmUISourceReference)' == 'true'">
     <ProjectReference Include="..\..\SwarmUI.csproj">
       <Properties>_EnableMacOSCodeSign=false</Properties>
     </ProjectReference>
   </ItemGroup>
+
+  <Target Name="EnsureSwarmUIReference" BeforeTargets="ResolveReferences"
+          Condition="'$(SwarmUIBinDir)' == '' and '$(EnableSwarmUISourceReference)' != 'true' and '$(DesignTimeBuild)' != 'true'">
+    <Error Text="SwarmUI.dll not found. Build SwarmUI first (so src/bin/**/SwarmUI.dll exists), or opt-in to building SwarmUI from source via: dotnet build -p:EnableSwarmUISourceReference=true" />
+  </Target>
 
   <ItemGroup>
     <Compile Remove="Tests/**/*.cs" />
