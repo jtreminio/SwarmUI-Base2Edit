@@ -1,11 +1,6 @@
 <Project>
-  <PropertyGroup>
-    <!--
-      Default to local /tmp it's faster if you're on a network drive.
-      Override per-command if desired, e.g.:
-        dotnet test ... -p:BaseOutputPath=... -p:BaseIntermediateOutputPath=...
-    -->
-    <BaseOutputPath>/tmp/swarmui-msbuild/bin/</BaseOutputPath>
-    <BaseIntermediateOutputPath>/tmp/swarmui-msbuild/obj/</BaseIntermediateOutputPath>
+  <PropertyGroup Condition="Exists('/tmp')">
+    <BaseOutputPath Condition="'$(BaseOutputPath)' == ''">/tmp/swarmui-msbuild/ext-bin/</BaseOutputPath>
+    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)' == ''">/tmp/swarmui-msbuild/ext-obj/</BaseIntermediateOutputPath>
   </PropertyGroup>
 </Project>

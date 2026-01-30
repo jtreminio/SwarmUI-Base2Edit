@@ -4,10 +4,6 @@ VisualStudioVersion = 17.5.33530.505
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SwarmUI-Base2Edit", "SwarmUI-Base2Edit.csproj", "{9F74B0E3-8D0B-4F6E-9C71-7DDCB91C9C2A}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SwarmUI", "..\..\SwarmUI.csproj", "{2A621042-196A-4F9C-88EA-10369EAEE774}"
-EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Base2Edit.Tests", "Tests\Base2Edit.Tests.csproj", "{D32B2C60-9D9A-4C83-A5C5-29E4E57E7F73}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -18,14 +14,6 @@ Global
 		{9F74B0E3-8D0B-4F6E-9C71-7DDCB91C9C2A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9F74B0E3-8D0B-4F6E-9C71-7DDCB91C9C2A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9F74B0E3-8D0B-4F6E-9C71-7DDCB91C9C2A}.Release|Any CPU.Build.0 = Release|Any CPU
-		{2A621042-196A-4F9C-88EA-10369EAEE774}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{2A621042-196A-4F9C-88EA-10369EAEE774}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{2A621042-196A-4F9C-88EA-10369EAEE774}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{2A621042-196A-4F9C-88EA-10369EAEE774}.Release|Any CPU.Build.0 = Release|Any CPU
-		{D32B2C60-9D9A-4C83-A5C5-29E4E57E7F73}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{D32B2C60-9D9A-4C83-A5C5-29E4E57E7F73}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{D32B2C60-9D9A-4C83-A5C5-29E4E57E7F73}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{D32B2C60-9D9A-4C83-A5C5-29E4E57E7F73}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
