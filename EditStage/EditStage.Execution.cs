@@ -13,7 +13,7 @@ public partial class EditStage
             ExtractPrompt(g.UserInput.Get(T2IParamTypes.Prompt, ""), stageIndex),
             ExtractPrompt(g.UserInput.Get(T2IParamTypes.NegativePrompt, ""), stageIndex)
         );
-        var modelState = PrepareEditModelAndVae(g, stageIndex);
+        var modelState = PrepareEditModelAndVae(g, isFinalStep, stageIndex);
 
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
@@ -58,7 +58,7 @@ public partial class EditStage
         FinalizeEditOutput(g, modelState.Vae, isFinalStep);
     }
 
-    private static EditModelState PrepareEditModelAndVae(WorkflowGenerator g, int stageIndex)
+    private static EditModelState PrepareEditModelAndVae(WorkflowGenerator g, bool isFinalStep, int stageIndex)
     {
         int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
         JArray preEditVae = g.FinalVae;
@@ -71,10 +71,11 @@ public partial class EditStage
             return new EditModelState(model, clip, vae, preEditVae, mustReencode);
         }
 
-        // If the user didn't define any <edit> / <edit[n]> section for this stage, Base2Edit falls back
-        // to the global prompt. In that mode, we should also preserve the currently-loaded model stack
-        // (including any LoRAs already applied by the pipeline) when "(Use Base)" / "(Use Refiner)" is selected.
-        // This avoids unintentionally dropping base/refiner LoRAs by re-loading the model "without LoRAs".
+        // - Prompt selection: if there is no <edit> / <edit[n]> section, we fall back to the global prompt text
+        // - Model/LoRA selection:
+        //   - "(Use Base)" and "(Use Refiner)" should inherit the stage's model+LoRAs
+        //   - If an <edit> section is present and includes <lora>, those should be *added on top* of the inherited stack
+        //   - If an explicit model name is selected, we load that model, apply only global UI LoRAs, and then apply any <edit> section LoRAs
         string selection = g.UserInput.Get(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         string posPrompt = g.UserInput.Get(T2IParamTypes.Prompt, "");
         string negPrompt = g.UserInput.Get(T2IParamTypes.NegativePrompt, "");
@@ -82,36 +83,60 @@ public partial class EditStage
             HasAnyEditSectionForStage(posPrompt, stageIndex)
             || HasAnyEditSectionForStage(negPrompt, stageIndex);
 
-        if (!hasStageEditSection)
+        // Step 1: establish the base model/clip/vae stack for this stage
+        if (string.Equals(selection, ModelPrep.UseBase, StringComparison.OrdinalIgnoreCase))
         {
-            if (string.Equals(selection, ModelPrep.UseBase, StringComparison.OrdinalIgnoreCase)
-                && TryGetCapturedBaseStageModelState(g, out JArray baseModel, out JArray baseClip, out JArray baseVae))
+            // Prefer captured base-stage stack (works even during the refiner/final phase)
+            if (TryGetCapturedBaseStageModelState(g, out JArray baseModel, out JArray baseClip, out JArray baseVae))
             {
                 model = baseModel;
                 clip = baseClip;
                 vae = baseVae;
             }
-
-            // For "(Use Refiner)", the current pipeline state in the refiner phase already includes any refiner LoRAs.
-            // We intentionally leave model/clip as-is here to preserve that.
+        }
+        else if (string.Equals(selection, ModelPrep.UseRefiner, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!isFinalStep)
+            {
+                // We haven't entered the refiner phase yet, but the user asked to use the refiner model+LoRAs.
+                // Load the refiner model and apply the same UI LoRA confinements as the refiner stage.
+                (model, clip, vae) = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
+                (model, clip) = g.LoadLorasForConfinement(-1, model, clip);
+                (model, clip) = g.LoadLorasForConfinement(0, model, clip); // UI "Global"
+                (model, clip) = g.LoadLorasForConfinement(T2IParamInput.SectionID_Refiner, model, clip);
+            }
+            // else: during final phase, g.FinalModel/g.FinalClip already represent the refiner stage stack
         }
         else
         {
-            // If the <edit> / <edit[n]> section defines lora, load the model in an isolated context and apply those lora
-            (List<string> Loras, List<string> Weights, List<string> TencWeights) loras = ExtractEditPromptLoras(g, stageIndex);
+            // Explicit model selection: load the model, then apply only global UI LoRAs (not Base/Refiner/etc)
+            (model, clip, vae) = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
+            (model, clip) = g.LoadLorasForConfinement(-1, model, clip);
+            (model, clip) = g.LoadLorasForConfinement(0, model, clip); // UI "Global"
+        }
 
+        // Step 2: if an <edit> section exists and includes <lora>, stack those LoRAs on top of the chosen model stack
+        if (hasStageEditSection)
+        {
+            (List<string> Loras, List<string> Weights, List<string> TencWeights) loras = ExtractEditPromptLoras(g, stageIndex);
             if (loras.Loras.Count > 0)
             {
-                (model, clip, vae) = ModelPrep.LoadEditModelWithIsolatedLoras(
-                    g,
-                    editModel,
-                    sectionId: stageSectionId,
-                    getEditPromptLoras: _ => (loras.Loras, loras.Weights, loras.TencWeights)
-                );
-            }
-            else
-            {
-                (model, clip, vae) = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
+                // Apply edit-section LoRAs in isolation so we don't accidentally pick up UI-confined LoRAs
+                LoraParamSnapshot snapshot = new(g);
+                try
+                {
+                    snapshot.Remove();
+                    List<string> confinements = [.. Enumerable.Repeat($"{stageSectionId}", loras.Loras.Count)];
+                    g.UserInput.Set(T2IParamTypes.Loras, loras.Loras);
+                    g.UserInput.Set(T2IParamTypes.LoraWeights, loras.Weights);
+                    g.UserInput.Set(T2IParamTypes.LoraTencWeights, loras.TencWeights);
+                    g.UserInput.Set(T2IParamTypes.LoraSectionConfinement, confinements);
+                    (model, clip) = g.LoadLorasForConfinement(stageSectionId, model, clip);
+                }
+                finally
+                {
+                    snapshot.RestoreOrRemove();
+                }
             }
         }
 
@@ -125,6 +150,44 @@ public partial class EditStage
         }
 
         return new EditModelState(model, clip, vae, preEditVae, mustReencode);
+    }
+
+    private sealed class LoraParamSnapshot
+    {
+        private readonly WorkflowGenerator _g;
+        private readonly bool _hadLoras;
+        private readonly bool _hadWeights;
+        private readonly bool _hadTencWeights;
+        private readonly bool _hadConfinements;
+        private readonly List<string> _loras;
+        private readonly List<string> _weights;
+        private readonly List<string> _tencWeights;
+        private readonly List<string> _confinements;
+
+        public LoraParamSnapshot(WorkflowGenerator g)
+        {
+            _g = g;
+            _hadLoras = g.UserInput.TryGet(T2IParamTypes.Loras, out _loras);
+            _hadWeights = g.UserInput.TryGet(T2IParamTypes.LoraWeights, out _weights);
+            _hadTencWeights = g.UserInput.TryGet(T2IParamTypes.LoraTencWeights, out _tencWeights);
+            _hadConfinements = g.UserInput.TryGet(T2IParamTypes.LoraSectionConfinement, out _confinements);
+        }
+
+        public void Remove()
+        {
+            if (_hadLoras) _g.UserInput.Remove(T2IParamTypes.Loras);
+            if (_hadWeights) _g.UserInput.Remove(T2IParamTypes.LoraWeights);
+            if (_hadTencWeights) _g.UserInput.Remove(T2IParamTypes.LoraTencWeights);
+            if (_hadConfinements) _g.UserInput.Remove(T2IParamTypes.LoraSectionConfinement);
+        }
+
+        public void RestoreOrRemove()
+        {
+            if (_hadLoras) _g.UserInput.Set(T2IParamTypes.Loras, _loras); else _g.UserInput.Remove(T2IParamTypes.Loras);
+            if (_hadWeights) _g.UserInput.Set(T2IParamTypes.LoraWeights, _weights); else _g.UserInput.Remove(T2IParamTypes.LoraWeights);
+            if (_hadTencWeights) _g.UserInput.Set(T2IParamTypes.LoraTencWeights, _tencWeights); else _g.UserInput.Remove(T2IParamTypes.LoraTencWeights);
+            if (_hadConfinements) _g.UserInput.Set(T2IParamTypes.LoraSectionConfinement, _confinements); else _g.UserInput.Remove(T2IParamTypes.LoraSectionConfinement);
+        }
     }
 
     private static bool TryGetCapturedBaseStageModelState(WorkflowGenerator g, out JArray model, out JArray clip, out JArray vae)

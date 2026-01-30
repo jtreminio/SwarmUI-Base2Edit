@@ -66,7 +66,7 @@ public class Base2EditExtension : Extension
                 + "The edit stage can be injected after the base stage or after the refiner stage.",
             Toggles: true,
             Open: false,
-            OrderPriority: 8
+            OrderPriority: -2.9
         );
 
         KeepPreEditImage = T2IParamTypes.Register<bool>(new T2IParamType(
@@ -120,7 +120,7 @@ public class Base2EditExtension : Extension
                 return [ModelPrep.UseBase, ModelPrep.UseRefiner, .. bases];
             },
             Group: Base2EditGroup,
-            OrderPriority: 10,
+            OrderPriority: 4,
             FeatureFlag: "comfyui",
             ChangeWeight: 9,
             DoNotPreview: true
@@ -140,10 +140,11 @@ public class Base2EditExtension : Extension
             },
             Subtype: "VAE",
             Group: Base2EditGroup,
-            OrderPriority: 11,
+            OrderPriority: 9,
             FeatureFlag: "comfyui",
             ChangeWeight: 7,
             DoNotPreview: true
+            // Toggleable: true // TODO: Enable this once we have a way to toggle the VAE override
         ));
 
         EditSteps = T2IParamTypes.Register<int>(new T2IParamType(
@@ -156,7 +157,7 @@ public class Base2EditExtension : Extension
             Step: 1,
             ViewType: ParamViewType.SLIDER,
             Group: Base2EditGroup,
-            OrderPriority: 12,
+            OrderPriority: 5,
             FeatureFlag: "comfyui"
         ));
 
@@ -170,7 +171,7 @@ public class Base2EditExtension : Extension
             Step: 0.5,
             ViewType: ParamViewType.SLIDER,
             Group: Base2EditGroup,
-            OrderPriority: 13,
+            OrderPriority: 6,
             FeatureFlag: "comfyui",
             ChangeWeight: -3
         ));
@@ -181,7 +182,7 @@ public class Base2EditExtension : Extension
             Default: "euler",
             GetValues: (_) => ComfyUIBackendExtension.Samplers,
             Group: Base2EditGroup,
-            OrderPriority: 14,
+            OrderPriority: 7,
             FeatureFlag: "comfyui"
         ));
 
@@ -191,7 +192,7 @@ public class Base2EditExtension : Extension
             Default: "normal",
             GetValues: (_) => ComfyUIBackendExtension.Schedulers,
             Group: Base2EditGroup,
-            OrderPriority: 15,
+            OrderPriority: 8,
             FeatureFlag: "comfyui"
         ));
 

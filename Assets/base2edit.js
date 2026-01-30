@@ -426,6 +426,28 @@ class Base2EditStageEditor
             view_type: "slider",
             toggleable: false,
         }, prefix));
+        const modelValues = (() => {
+            try {
+                if (rootStage.model && rootStage.model.options) {
+                    return Array.from(rootStage.model.options).map(o => o.value);
+                }
+                if (rootStage.model && Array.isArray(rootStage.model.values)) {
+                    return rootStage.model.values;
+                }
+            }
+            catch { }
+            return null;
+        })();
+        parts.push(getHtmlForParam({
+            id: "editmodel",
+            name: "Edit Model",
+            description: "The model to use for this edit stage.",
+            type: "model",
+            subtype: "Stable-Diffusion",
+            values: modelValues,
+            default: stage.model,
+            toggleable: false,
+        }, prefix));
         parts.push(getHtmlForParam({
             id: "editsteps",
             name: "Edit Steps",
@@ -455,27 +477,6 @@ class Base2EditStageEditor
             toggleable: false,
         }, prefix));
         parts.push(getHtmlForParam({
-            id: "editmodel",
-            name: "Edit Model",
-            description: "The model to use for this edit stage.",
-            type: "model",
-            subtype: "Stable-Diffusion",
-            values: rootStage.model.values,
-            default: stage.model,
-            toggleable: false,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editvae",
-            name: "Edit VAE",
-            description: "VAE to use for this edit stage.",
-            type: "model",
-            subtype: "VAE",
-            values: Array.from(rootStage.vae.options).map(o => o.value),
-            value_names: Array.from(rootStage.vae.options).map(o => o.label),
-            default: stage.vae,
-            toggleable: false,
-        }, prefix));
-        parts.push(getHtmlForParam({
             id: "editsampler",
             name: "Edit Sampler",
             description: "Sampler to use for this edit stage.",
@@ -493,6 +494,17 @@ class Base2EditStageEditor
             values: Array.from(rootStage.scheduler.options).map(o => o.value),
             value_names: Array.from(rootStage.scheduler.options).map(o => o.label),
             default: stage.scheduler,
+            toggleable: false,
+        }, prefix));
+        parts.push(getHtmlForParam({
+            id: "editvae",
+            name: "Edit VAE",
+            description: "VAE to use for this edit stage.",
+            type: "model",
+            subtype: "VAE",
+            values: Array.from(rootStage.vae.options).map(o => o.value),
+            value_names: Array.from(rootStage.vae.options).map(o => o.label),
+            default: stage.vae,
             toggleable: false,
         }, prefix));
 
