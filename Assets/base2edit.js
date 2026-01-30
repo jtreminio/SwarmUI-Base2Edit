@@ -6,6 +6,12 @@ class Base2EditStageEditor
     _changeListenerElem = null;
     _stageSyncTimers = new Map();
 
+    _isBase2EditGroupEnabled()
+    {
+        const toggler = document.getElementById("input_group_content_baseedit_toggle");
+        return !toggler || !!toggler.checked;
+    }
+
     init()
     {
         this.editor = document.getElementById("base2edit_stage_editor");
@@ -76,7 +82,9 @@ class Base2EditStageEditor
     {
         const stages = document.getElementById("input_editstages");
         stages.value = JSON.stringify(newStages);
-        triggerChangeFor(stages);
+        if (this._isBase2EditGroupEnabled()) {
+            triggerChangeFor(stages);
+        }
     }
 
     isMissingStageRef(applyAfter, stageIdSet)
@@ -120,6 +128,10 @@ class Base2EditStageEditor
         const original = mainGenHandler.doGenerate.bind(mainGenHandler);
         const stageEditor = this;
         mainGenHandler.doGenerate = function(...args) {
+            if (!stageEditor._isBase2EditGroupEnabled()) {
+                return original(...args);
+            }
+
             stageEditor._serializeStagesFromUi();
             const errs = stageEditor.validateStages();
 
