@@ -42,12 +42,20 @@ The base model (and refiner if you enabled it) generates the girl, then the edit
 
 ### Edit Overrides
 
-The edit stage runs with its own settings. You can override:
+The edit stage runs with its own settings. You can override (per edit stage):
 - Model
-- VAE  
 - Steps
-- CFG Scale
-- Sampler
-- Scheduler
+- VAE (toggleable)
+- CFG Scale (toggleable)
+- Sampler (toggleable)
+- Scheduler (toggleable)
 
-If you don't set these, it uses whatever's currently active.
+If an override is disabled/unset, Base2Edit inherits defaults from the stage your **Edit Model** points at:
+- **(Use Base)** inherits Base stage sampling defaults (CFG/sampler/scheduler/VAE) and the Base model stack + lora
+- **(Use Refiner)** inherits Refiner sampling defaults (CFG/sampler/scheduler/VAE) and the Refiner model stack + lora. If no Refiner stage defined, uses Base
+
+#### LoRAs
+
+- Any `<lora:...>` tags inside `<edit>` / `<edit[n]>` are stacked **on top** of the chosen model stack.
+- If you pick **(Use Base)** or **(Use Refiner)**, the edit stage inherits that stage's model + LoRA stack (including UI-confined LoRAs).
+- If you pick a specific model by name, Base2Edit loads that model and applies only **Global** UI LoRAs (plus any `<edit>` section LoRAs).
