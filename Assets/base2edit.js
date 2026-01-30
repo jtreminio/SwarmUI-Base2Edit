@@ -624,7 +624,7 @@ class Base2Edit
             () => [
                 '\nUse "<edit>..." to apply to ALL Base2Edit edit stages (including LoRAs inside the section).',
                 '\nUse "<edit[0]>..." to apply only to edit stage 0, "<edit[1]>..." for stage 1, etc.',
-                '\nBase2Edit activates only if "<edit>" or "<edit[0]>" is present, and Edit Model is set'
+                '\nIf no "<edit>" / "<edit[0]>" section exists for a stage, Base2Edit falls back to the global prompt.'
             ],
             true,
         );

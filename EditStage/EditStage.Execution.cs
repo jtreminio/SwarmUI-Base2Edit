@@ -71,21 +71,48 @@ public partial class EditStage
             return new EditModelState(model, clip, vae, preEditVae, mustReencode);
         }
 
-        // If the <edit> / <edit[n]> section defines lora, load the model in an isolated context and apply those lora
-        (List<string> Loras, List<string> Weights, List<string> TencWeights) loras = ExtractEditPromptLoras(g, stageIndex);
+        // If the user didn't define any <edit> / <edit[n]> section for this stage, Base2Edit falls back
+        // to the global prompt. In that mode, we should also preserve the currently-loaded model stack
+        // (including any LoRAs already applied by the pipeline) when "(Use Base)" / "(Use Refiner)" is selected.
+        // This avoids unintentionally dropping base/refiner LoRAs by re-loading the model "without LoRAs".
+        string selection = g.UserInput.Get(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
+        string posPrompt = g.UserInput.Get(T2IParamTypes.Prompt, "");
+        string negPrompt = g.UserInput.Get(T2IParamTypes.NegativePrompt, "");
+        bool hasStageEditSection =
+            HasAnyEditSectionForStage(posPrompt, stageIndex)
+            || HasAnyEditSectionForStage(negPrompt, stageIndex);
 
-        if (loras.Loras.Count > 0)
+        if (!hasStageEditSection)
         {
-            (model, clip, vae) = ModelPrep.LoadEditModelWithIsolatedLoras(
-                g,
-                editModel,
-                sectionId: stageSectionId,
-                getEditPromptLoras: _ => (loras.Loras, loras.Weights, loras.TencWeights)
-            );
+            if (string.Equals(selection, ModelPrep.UseBase, StringComparison.OrdinalIgnoreCase)
+                && TryGetCapturedBaseStageModelState(g, out JArray baseModel, out JArray baseClip, out JArray baseVae))
+            {
+                model = baseModel;
+                clip = baseClip;
+                vae = baseVae;
+            }
+
+            // For "(Use Refiner)", the current pipeline state in the refiner phase already includes any refiner LoRAs.
+            // We intentionally leave model/clip as-is here to preserve that.
         }
         else
         {
-            (model, clip, vae) = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
+            // If the <edit> / <edit[n]> section defines lora, load the model in an isolated context and apply those lora
+            (List<string> Loras, List<string> Weights, List<string> TencWeights) loras = ExtractEditPromptLoras(g, stageIndex);
+
+            if (loras.Loras.Count > 0)
+            {
+                (model, clip, vae) = ModelPrep.LoadEditModelWithIsolatedLoras(
+                    g,
+                    editModel,
+                    sectionId: stageSectionId,
+                    getEditPromptLoras: _ => (loras.Loras, loras.Weights, loras.TencWeights)
+                );
+            }
+            else
+            {
+                (model, clip, vae) = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
+            }
         }
 
         if (g.UserInput.TryGet(Base2EditExtension.EditVAE, out T2IModel altEditVae)
@@ -98,6 +125,117 @@ public partial class EditStage
         }
 
         return new EditModelState(model, clip, vae, preEditVae, mustReencode);
+    }
+
+    private static bool TryGetCapturedBaseStageModelState(WorkflowGenerator g, out JArray model, out JArray clip, out JArray vae)
+    {
+        model = null;
+        clip = null;
+        vae = null;
+
+        if (g?.UserInput?.ExtraMeta is null)
+        {
+            return false;
+        }
+
+        const string kModel = "base2edit.base_model_ref";
+        const string kClip = "base2edit.base_clip_ref";
+        const string kVae = "base2edit.base_vae_ref";
+
+        if (!g.UserInput.ExtraMeta.TryGetValue(kModel, out object mObj)
+            || !g.UserInput.ExtraMeta.TryGetValue(kClip, out object cObj)
+            || !g.UserInput.ExtraMeta.TryGetValue(kVae, out object vObj))
+        {
+            return false;
+        }
+
+        if (mObj is not JArray m || m.Count != 2
+            || cObj is not JArray c || c.Count != 2
+            || vObj is not JArray v || v.Count != 2)
+        {
+            return false;
+        }
+
+        model = m;
+        clip = c;
+        vae = v;
+        return true;
+    }
+
+    private static bool HasAnyEditSectionForStage(string prompt, int stageIndex)
+    {
+        if (string.IsNullOrWhiteSpace(prompt) || !prompt.Contains("<edit", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        int globalCid = Base2EditExtension.SectionID_Edit;
+        int stageCid = Base2EditExtension.EditSectionIdForStage(stageIndex);
+
+        foreach (string piece in prompt.Split('<'))
+        {
+            if (string.IsNullOrEmpty(piece))
+            {
+                continue;
+            }
+
+            int end = piece.IndexOf('>');
+            if (end == -1)
+            {
+                continue;
+            }
+
+            string tag = piece[..end];
+
+            // Determine tag prefix (for raw <edit[...]>)
+            string prefixPart = tag;
+            int colon = tag.IndexOf(':');
+            if (colon != -1)
+            {
+                prefixPart = tag[..colon];
+            }
+            prefixPart = prefixPart.Split('/')[0];
+
+            string prefixName = prefixPart;
+            string preData = null;
+            if (prefixName.EndsWith(']') && prefixName.Contains('['))
+            {
+                int open = prefixName.LastIndexOf('[');
+                if (open != -1)
+                {
+                    preData = prefixName[(open + 1)..^1];
+                    prefixName = prefixName[..open];
+                }
+            }
+
+            if (!string.Equals(prefixName, "edit", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // Processed syntax: <edit//cid=X>
+            int cidCut = tag.LastIndexOf("//cid=", StringComparison.OrdinalIgnoreCase);
+            if (cidCut != -1 && int.TryParse(tag[(cidCut + "//cid=".Length)..], out int cid))
+            {
+                if (cid == globalCid || cid == stageCid)
+                {
+                    return true;
+                }
+                continue;
+            }
+
+            // Raw syntax: <edit> or <edit[n]>
+            if (preData is null)
+            {
+                return true; // <edit> (global)
+            }
+            if (int.TryParse(preData, out int tagStage) && tagStage == stageIndex)
+            {
+                return true; // <edit[n]>
+            }
+        }
+
+        return false;
     }
 
     private static (List<string> Loras, List<string> Weights, List<string> TencWeights) ExtractEditPromptLoras(WorkflowGenerator g, int stageIndex)
@@ -329,9 +467,15 @@ public partial class EditStage
 
     private static string ExtractPrompt(string prompt, int stageIndex)
     {
-        if (string.IsNullOrWhiteSpace(prompt) || !prompt.Contains("<edit", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(prompt))
         {
             return "";
+        }
+
+        // Fast path: no edit sections at all -> use full prompt as-is
+        if (!prompt.Contains("<edit", StringComparison.OrdinalIgnoreCase))
+        {
+            return prompt.Trim();
         }
 
         HashSet<string> sectionEndingTags = ["base", "refiner", "video", "videoswap", "region", "segment", "object"];
@@ -353,9 +497,90 @@ public partial class EditStage
             dest += add;
         }
 
+        static string RemoveAllEditSections(string fullPrompt, HashSet<string> sectionEndingTagsLocal)
+        {
+            if (string.IsNullOrWhiteSpace(fullPrompt) || !fullPrompt.Contains("<edit", StringComparison.OrdinalIgnoreCase))
+            {
+                return (fullPrompt ?? "").Trim();
+            }
+
+            string resultLocal = "";
+            bool inAnyEditSection = false;
+            string[] piecesLocal = fullPrompt.Split('<');
+
+            foreach (string piece in piecesLocal)
+            {
+                if (string.IsNullOrEmpty(piece))
+                {
+                    continue;
+                }
+
+                int end = piece.IndexOf('>');
+                if (end == -1)
+                {
+                    if (!inAnyEditSection)
+                    {
+                        resultLocal += "<" + piece;
+                    }
+                    continue;
+                }
+
+                string tag = piece[..end];
+                string content = piece[(end + 1)..];
+
+                // Determine tag prefix
+                string prefixPart = tag;
+                int colon = tag.IndexOf(':');
+                if (colon != -1)
+                {
+                    prefixPart = tag[..colon];
+                }
+                prefixPart = prefixPart.Split('/')[0];
+
+                string prefixName = prefixPart;
+                if (prefixName.EndsWith(']') && prefixName.Contains('['))
+                {
+                    int open = prefixName.LastIndexOf('[');
+                    if (open != -1)
+                    {
+                        prefixName = prefixName[..open];
+                    }
+                }
+
+                string tagPrefixLower = prefixName.ToLowerInvariant();
+                bool isEditTag = tagPrefixLower == "edit";
+
+                if (isEditTag)
+                {
+                    // Enter an edit section (any <edit...>)
+                    inAnyEditSection = true;
+                    continue; // drop tag + its content
+                }
+
+                if (inAnyEditSection)
+                {
+                    // End edit section when another "section" tag begins.
+                    if (sectionEndingTagsLocal.Contains(tagPrefixLower))
+                    {
+                        inAnyEditSection = false;
+                    }
+                    else
+                    {
+                        continue; // drop anything inside edit section
+                    }
+                }
+
+                // Not in edit section: keep tag+content verbatim
+                resultLocal += "<" + piece;
+            }
+
+            return resultLocal.Trim();
+        }
+
         string result = "";
         string[] pieces = prompt.Split('<');
         bool inWantedSection = false;
+        bool sawRelevantEditTag = false;
 
         foreach (string piece in pieces)
         {
@@ -424,6 +649,11 @@ public partial class EditStage
                     wantThisSection = true;
                 }
 
+                if (wantThisSection)
+                {
+                    sawRelevantEditTag = true;
+                }
+
                 inWantedSection = wantThisSection;
                 if (inWantedSection)
                 {
@@ -441,6 +671,13 @@ public partial class EditStage
                     result += "<" + piece;
                 }
             }
+        }
+
+        // If there is no <edit> / <edit[n]> that applies to this stage, fall back to the global prompt.
+        // This is intentionally "tag presence" based: an explicitly-empty <edit> section should still win.
+        if (!sawRelevantEditTag)
+        {
+            return RemoveAllEditSections(prompt, sectionEndingTags);
         }
 
         return result.Trim();

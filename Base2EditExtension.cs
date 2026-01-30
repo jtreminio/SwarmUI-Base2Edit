@@ -62,6 +62,7 @@ public class Base2EditExtension : Extension
             Name: "Base2Edit",
             Description: "Applies an edit stage to your generated image using the <edit> prompt section.\n"
                 + "For multi-stage workflows you can also target a specific edit stage with <edit[n]> (0-indexed).\n"
+                + "If no <edit> / <edit[n]> section is provided for a stage, that stage falls back to the global prompt.\n"
                 + "The edit stage can be injected after the base stage or after the refiner stage.",
             Toggles: true,
             Open: false,

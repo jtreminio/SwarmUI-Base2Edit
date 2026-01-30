@@ -196,7 +196,7 @@ public class WorkflowTests
     public void EditStage_defaults_to_refiner_when_apply_after_missing()
     {
         // If ApplyEditAfter isn't present, Base2Edit should still run on the final step
-        // (the param default is "Refiner") as long as an <edit> section exists.
+        // (the param default is "Refiner") as long as Base2Edit is enabled.
         T2IParamInput input = BuildEditInput(null);
         input.Set(Base2EditExtension.KeepPreEditImage, true);
 
@@ -219,15 +219,33 @@ public class WorkflowTests
     }
 
     [Fact]
-    public void EditStage_does_not_run_when_only_edit_stage1_tag_is_present()
+    public void EditStage_runs_and_falls_back_to_global_prompt_when_only_edit_stage1_tag_is_present()
     {
-        // Base2Edit must not activate from "<edit[1]>" alone
+        // Stage0 has no <edit> / <edit[0]>, so it should fall back to the global prompt
         T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: "global <edit[1]>do stage1 edit");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "KSamplerAdvanced"));
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SwarmKSampler"));
+        Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
+
+        IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
+        Assert.NotEmpty(encoders);
+
+        List<string> prompts = [];
+        foreach (WorkflowNode enc in encoders)
+        {
+            if (enc.Node?["inputs"] is not JObject inputs)
+            {
+                continue;
+            }
+            if (inputs.TryGetValue("prompt", out JToken pTok) && pTok is JValue pVal && !string.IsNullOrWhiteSpace($"{pVal}"))
+            {
+                prompts.Add($"{pVal}");
+            }
+        }
+
+        Assert.Contains(prompts, p => p.Contains("global") && !p.Contains("do stage1 edit"));
+        Assert.DoesNotContain(prompts, p => p.Contains("do stage1 edit"));
     }
 
     [Fact]
@@ -238,6 +256,34 @@ public class WorkflowTests
 
         Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
         Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
+    }
+
+    [Fact]
+    public void EditStage_falls_back_to_global_prompt_when_no_edit_tags_exist()
+    {
+        T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: "global prompt only");
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
+
+        IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
+        Assert.NotEmpty(encoders);
+
+        List<string> prompts = [];
+        foreach (WorkflowNode enc in encoders)
+        {
+            if (enc.Node?["inputs"] is not JObject inputs)
+            {
+                continue;
+            }
+            if (inputs.TryGetValue("prompt", out JToken pTok) && pTok is JValue pVal && !string.IsNullOrWhiteSpace($"{pVal}"))
+            {
+                prompts.Add($"{pVal}");
+            }
+        }
+
+        Assert.Contains(prompts, p => p.Contains("global prompt only"));
     }
 
     [Fact]

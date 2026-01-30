@@ -383,6 +383,58 @@ public class ModelLoraTests
     }
 
     [Fact]
+    public void Use_base_selection_without_edit_section_inherits_existing_base_model_loras()
+    {
+        WorkflowTestHarness.Base2EditSteps();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        using var testContext = new SwarmUiTestContext();
+
+        var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler
+        };
+
+        var baseModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+        sdHandler.Models[baseModel.Name] = baseModel;
+
+        var input = new T2IParamInput(null);
+        input.Set(T2IParamTypes.Model, baseModel);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(T2IParamTypes.Prompt, "global prompt with no edit section");
+        input.Set(Base2EditExtension.ApplyEditAfter, "Base");
+        input.Set(T2IParamTypes.Seed, 1L);
+        input.Set(T2IParamTypes.Width, 512);
+        input.Set(T2IParamTypes.Height, 512);
+
+        const string loraNodeId = "777";
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseOnlyLatents()
+                .Concat(
+                [
+                    new WorkflowGenerator.WorkflowGenStep(g =>
+                    {
+                        // Simulate an upstream pipeline that has already applied a LoRA to the base model.
+                        // The critical part is that g.FinalModel/g.FinalClip point at a "lora-applied" node chain.
+                        _ = g.CreateNode("UnitTest_LoraAppliedModel", new JObject(), id: loraNodeId, idMandatory: false);
+                        g.FinalModel = [loraNodeId, 0];
+                        g.FinalClip = [loraNodeId, 1];
+                    }, -800)
+                ])
+                .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        // Base2Edit should NOT load a new model loader (which would drop upstream LoRAs) when there is no <edit> section
+        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "CheckpointLoaderSimple"));
+
+        IReadOnlyList<WorkflowNode> samplers = WorkflowUtils.NodesOfType(workflow, "KSamplerAdvanced");
+        Assert.Single(samplers);
+        JObject samplerInputs = (JObject)samplers[0].Node["inputs"];
+        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraNodeId, 0)), "Sampler.model must inherit the upstream lora-applied model reference.");
+    }
+
+    [Fact]
     public void Use_refiner_selection_with_lora_loads_refiner_model_for_edit_stage_and_applies_edit_lora()
     {
         WorkflowTestHarness.Base2EditSteps();
