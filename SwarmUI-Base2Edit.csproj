@@ -9,7 +9,6 @@
   <ItemGroup>
     <Compile Remove="Tests/**/*.cs" />
     <Compile Remove="**/._*" />
-    <None Include="Assets/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
