@@ -27,6 +27,9 @@
   <ItemGroup>
     <Compile Include="..\Base2EditExtension.cs" Link="Base2EditExtension.cs" />
     <Compile Include="..\EditStage.cs" Link="EditStage.cs" />
+    <Compile Include="..\EditStage\EditStage.Stages.cs" Link="EditStage\EditStage.Stages.cs" />
+    <Compile Include="..\EditStage\EditStage.StageRun.cs" Link="EditStage\EditStage.StageRun.cs" />
+    <Compile Include="..\EditStage\EditStage.Execution.cs" Link="EditStage\EditStage.Execution.cs" />
     <Compile Include="..\ModelPrep.cs" Link="ModelPrep.cs" />
     <Compile Include="..\VaeNodeReuse.cs" Link="VaeNodeReuse.cs" />
     <Compile Include="..\WorkflowUtils.cs" Link="WorkflowUtils.cs" />

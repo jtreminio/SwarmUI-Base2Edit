@@ -1,0 +1,12 @@
+# C# and related tools
+bin/
+obj/
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Properties/
+.dotnet/
+.aspnet/
+.local/

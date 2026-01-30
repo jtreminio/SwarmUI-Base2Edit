@@ -37,6 +37,7 @@ public class ModelLoraTests
         var input = new T2IParamInput(null);
         input.Set(T2IParamTypes.Model, sdModel);
         input.Set(T2IParamTypes.Prompt, "global <edit>apply loras <lora:UnitTest_LoraA:0.5> <lora:UnitTest_LoraB:1.0>");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         input.Set(Base2EditExtension.ApplyEditAfter, "Base");
         input.Set(T2IParamTypes.Seed, 1L);
         input.Set(T2IParamTypes.Width, 512);
@@ -127,6 +128,7 @@ public class ModelLoraTests
         var input = new T2IParamInput(null);
         input.Set(T2IParamTypes.Model, sdModel);
         input.Set(T2IParamTypes.Prompt, "global <edit>apply lora <lora:UnitTest_Lora:0.5>");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         input.Set(Base2EditExtension.ApplyEditAfter, "Base");
         input.Set(T2IParamTypes.Seed, 1L);
         input.Set(T2IParamTypes.Width, 512);
@@ -167,6 +169,88 @@ public class ModelLoraTests
         JObject samplerInputs = (JObject)samplers[0].Node["inputs"];
         Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraId, 0)), "Sampler.model must come from LoraLoader.model");
         Assert.False(TokenEquals(samplerInputs["model"], new JArray(loaderId, 0)), "Sampler.model must not come directly from CheckpointLoaderSimple.model");
+    }
+
+    [Fact]
+    public void Stage_specific_edit_lora_applies_only_to_target_stage()
+    {
+        WorkflowTestHarness.Base2EditSteps();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        using var testContext = new SwarmUiTestContext();
+
+        var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
+        var loraHandler = new T2IModelHandler { ModelType = "LoRA" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler,
+            ["LoRA"] = loraHandler
+        };
+
+        var sdModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Model.safetensors", "UnitTest_Model.safetensors");
+        sdHandler.Models[sdModel.Name] = sdModel;
+
+        var loraModel = new T2IModel(loraHandler, "/tmp", "/tmp/UnitTest_Lora.safetensors", "UnitTest_Lora.safetensors");
+        loraHandler.Models[loraModel.Name] = loraModel;
+
+        var input = new T2IParamInput(null);
+        input.Set(T2IParamTypes.Model, sdModel);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
+        input.Set(Base2EditExtension.ApplyEditAfter, "Base");
+        input.Set(T2IParamTypes.Seed, 1L);
+        input.Set(T2IParamTypes.Width, 512);
+        input.Set(T2IParamTypes.Height, 512);
+
+        // Activate via stage0 tag, but put the LoRA only in stage1
+        input.Set(T2IParamTypes.Prompt, "global <edit[0]>stage0 <base>ignore <edit[1]>stage1 <lora:UnitTest_Lora:0.5>");
+
+        // Add stage1 chained after stage0
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["vae"] = "None",
+                ["steps"] = 20,
+                ["cfgScale"] = 7.0,
+                ["sampler"] = "euler",
+                ["scheduler"] = "normal"
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseOnlyLatents()
+                .Concat([new WorkflowGenerator.WorkflowGenStep(g => g.Features.Add("variation_seed"), -999)])
+                .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        IReadOnlyList<WorkflowNode> loraLoaders = WorkflowUtils.NodesOfType(workflow, "LoraLoader");
+        Assert.Single(loraLoaders);
+        string loraId = loraLoaders[0].Id;
+
+        // Identify stage0 sampler vs stage1 sampler via the ReferenceLatent chain
+        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
+        WorkflowNode sampler0 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+
+        IReadOnlyList<WorkflowNode> refLatents = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        Assert.True(refLatents.Count >= 2, "Expected at least 2 ReferenceLatent nodes for stage0+stage1.");
+        WorkflowNode ref1 = refLatents.Single(n =>
+            n.Node?["inputs"] is JObject inputs
+            && inputs.TryGetValue("latent", out JToken latTok)
+            && latTok is JArray arr
+            && JToken.DeepEquals(arr, new JArray(sampler0.Id, 0)));
+        WorkflowNode sampler1 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref1);
+
+        JObject sampler0Inputs = (JObject)sampler0.Node["inputs"];
+        JObject sampler1Inputs = (JObject)sampler1.Node["inputs"];
+        Assert.True(sampler0Inputs.TryGetValue("model", out JToken s0ModelTok) && s0ModelTok is JArray, "Expected stage0 sampler.inputs.model");
+        Assert.True(sampler1Inputs.TryGetValue("model", out JToken s1ModelTok) && s1ModelTok is JArray, "Expected stage1 sampler.inputs.model");
+
+        Assert.NotEqual(loraId, $"{((JArray)s0ModelTok)[0]}");
+        Assert.Equal(loraId, $"{((JArray)s1ModelTok)[0]}");
     }
 
     [Fact]

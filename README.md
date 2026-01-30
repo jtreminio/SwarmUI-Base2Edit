@@ -4,7 +4,12 @@ Add an edit stage to your image generation workflow. Generate an image, then aut
 
 ## Usage
 
-The edit stage uses the new `<edit>` prompt tag. Everything inside `<edit>` becomes your edit instructions - the rest of your prompt is ignored during the edit stage.
+The edit stage uses the `<edit>` prompt tag. Everything inside `<edit>` becomes your edit instructions - the rest of your prompt is ignored during the edit stage.
+
+For multi-stage workflows, you can also target a specific edit stage using `<edit[n]>` (0-indexed):
+- `<edit>` applies to **all** Base2Edit edit stages (including any LoRAs inside the section)
+- `<edit[0]>` applies to **only** edit stage 0, `<edit[1]>` to stage 1, etc.
+- Base2Edit runs only if `<edit>` or `<edit[0]>` is present (and the Base2Edit group is enabled / Edit Model is set)
 
 You can choose when the edit happens:
 - **After Base** - Edit right after the initial generation, before any upscaling or refining

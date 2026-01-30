@@ -1,3 +1,4 @@
+using System;
 using SwarmUI.Core;
 using SwarmUI.Utils;
 using SwarmUI.Text2Image;
@@ -8,10 +9,16 @@ namespace Base2Edit;
 
 public class Base2EditExtension : Extension
 {
+    /// <summary>
+    /// Prompt section ID for the global Base2Edit edit section (<edit>).
+    /// Stage-specific sections (<edit[n]>) use <see cref="EditSectionIdForStage"/>.
+    /// </summary>
     public const int SectionID_Edit = 48723;
+    public static int EditSectionIdForStage(int stageIndex) => SectionID_Edit + 1 + stageIndex;
     public static T2IParamGroup Base2EditGroup;
     public static T2IRegisteredParam<bool> KeepPreEditImage;
     public static T2IRegisteredParam<string> ApplyEditAfter;
+    public static T2IRegisteredParam<string> EditStages;
     public static T2IRegisteredParam<string> EditModel;
     public static T2IRegisteredParam<T2IModel> EditVAE;
     public static T2IRegisteredParam<int> EditSteps;
@@ -26,8 +33,15 @@ public class Base2EditExtension : Extension
 
         T2IPromptHandling.PromptTagBasicProcessors["edit"] = (data, context) =>
         {
-            context.SectionID = SectionID_Edit;
-            return $"<edit//cid={SectionID_Edit}>";
+            if (int.TryParse(context.PreData, out int stageIndex) && stageIndex >= 0)
+            {
+                context.SectionID = EditSectionIdForStage(stageIndex);
+            }
+            else
+            {
+                context.SectionID = SectionID_Edit;
+            }
+            return $"<edit//cid={context.SectionID}>";
         };
         T2IPromptHandling.PromptTagLengthEstimators["edit"] = (data, context) => "<break>";
 
@@ -47,6 +61,7 @@ public class Base2EditExtension : Extension
         Base2EditGroup = new(
             Name: "Base2Edit",
             Description: "Applies an edit stage to your generated image using the <edit> prompt section.\n"
+                + "For multi-stage workflows you can also target a specific edit stage with <edit[n]> (0-indexed).\n"
                 + "The edit stage can be injected after the base stage or after the refiner stage.",
             Toggles: true,
             Open: false,
@@ -176,6 +191,18 @@ public class Base2EditExtension : Extension
             GetValues: (_) => ComfyUIBackendExtension.Schedulers,
             Group: Base2EditGroup,
             OrderPriority: 15,
+            FeatureFlag: "comfyui"
+        ));
+
+        EditStages = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Edit Stages",
+            Description: "Additional edit stages",
+            Default: "[]",
+            VisibleNormally: false,
+            IsAdvanced: true,
+            HideFromMetadata: true,
+            DoNotPreview: true,
+            Group: Base2EditGroup,
             FeatureFlag: "comfyui"
         ));
     }
