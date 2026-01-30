@@ -287,6 +287,50 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void EditStage_uses_qwen_image_edit_text_encoder_when_edit_model_is_qwen()
+    {
+        _ = WorkflowTestHarness.Base2EditSteps();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        using var testContext = new SwarmUiTestContext();
+
+        var handler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
+
+        var sdxlCompat = new T2IModelCompatClass { ID = "sdxl", ShortCode = "SDXL" };
+        var qwenCompat = new T2IModelCompatClass { ID = "qwen-image", ShortCode = "QWEN" };
+
+        var baseModel = new T2IModel(handler, "/tmp", "/tmp/UnitTest_SDXL.safetensors", "UnitTest_SDXL.safetensors")
+        {
+            ModelClass = new T2IModelClass { ID = "sdxl-base", Name = "SDXL Base", CompatClass = sdxlCompat, StandardWidth = 1024, StandardHeight = 1024 }
+        };
+
+        var qwenEditModel = new T2IModel(handler, "/tmp", "/tmp/UnitTest_QwenEdit.safetensors", "UnitTest_QwenEdit.safetensors")
+        {
+            ModelClass = new T2IModelClass { ID = "qwen-image-edit-plus-test", Name = "Qwen Image Edit Plus", CompatClass = qwenCompat, StandardWidth = 1024, StandardHeight = 1024 }
+        };
+
+        // Run edit on the (stubbed) refiner stage so RefinerModel is the selected edit model.
+        T2IParamInput input = BuildEditInput("Refiner", enableBase2EditGroup: true, prompt: "global <edit>do the edit");
+        input.Set(T2IParamTypes.Model, baseModel);
+        input.Set(T2IParamTypes.RefinerModel, qwenEditModel);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseThenRefiner()
+                .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "TextEncodeQwenImageEditPlus");
+        Assert.True(encoders.Count >= 2, "Expected at least positive+negative TextEncodeQwenImageEditPlus nodes for Qwen edit models.");
+        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced"));
+
+        // Ensure the Qwen encoder is wired to an image (the pre-edit image).
+        WorkflowNode anyEncoder = encoders[0];
+        JArray imageRef = RequireConnectionInput(anyEncoder.Node, "image1");
+        Assert.Equal("VAEDecode", RequireClassType(workflow, $"{imageRef[0]}"));
+    }
+
+    [Fact]
     public void Stage_specific_edit_sections_apply_only_to_target_stage_and_global_applies_to_all()
     {
         // stage0 + stage1 chained in Base hook

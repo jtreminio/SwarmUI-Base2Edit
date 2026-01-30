@@ -54,6 +54,13 @@ If an override is disabled/unset, Base2Edit inherits defaults from the stage you
 - **(Use Base)** inherits Base stage sampling defaults (CFG/sampler/scheduler/VAE) and the Base model stack + lora
 - **(Use Refiner)** inherits Refiner sampling defaults (CFG/sampler/scheduler/VAE) and the Refiner model stack + lora. If no Refiner stage defined, uses Base
 
+### Development / Build
+
+- The test project is configured to write `obj`/`bin` under `/tmp` (when it exists) so SwarmUI’s build never picks up generated assembly files and hits CS0579.
+- If SwarmUI still fails with duplicate-assembly errors pointing at `src/Tests/Base2Edit.Tests/obj`, remove that folder once:
+  `rm -rf src/Tests/Base2Edit.Tests/obj src/Tests/Base2Edit.Tests/bin`
+  (stale artifacts from an older build; they won’t be recreated.)
+
 #### LoRAs
 
 - Any `<lora:...>` tags inside `<edit>` / `<edit[n]>` are stacked **on top** of the chosen model stack.

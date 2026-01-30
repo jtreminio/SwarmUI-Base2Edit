@@ -1,3 +1,4 @@
+using System;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
@@ -17,7 +18,11 @@ public partial class EditStage
         string modelSelection = g.UserInput.Get(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
-        bool needsPreEditImage = shouldSavePreEdit || modelState.MustReencode || g.FinalSamples is null;
+        bool needsPreEditImage =
+            shouldSavePreEdit
+            || modelState.MustReencode
+            || g.FinalSamples is null
+            || IsQwenImageEditArchitecture(g);
 
         if (needsPreEditImage)
         {
@@ -538,6 +543,25 @@ public partial class EditStage
         EditParameters editParams
     )
     {
+        // Qwen Image Edit models require a specialized encoder node.
+        // This stage edits the current image, so wire the pre-edit image as image1.
+        if (IsQwenImageEditArchitecture(g))
+        {
+            if (g.FinalImageOut is null)
+            {
+                throw new InvalidOperationException("Qwen Image Edit conditioning requires a pre-edit image, but FinalImageOut was null.");
+            }
+            return g.CreateNode("TextEncodeQwenImageEditPlus", new JObject()
+            {
+                ["clip"] = clip,
+                ["prompt"] = prompt,
+                ["vae"] = null, // Explicitly handled elsewhere
+                ["image1"] = g.FinalImageOut,
+                ["image2"] = null,
+                ["image3"] = null
+            });
+        }
+
         return g.CreateNode("SwarmClipTextEncodeAdvanced", new JObject()
         {
             ["clip"] = clip,
@@ -549,6 +573,13 @@ public partial class EditStage
             ["target_height"] = editParams.Height,
             ["guidance"] = editParams.Guidance
         });
+    }
+
+    private static bool IsQwenImageEditArchitecture(WorkflowGenerator g)
+    {
+        // SwarmUI identifies Qwen Image Edit via ModelClass.ID prefixes (eg "qwen-image-edit-plus/...").
+        string id = g?.CurrentModelClass()?.ID;
+        return id is not null && id.StartsWith("qwen-image-edit", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ExecuteEditSampler(
