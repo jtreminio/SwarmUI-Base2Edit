@@ -1,6 +1,0 @@
-<Project>
-  <PropertyGroup Condition="Exists('/tmp')">
-    <BaseOutputPath Condition="'$(BaseOutputPath)' == ''">/tmp/swarmui-msbuild/ext-bin/</BaseOutputPath>
-    <BaseIntermediateOutputPath Condition="'$(BaseIntermediateOutputPath)' == ''">/tmp/swarmui-msbuild/ext-obj/</BaseIntermediateOutputPath>
-  </PropertyGroup>
-</Project>
