@@ -1,3 +1,4 @@
+using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
@@ -14,24 +15,82 @@ public partial class EditStage
             List<ResolvedStage> resolved = ResolveStages(stages);
             StageHook currentHook = isFinalStep ? StageHook.Refiner : StageHook.Base;
             HashSet<int> executed = [];
-            foreach (ResolvedStage st in resolved.OrderBy(s => s.Spec.Id))
+
+            // Group stages by (Hook, DependsOnStageId). Stages in the same group share the same anchor
+            // (ex both "after refiner"). Primary = lowest Id in group (continues pipeline); rest run in parallel (save and stop)
+            List<List<ResolvedStage>> groups = resolved
+                .Where(st => st.Hook == currentHook)
+                .GroupBy(st => (st.Hook, st.DependsOnStageId))
+                .OrderBy(grp => grp.Min(s => s.Spec.Id))
+                .Select(grp => grp.OrderBy(s => s.Spec.Id).ToList())
+                .ToList();
+
+            foreach (List<ResolvedStage> group in groups)
             {
-                if (st.Hook != currentHook)
+                if (group.Count == 0)
                 {
                     continue;
                 }
 
-                if (st.DependsOnStageId.HasValue && !executed.Contains(st.DependsOnStageId.Value))
+                if (group[0].DependsOnStageId.HasValue && !executed.Contains(group[0].DependsOnStageId.Value))
                 {
-                    // This can only happen if a stage depends on a stage in a different hook
+                    int depId = group[0].DependsOnStageId.Value;
                     throw new SwarmReadableErrorException(
-                        $"Base2Edit: Edit Stage {st.Spec.Id} depends on Edit Stage {st.DependsOnStageId.Value} which is not executed in this phase."
+                        $"Base2Edit: Edit Stage {group[0].Spec.Id} depends on Edit Stage {depId} which is not executed in this phase."
                     );
                 }
 
-                ApplyStageOverrides(g, st.Spec);
-                RunEditStage(g, isFinalStep: isFinalStep, stageIndex: st.Spec.Id);
-                executed.Add(st.Spec.Id);
+                // Anchor = pipeline state before this group (same input for all stages in the group)
+                JArray anchorSamples = g.FinalSamples;
+                JArray anchorVae = g.FinalVae;
+                JArray anchorImageOut = g.FinalImageOut;
+
+                ResolvedStage primary = group[0];
+                ApplyStageOverrides(g, primary.Spec);
+                RunEditStage(g, isFinalStep: isFinalStep, stageIndex: primary.Spec.Id);
+                executed.Add(primary.Spec.Id);
+
+                JArray primarySamples = g.FinalSamples;
+                JArray primaryVae = g.FinalVae;
+                JArray primaryImageOut = g.FinalImageOut;
+
+                // Parallel branches: same anchor as primary, run edit, save image, then restore pipeline to primary output
+                for (int i = 1; i < group.Count; i++)
+                {
+                    ResolvedStage parallel = group[i];
+                    g.FinalSamples = anchorSamples;
+                    g.FinalVae = anchorVae;
+                    g.FinalImageOut = anchorImageOut;
+
+                    ApplyStageOverrides(g, parallel.Spec);
+                    RunEditStage(g, isFinalStep: isFinalStep, stageIndex: parallel.Spec.Id);
+
+                    JArray parallelSamples = g.FinalSamples;
+                    JArray parallelVae = g.FinalVae;
+                    JArray parallelImageOut = g.FinalImageOut;
+
+                    if (isFinalStep && parallelImageOut is not null)
+                    {
+                        if (!VaeNodeReuse.HasSaveForImage(g, parallelImageOut))
+                        {
+                            g.CreateImageSaveNode(parallelImageOut, g.GetStableDynamicID(ParallelEditSaveId, parallel.Spec.Id));
+                        }
+                    }
+                    else if (!isFinalStep && parallelSamples is not null && parallelVae is not null)
+                    {
+                        string decodeNode = g.CreateVAEDecode(parallelVae, parallelSamples);
+                        JArray decodedRef = [decodeNode, 0];
+                        if (!VaeNodeReuse.HasSaveForImage(g, decodedRef))
+                        {
+                            g.CreateImageSaveNode(decodedRef, g.GetStableDynamicID(ParallelEditSaveId, parallel.Spec.Id));
+                        }
+                    }
+
+                    g.FinalSamples = primarySamples;
+                    g.FinalVae = primaryVae;
+                    g.FinalImageOut = primaryImageOut;
+                    executed.Add(parallel.Spec.Id);
+                }
             }
         }
         finally

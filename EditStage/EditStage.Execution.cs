@@ -205,7 +205,7 @@ public partial class EditStage
         bool shouldSave = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
 
-        if (shouldSave)
+        if (shouldSave && g.FinalImageOut is not null && !VaeNodeReuse.HasSaveForImage(g, g.FinalImageOut))
         {
             g.CreateImageSaveNode(g.FinalImageOut, g.GetStableDynamicID(PreEditImageSaveId, stageIndex));
             Logs.Debug("Base2Edit: Saved pre-edit image");
@@ -214,16 +214,25 @@ public partial class EditStage
 
     private static void ReencodeIfNeeded(WorkflowGenerator g, EditModelState modelState)
     {
+        // Parallel stages (same anchor) reuse the same VAEDecode, so g.FinalImageOut points at
+        // that decode's image. g.FinalSamples is still the anchor latent (ex base sampler output),
+        // which is wrong for ReferenceLatent - we need the latent that comes from encoding this
+        // image with the edit VAE. Reuse an existing VAEEncode for this image+VAE if the primary
+        // stage already created one; otherwise we would feed raw anchor latent into the edit sampler.
+        if (g.FinalImageOut is not null &&
+            VaeNodeReuse.ReuseVaeEncodeForImage(g, g.FinalImageOut, modelState.Vae, out JArray reusedSamples))
+        {
+            g.FinalSamples = reusedSamples;
+            return;
+        }
+
         if (!modelState.MustReencode && g.FinalSamples is not null)
         {
             return;
         }
 
-        // If a prior stage already encoded the current image to latents with the intended VAE,
-        // reuse it instead of emitting a duplicate VAEEncode.
-        if (VaeNodeReuse.ReuseVaeEncodeForImage(g, g.FinalImageOut, modelState.Vae, out JArray reusedSamples))
+        if (g.FinalImageOut is null)
         {
-            g.FinalSamples = reusedSamples;
             return;
         }
 

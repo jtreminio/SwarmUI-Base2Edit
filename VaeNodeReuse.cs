@@ -126,4 +126,41 @@ public static class VaeNodeReuse
             return false;
         }
     }
+
+    /// <summary>
+    /// Returns true if the workflow already has a SwarmSaveImageWS or SaveImage node
+    /// connected to the given image output ref. Used to avoid attaching multiple save
+    /// nodes to the same VAEDecode output.
+    /// </summary>
+    public static bool HasSaveForImage(WorkflowGenerator g, JArray imageRef)
+    {
+        if (g?.Workflow is null || imageRef is null || imageRef.Count != 2)
+        {
+            return false;
+        }
+
+        try
+        {
+            foreach (var conn in WorkflowUtils.FindInputConnections(g.Workflow, imageRef))
+            {
+                if (g.Workflow[conn.NodeId] is not JObject nodeObj)
+                {
+                    continue;
+                }
+
+                string classType = $"{nodeObj["class_type"]}";
+                if (classType == "SwarmSaveImageWS" || classType == "SaveImage")
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Logs.Debug($"Base2Edit: Failed to check existing save for image: {ex}");
+            return false;
+        }
+    }
 }

@@ -246,6 +246,111 @@ public class MultiStageMergeTests
     }
 
     [Fact]
+    public void Two_stages_after_same_anchor_run_in_parallel_save_and_stop()
+    {
+        // stage0 and stage1 both "after refiner" -> same anchor. Primary (stage0) continues pipeline;
+        // parallel (stage1) reads same refiner output, saves its image, and does not feed the pipeline
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(Base2EditExtension.EditSteps, 11);
+        input.Set(Base2EditExtension.EditSampler, "euler");
+        input.Set(Base2EditExtension.EditScheduler, "normal");
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Refiner",
+                ["keepPreEditImage"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["vae"] = "None",
+                ["steps"] = 33,
+                ["cfgScale"] = 7.0,
+                ["sampler"] = "dpmpp_2m",
+                ["scheduler"] = "karras"
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> stepsWithRefiner =
+            WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps());
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, stepsWithRefiner);
+
+        IReadOnlyList<WorkflowNode> refLatents = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        Assert.Equal(2, refLatents.Count);
+
+        JArray anchorRef = RequireConnectionInput(refLatents[0].Node, "latent");
+        JArray anchorRef1 = RequireConnectionInput(refLatents[1].Node, "latent");
+        Assert.True(JToken.DeepEquals(anchorRef, anchorRef1), "Both edit stages must read from the same anchor (refiner output).");
+
+        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        Assert.Equal(2, samplers.Count);
+
+        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, refLatents[0]);
+        WorkflowNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, refLatents[1]);
+
+        // Only one VAEDecode should feed the main pipeline (stage0); stage1's output is saved separately
+        IReadOnlyList<WorkflowNode> decodes = WorkflowUtils.NodesOfType(workflow, "VAEDecode");
+        Assert.True(decodes.Count >= 2, "Expected at least 2 VAEDecode (stage0 final + stage1 branch).");
+
+        // Parallel stage1 output is saved via a dedicated SaveImage (id = 1000 + 50300 + 1 = 51301)
+        string parallelSaveId = "51301";
+        Assert.True(workflow.ContainsKey(parallelSaveId), "Expected SaveImage for parallel stage1 output.");
+        Assert.Equal("SaveImage", $"{workflow[parallelSaveId]!["class_type"]}");
+    }
+
+    [Fact]
+    public void At_most_one_SwarmSaveImageWS_per_VAEDecode_output()
+    {
+        // Two parallel stages (both after refiner) with KeepPreEditImage: both would save the same
+        // pre-edit image (same VAEDecode output). Base2Edit must attach at most one SwarmSaveImageWS per decode
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(Base2EditExtension.KeepPreEditImage, true);
+        input.Set(Base2EditExtension.EditSteps, 11);
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Refiner",
+                ["keepPreEditImage"] = true,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["vae"] = "None",
+                ["steps"] = 20,
+                ["cfgScale"] = 7.0,
+                ["sampler"] = "euler",
+                ["scheduler"] = "normal"
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> stepsWithRefinerAndWs =
+            WorkflowTestHarness.Template_BaseThenRefiner()
+                .Concat([new WorkflowGenerator.WorkflowGenStep(g => g.Features.Add("comfy_saveimage_ws"), -999)])
+                .Concat(WorkflowTestHarness.Base2EditSteps());
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, stepsWithRefinerAndWs);
+
+        IReadOnlyList<WorkflowNode> vaeDecodes = WorkflowUtils.NodesOfType(workflow, "VAEDecode");
+        Assert.NotEmpty(vaeDecodes);
+
+        foreach (WorkflowNode decode in vaeDecodes)
+        {
+            JArray imageOutRef = new JArray { decode.Id, 0 };
+            IReadOnlyList<WorkflowInputConnection> consumers = WorkflowUtils.FindInputConnections(workflow, imageOutRef);
+            int saveCount = consumers.Count(c =>
+            {
+                if (workflow[c.NodeId] is not JObject node)
+                {
+                    return false;
+                }
+                string ct = $"{node["class_type"]}";
+                return ct == "SwarmSaveImageWS" || ct == "SaveImage";
+            });
+            Assert.True(saveCount <= 1,
+                $"VAEDecode {decode.Id} output is connected to {saveCount} save node(s); expected at most 1.");
+        }
+    }
+
+    [Fact]
     public void Keep_pre_edit_image_is_respected_per_stage()
     {
         // stage0: keep pre-edit image, stage1: do not keep pre-edit image

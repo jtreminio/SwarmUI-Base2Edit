@@ -32,6 +32,7 @@ internal record EditConditioning(JArray Positive, JArray Negative);
 public partial class EditStage
 {
     private const int PreEditImageSaveId = 50200;
+    private const int ParallelEditSaveId = 50300;
     private const int EditSeedOffset = 2;
 
     public static void Run(WorkflowGenerator g, bool isFinalStep)

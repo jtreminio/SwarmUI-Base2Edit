@@ -15,6 +15,8 @@ You can choose when the edit happens:
 - **After Base** - Edit right after the initial generation, before any upscaling or refining
 - **After Refiner** - Edit the final image after all other stages are done
 
+When two or more edit stages share the same start (e.g. both "After Refiner"), they run **in parallel** from that point: each branch gets the same input image, runs its own edit, and only the **first** stage (lowest ID) continues into the rest of the pipeline. The other branches save their output and stop, so you get multiple edited variants from one run without chaining them.
+
 ## Quick Start
 
 1. Toggle the **Base2Edit** group ON
