@@ -31,6 +31,9 @@ internal static class WorkflowTestHarness
                 T2IParamTypes.RegisterDefaults();
             }
 
+            UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+            UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
             var ext = new Base2EditExtension();
             ext.OnPreInit();
             ext.OnInit();

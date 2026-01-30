@@ -126,27 +126,6 @@ public class Base2EditExtension : Extension
             DoNotPreview: true
         ));
 
-        EditVAE = T2IParamTypes.Register<T2IModel>(new T2IParamType(
-            Name: "Edit VAE",
-            Description: "VAE to use for the edit stage.\n"
-                + "'Automatic' uses the current VAE.\n"
-                + "'None' disables VAE override.",
-            Default: "None",
-            IgnoreIf: "None",
-            GetValues: (Session s) =>
-            {
-                var vaeNames = Program.T2IModelSets["VAE"].ListModelsFor(s).Select(m => m.Name);
-                return ["Automatic", "None", .. T2IParamTypes.CleanModelList(vaeNames)];
-            },
-            Subtype: "VAE",
-            Group: Base2EditGroup,
-            OrderPriority: 9,
-            FeatureFlag: "comfyui",
-            ChangeWeight: 7,
-            DoNotPreview: true
-            // Toggleable: true // TODO: Enable this once we have a way to toggle the VAE override
-        ));
-
         EditSteps = T2IParamTypes.Register<int>(new T2IParamType(
             Name: "Edit Steps",
             Description: "Number of steps for the edit stage.",
@@ -173,7 +152,8 @@ public class Base2EditExtension : Extension
             Group: Base2EditGroup,
             OrderPriority: 6,
             FeatureFlag: "comfyui",
-            ChangeWeight: -3
+            ChangeWeight: -3,
+            Toggleable: true
         ));
 
         EditSampler = T2IParamTypes.Register<string>(new T2IParamType(
@@ -183,7 +163,8 @@ public class Base2EditExtension : Extension
             GetValues: (_) => ComfyUIBackendExtension.Samplers,
             Group: Base2EditGroup,
             OrderPriority: 7,
-            FeatureFlag: "comfyui"
+            FeatureFlag: "comfyui",
+            Toggleable: true
         ));
 
         EditScheduler = T2IParamTypes.Register<string>(new T2IParamType(
@@ -193,7 +174,29 @@ public class Base2EditExtension : Extension
             GetValues: (_) => ComfyUIBackendExtension.Schedulers,
             Group: Base2EditGroup,
             OrderPriority: 8,
-            FeatureFlag: "comfyui"
+            FeatureFlag: "comfyui",
+            Toggleable: true
+        ));
+
+        EditVAE = T2IParamTypes.Register<T2IModel>(new T2IParamType(
+            Name: "Edit VAE",
+            Description: "VAE to use for the edit stage.\n"
+                + "'Automatic' uses the current VAE.\n"
+                + "'None' disables VAE override.",
+            Default: "None",
+            IgnoreIf: "None",
+            GetValues: (Session s) =>
+            {
+                var vaeNames = Program.T2IModelSets["VAE"].ListModelsFor(s).Select(m => m.Name);
+                return ["Automatic", "None", .. T2IParamTypes.CleanModelList(vaeNames)];
+            },
+            Subtype: "VAE",
+            Group: Base2EditGroup,
+            OrderPriority: 9,
+            FeatureFlag: "comfyui",
+            ChangeWeight: 7,
+            DoNotPreview: true,
+            Toggleable: true
         ));
 
         EditStages = T2IParamTypes.Register<string>(new T2IParamType(

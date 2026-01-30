@@ -14,7 +14,7 @@ public partial class EditStage
             ExtractPrompt(g.UserInput.Get(T2IParamTypes.NegativePrompt, ""), stageIndex)
         );
         var modelState = PrepareEditModelAndVae(g, isFinalStep, stageIndex);
-
+        string modelSelection = g.UserInput.Get(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
         bool needsPreEditImage = shouldSavePreEdit || modelState.MustReencode || g.FinalSamples is null;
@@ -34,12 +34,12 @@ public partial class EditStage
             Width: g.UserInput.GetImageWidth(),
             Height: g.UserInput.GetImageHeight(),
             Steps: g.UserInput.Get(Base2EditExtension.EditSteps, 20),
-            Cfg: g.UserInput.Get(Base2EditExtension.EditCFGScale, 7.0),
+            Cfg: ResolveInheritedCfg(g, modelSelection),
             Control: g.UserInput.Get(Base2EditExtension.EditControl, 1.0),
             Guidance: g.UserInput.Get(T2IParamTypes.FluxGuidanceScale, -1),
             Seed: g.UserInput.Get(T2IParamTypes.Seed) + EditSeedOffset + stageIndex,
-            Sampler: g.UserInput.Get(Base2EditExtension.EditSampler, "euler"),
-            Scheduler: g.UserInput.Get(Base2EditExtension.EditScheduler, "normal")
+            Sampler: ResolveInheritedSampler(g, modelSelection),
+            Scheduler: ResolveInheritedScheduler(g, modelSelection)
         );
         var conditioning = CreateEditConditioning(g, modelState.Clip, prompts, editParams);
         ExecuteEditSampler(g, modelState.Model, conditioning, editParams, stageIndex);
@@ -56,6 +56,65 @@ public partial class EditStage
         }
 
         FinalizeEditOutput(g, modelState.Vae, isFinalStep);
+    }
+
+    private static double ResolveInheritedCfg(WorkflowGenerator g, string modelSelection)
+    {
+        if (g.UserInput.TryGet(Base2EditExtension.EditCFGScale, out double editCfg))
+        {
+            return editCfg;
+        }
+
+        // Inherit from whichever stage "(Use Base)" / "(Use Refiner)" points to
+        if (string.Equals(modelSelection, ModelPrep.UseBase, StringComparison.OrdinalIgnoreCase))
+        {
+            return g.UserInput.Get(T2IParamTypes.CFGScale, 7);
+        }
+
+        if (string.Equals(modelSelection, ModelPrep.UseRefiner, StringComparison.OrdinalIgnoreCase))
+        {
+            return g.UserInput.Get(
+                T2IParamTypes.RefinerCFGScale,
+                g.UserInput.Get(T2IParamTypes.CFGScale, 7, sectionId: T2IParamInput.SectionID_Refiner),
+                sectionId: T2IParamInput.SectionID_Refiner
+            );
+        }
+
+        return 7;
+    }
+
+    private static string ResolveInheritedSampler(WorkflowGenerator g, string modelSelection)
+    {
+        if (g.UserInput.TryGet(Base2EditExtension.EditSampler, out string editSampler) && !string.IsNullOrWhiteSpace(editSampler))
+        {
+            return editSampler;
+        }
+
+        if (string.Equals(modelSelection, ModelPrep.UseRefiner, StringComparison.OrdinalIgnoreCase))
+        {
+            return g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, null, sectionId: T2IParamInput.SectionID_Refiner, includeBase: false)
+                ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSamplerParam, null)
+                ?? g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, "euler");
+        }
+
+        return g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, "euler");
+    }
+
+    private static string ResolveInheritedScheduler(WorkflowGenerator g, string modelSelection)
+    {
+        if (g.UserInput.TryGet(Base2EditExtension.EditScheduler, out string editScheduler) && !string.IsNullOrWhiteSpace(editScheduler))
+        {
+            return editScheduler;
+        }
+
+        if (string.Equals(modelSelection, ModelPrep.UseRefiner, StringComparison.OrdinalIgnoreCase))
+        {
+            return g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, null, sectionId: T2IParamInput.SectionID_Refiner, includeBase: false)
+                ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSchedulerParam, null)
+                ?? g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, "normal");
+        }
+
+        return g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, "normal");
     }
 
     private static EditModelState PrepareEditModelAndVae(WorkflowGenerator g, bool isFinalStep, int stageIndex)
@@ -113,6 +172,19 @@ public partial class EditStage
             (model, clip, vae) = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
             (model, clip) = g.LoadLorasForConfinement(-1, model, clip);
             (model, clip) = g.LoadLorasForConfinement(0, model, clip); // UI "Global"
+        }
+
+        // If the user is inheriting the refiner model stack before the refiner phase begins,
+        // also inherit any refiner VAE override (so edit defaults match the refiner stage defaults)
+        if (!isFinalStep
+            && string.Equals(selection, ModelPrep.UseRefiner, StringComparison.OrdinalIgnoreCase)
+            && !g.UserInput.TryGet(Base2EditExtension.EditVAE, out _)
+            && g.UserInput.TryGet(T2IParamTypes.RefinerVAE, out T2IModel refinerVaeOverride)
+            && refinerVaeOverride is not null)
+        {
+            mustReencode = true;
+            vae = g.CreateVAELoader(refinerVaeOverride.ToString(g.ModelFolderFormat));
+            g.FinalVae = vae;
         }
 
         // Step 2: if an <edit> section exists and includes <lora>, stack those LoRAs on top of the chosen model stack

@@ -54,16 +54,30 @@ class Base2EditStageEditor
 
     createStage(applyAfter)
     {
+        const readToggleableRoot = (id) => {
+            const el = document.getElementById(`input_${id}`);
+            if (!el) {
+                return null;
+            }
+
+            const t = document.getElementById(`input_${id}_toggle`);
+            if (t && !t.checked) {
+                return null;
+            }
+
+            return el.value;
+        };
+
         return {
             applyAfter: applyAfter,
             keepPreEditImage: document.getElementById("input_keeppreeditimage").checked,
             control: document.getElementById("input_editcontrol").value,
             model: document.getElementById("input_editmodel").value,
-            vae: document.getElementById("input_editvae").value,
             steps: document.getElementById("input_editsteps").value,
-            cfgScale: document.getElementById("input_editcfgscale").value,
-            sampler: document.getElementById("input_editsampler").value,
-            scheduler: document.getElementById("input_editscheduler").value
+            vae: readToggleableRoot("editvae"),
+            cfgScale: readToggleableRoot("editcfgscale"),
+            sampler: readToggleableRoot("editsampler"),
+            scheduler: readToggleableRoot("editscheduler")
         };
     }
 
@@ -292,6 +306,21 @@ class Base2EditStageEditor
                 try { p.runnable(); } catch { }
             }
 
+            const setToggle = (id, enabled) => {
+                const el = document.getElementById(`${prefix}${id}`);
+                const t = document.getElementById(`${prefix}${id}_toggle`);
+                if (!el || !t) {
+                    return;
+                }
+                t.checked = !!enabled;
+                doToggleEnable(`${prefix}${id}`);
+            };
+
+            setToggle("editcfgscale", stage.cfgScale !== null && stage.cfgScale !== undefined);
+            setToggle("editsampler", stage.sampler !== null && stage.sampler !== undefined && `${stage.sampler}` !== "");
+            setToggle("editscheduler", stage.scheduler !== null && stage.scheduler !== undefined && `${stage.scheduler}` !== "");
+            setToggle("editvae", stage.vae !== null && stage.vae !== undefined && `${stage.vae}` !== "");
+
             const applyElem = document.getElementById(`${prefix}applyafter`);
             if (applyElem) {
                 this._cleanApplyAfterOptions(applyElem, stageIdSet, stageId);
@@ -467,14 +496,14 @@ class Base2EditStageEditor
             name: "Edit CFG Scale",
             description: "CFG Scale for this edit stage.",
             type: "decimal",
-            default: `${stage.cfgScale}`,
+            default: `${stage.cfgScale ?? rootStage.cfg.value}`,
             min: rootStage.cfg.min,
             max: rootStage.cfg.max,
             step: rootStage.cfg.step,
             view_min: rootStage.cfg.view_min,
             view_max: rootStage.cfg.view_max,
             view_type: "slider",
-            toggleable: false,
+            toggleable: true,
         }, prefix));
         parts.push(getHtmlForParam({
             id: "editsampler",
@@ -483,8 +512,8 @@ class Base2EditStageEditor
             type: "dropdown",
             values: Array.from(rootStage.sampler.options).map(o => o.value),
             value_names: Array.from(rootStage.sampler.options).map(o => o.label),
-            default: stage.sampler,
-            toggleable: false,
+            default: stage.sampler ?? rootStage.sampler.value,
+            toggleable: true,
         }, prefix));
         parts.push(getHtmlForParam({
             id: "editscheduler",
@@ -493,8 +522,8 @@ class Base2EditStageEditor
             type: "dropdown",
             values: Array.from(rootStage.scheduler.options).map(o => o.value),
             value_names: Array.from(rootStage.scheduler.options).map(o => o.label),
-            default: stage.scheduler,
-            toggleable: false,
+            default: stage.scheduler ?? rootStage.scheduler.value,
+            toggleable: true,
         }, prefix));
         parts.push(getHtmlForParam({
             id: "editvae",
@@ -504,8 +533,8 @@ class Base2EditStageEditor
             subtype: "VAE",
             values: Array.from(rootStage.vae.options).map(o => o.value),
             value_names: Array.from(rootStage.vae.options).map(o => o.label),
-            default: stage.vae,
-            toggleable: false,
+            default: stage.vae ?? rootStage.vae.value,
+            toggleable: true,
         }, prefix));
 
         return parts;
@@ -555,15 +584,20 @@ class Base2EditStageEditor
             return el.value;
         };
 
+        const isEnabled = (id) => {
+            const t = document.getElementById(`${prefix}${id}_toggle`);
+            return !t || !!t.checked;
+        };
+
         stage.applyAfter = `${val("applyafter") || stage.applyAfter}`;
         stage.keepPreEditImage = !!val("keeppreeditimage", true);
         stage.control = parseFloat(val("editcontrol") || stage.control);
         stage.model = `${val("editmodel") || stage.model}`;
-        stage.vae = `${val("editvae") || stage.vae}`;
         stage.steps = parseInt(val("editsteps") || stage.steps);
-        stage.cfgScale = parseFloat(val("editcfgscale") || stage.cfgScale);
-        stage.sampler = `${val("editsampler") || stage.sampler}`;
-        stage.scheduler = `${val("editscheduler") || stage.scheduler}`;
+        stage.vae = isEnabled("editvae") ? `${val("editvae") || stage.vae}` : null;
+        stage.cfgScale = isEnabled("editcfgscale") ? parseFloat(val("editcfgscale") || stage.cfgScale) : null;
+        stage.sampler = isEnabled("editsampler") ? `${val("editsampler") || stage.sampler}` : null;
+        stage.scheduler = isEnabled("editscheduler") ? `${val("editscheduler") || stage.scheduler}` : null;
     };
 }
 

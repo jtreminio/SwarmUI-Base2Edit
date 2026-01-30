@@ -175,9 +175,15 @@ public partial class EditStage
             g.UserInput.Set(Base2EditExtension.EditModel.Type, stage.Model);
         }
 
+        // Per-stage optional overrides:
+        // If a stage doesn't specify a value, clear any prior stage's override so inheritance can apply
         if (!string.IsNullOrWhiteSpace(stage.Vae))
         {
             g.UserInput.Set(Base2EditExtension.EditVAE.Type, stage.Vae);
+        }
+        else
+        {
+            g.UserInput.Remove(Base2EditExtension.EditVAE);
         }
 
         if (stage.Steps.HasValue)
@@ -189,15 +195,27 @@ public partial class EditStage
         {
             g.UserInput.Set(Base2EditExtension.EditCFGScale.Type, $"{stage.CfgScale.Value}");
         }
+        else
+        {
+            g.UserInput.Remove(Base2EditExtension.EditCFGScale);
+        }
 
         if (!string.IsNullOrWhiteSpace(stage.Sampler))
         {
             g.UserInput.Set(Base2EditExtension.EditSampler.Type, stage.Sampler);
         }
+        else
+        {
+            g.UserInput.Remove(Base2EditExtension.EditSampler);
+        }
 
         if (!string.IsNullOrWhiteSpace(stage.Scheduler))
         {
             g.UserInput.Set(Base2EditExtension.EditScheduler.Type, stage.Scheduler);
+        }
+        else
+        {
+            g.UserInput.Remove(Base2EditExtension.EditScheduler);
         }
     }
 }

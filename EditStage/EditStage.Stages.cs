@@ -66,17 +66,22 @@ public partial class EditStage
     {
         // Use the existing root-level params as "Edit Stage 0".
         // This keeps single-stage and multi-stage behavior consistent and makes stage0 the canonical source of truth.
+        double? cfg = g.UserInput.TryGet(Base2EditExtension.EditCFGScale, out double c) ? c : null;
+        string sampler = g.UserInput.TryGet(Base2EditExtension.EditSampler, out string s) ? s : null;
+        string scheduler = g.UserInput.TryGet(Base2EditExtension.EditScheduler, out string sch) ? sch : null;
+        string vae = g.UserInput.TryGet(Base2EditExtension.EditVAE, out T2IModel v) ? v?.Name : null;
+
         return new StageSpec(
             Id: 0,
             ApplyAfter: g.UserInput.Get(Base2EditExtension.ApplyEditAfter),
             KeepPreEditImage: g.UserInput.Get(Base2EditExtension.KeepPreEditImage),
             Control: g.UserInput.Get(Base2EditExtension.EditControl),
             Model: g.UserInput.Get(Base2EditExtension.EditModel),
-            Vae: g.UserInput.GetString(Base2EditExtension.EditVAE),
             Steps: g.UserInput.Get(Base2EditExtension.EditSteps),
-            CfgScale: g.UserInput.Get(Base2EditExtension.EditCFGScale),
-            Sampler: g.UserInput.Get(Base2EditExtension.EditSampler),
-            Scheduler: g.UserInput.Get(Base2EditExtension.EditScheduler)
+            Vae: vae,
+            CfgScale: cfg,
+            Sampler: sampler,
+            Scheduler: scheduler
         );
     }
 

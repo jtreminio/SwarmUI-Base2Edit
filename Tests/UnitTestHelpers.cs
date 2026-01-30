@@ -32,6 +32,61 @@ internal static class UnitTestStubs
             GetValues: (_) => ["cpu"]
         ));
     }
+
+    /// <summary>
+    /// Base2Edit stage0 inheritance reads <see cref="ComfyUIBackendExtension.SamplerParam"/> and friends directly.
+    /// Unit tests do not initialize the full ComfyUIBackendExtension, so stub-register these params as needed.
+    /// </summary>
+    public static void EnsureComfySamplerSchedulerRegistered()
+    {
+        if (ComfyUIBackendExtension.SamplerParam is not null
+            && ComfyUIBackendExtension.SchedulerParam is not null
+            && ComfyUIBackendExtension.RefinerSamplerParam is not null
+            && ComfyUIBackendExtension.RefinerSchedulerParam is not null)
+        {
+            return;
+        }
+
+        ComfyUIBackendExtension.SamplerParam ??= T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Sampler (UnitTest Stub)",
+            Description: "Stub param registered only for unit tests.",
+            Default: "euler",
+            FeatureFlag: "comfyui",
+            Group: T2IParamTypes.GroupSampling,
+            Toggleable: true,
+            GetValues: (_) => ["euler", "dpmpp_2m"]
+        ));
+
+        ComfyUIBackendExtension.SchedulerParam ??= T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Scheduler (UnitTest Stub)",
+            Description: "Stub param registered only for unit tests.",
+            Default: "normal",
+            FeatureFlag: "comfyui",
+            Group: T2IParamTypes.GroupSampling,
+            Toggleable: true,
+            GetValues: (_) => ["normal", "karras"]
+        ));
+
+        ComfyUIBackendExtension.RefinerSamplerParam ??= T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Refiner Sampler (UnitTest Stub)",
+            Description: "Stub param registered only for unit tests.",
+            Default: "euler",
+            FeatureFlag: "comfyui",
+            Group: T2IParamTypes.GroupSampling,
+            Toggleable: true,
+            GetValues: (_) => ["euler", "dpmpp_2m"]
+        ));
+
+        ComfyUIBackendExtension.RefinerSchedulerParam ??= T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Refiner Scheduler (UnitTest Stub)",
+            Description: "Stub param registered only for unit tests.",
+            Default: "normal",
+            FeatureFlag: "comfyui",
+            Group: T2IParamTypes.GroupSampling,
+            Toggleable: true,
+            GetValues: (_) => ["normal", "karras"]
+        ));
+    }
 }
 
 /// <summary>

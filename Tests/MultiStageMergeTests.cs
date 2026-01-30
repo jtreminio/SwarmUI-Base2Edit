@@ -121,6 +121,64 @@ public class MultiStageMergeTests
     }
 
     [Fact]
+    public void Stage0_inherits_base_cfg_sampler_scheduler_when_unset_and_edit_model_is_use_base()
+    {
+        using var _ = new SwarmUiTestContext();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        T2IParamInput input = BuildInputWithStage0("Base");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+
+        // Do NOT set Base2EditExtension.EditCFGScale/EditSampler/EditScheduler
+        // Set base sampling params and assert stage0 inherits them
+        input.Set(T2IParamTypes.CFGScale, 4.5);
+        input.Set(ComfyUIBackendExtension.SamplerParam, "dpmpp_2m");
+        input.Set(ComfyUIBackendExtension.SchedulerParam, "karras");
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
+        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+        JObject s0Inputs = (JObject)stage0Sampler.Node["inputs"];
+
+        Assert.Equal(4.5, (double)s0Inputs["cfg"]);
+        Assert.Equal("dpmpp_2m", $"{s0Inputs["sampler_name"]}");
+        Assert.Equal("karras", $"{s0Inputs["scheduler"]}");
+    }
+
+    [Fact]
+    public void Stage0_inherits_refiner_cfg_sampler_scheduler_when_unset_and_edit_model_is_use_refiner_before_refiner_phase()
+    {
+        using var _ = new SwarmUiTestContext();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        // Apply-after-base (non-final phase), but edit model selection is "(Use Refiner)"
+        // Unset edit params should inherit refiner overrides rather than base defaults
+        T2IParamInput input = BuildInputWithStage0("Base");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
+
+        input.Set(T2IParamTypes.CFGScale, 4.0);
+        input.Set(T2IParamTypes.RefinerCFGScale, 9.0);
+
+        input.Set(ComfyUIBackendExtension.SamplerParam, "euler");
+        input.Set(ComfyUIBackendExtension.SchedulerParam, "normal");
+        input.Set(ComfyUIBackendExtension.RefinerSamplerParam, "dpmpp_2m");
+        input.Set(ComfyUIBackendExtension.RefinerSchedulerParam, "karras");
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
+        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+        JObject s0Inputs = (JObject)stage0Sampler.Node["inputs"];
+
+        Assert.Equal(9.0, (double)s0Inputs["cfg"]);
+        Assert.Equal("dpmpp_2m", $"{s0Inputs["sampler_name"]}");
+        Assert.Equal("karras", $"{s0Inputs["scheduler"]}");
+    }
+
+    [Fact]
     public void Mixed_apply_after_stages_generate_expected_sampler_settings_and_final_decode()
     {
         // stage0: Base hook, stage1: Refiner hook
@@ -177,6 +235,7 @@ public class MultiStageMergeTests
     {
         using var _ = new SwarmUiTestContext();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
 
         var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
         var vaeHandler = new T2IModelHandler { ModelType = "VAE" };
@@ -243,6 +302,163 @@ public class MultiStageMergeTests
 
         // The stage1 sampler should take its latent_image from the VAEEncode output
         Assert.True(JToken.DeepEquals(s1Inputs["latent_image"], new JArray(vaeEncode.Id, 0)));
+    }
+
+    [Fact]
+    public void Stage0_inherits_refiner_vae_when_unset_and_edit_model_is_use_refiner_before_refiner_phase()
+    {
+        using var _ = new SwarmUiTestContext();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
+        var vaeHandler = new T2IModelHandler { ModelType = "VAE" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler,
+            ["VAE"] = vaeHandler
+        };
+
+        var baseModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+        sdHandler.Models[baseModel.Name] = baseModel;
+
+        var refinerVae = new T2IModel(vaeHandler, "/tmp", "/tmp/UnitTest_RefinerVae.safetensors", "UnitTest_RefinerVae.safetensors");
+        vaeHandler.Models[refinerVae.Name] = refinerVae;
+
+        T2IParamInput input = BuildInputWithStage0("Base");
+        input.Set(T2IParamTypes.Model, baseModel);
+        input.Set(T2IParamTypes.RefinerModel, baseModel);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
+
+        // Do NOT set Base2EditExtension.EditVAE
+        // Set a refiner VAE override and expect stage0 to inherit it when "(Use Refiner)" is selected pre-refiner
+        input.Set(T2IParamTypes.RefinerVAE, refinerVae);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        WorkflowNode vaeLoader = WorkflowUtils.NodesOfType(workflow, "VAELoader")
+            .Single(n => $"{((JObject)n.Node["inputs"])["vae_name"]}".Contains("UnitTest_RefinerVae.safetensors"));
+
+        WorkflowNode vaeEncode = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
+            .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
+
+        Assert.NotNull(vaeEncode.Node);
+    }
+
+    [Fact]
+    public void Stage1_inherits_base_cfg_sampler_scheduler_when_unset_even_if_stage0_set_explicit_values()
+    {
+        using var _ = new SwarmUiTestContext();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        // Stage0 explicitly sets edit cfg/sampler/scheduler. Stage1 does NOT set them
+        // Stage1 should inherit from base
+        T2IParamInput input = BuildInputWithStage0("Base");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditCFGScale, 12.0);
+        input.Set(Base2EditExtension.EditSampler, "euler");
+        input.Set(Base2EditExtension.EditScheduler, "normal");
+        input.Set(T2IParamTypes.CFGScale, 4.5);
+        input.Set(ComfyUIBackendExtension.SamplerParam, "dpmpp_2m");
+        input.Set(ComfyUIBackendExtension.SchedulerParam, "karras");
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseBase,
+                ["steps"] = 5
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        Assert.Equal(2, refs.Count);
+
+        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
+        WorkflowNode sampler0 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+
+        WorkflowNode ref1 = refs.Single(n => n.Id != ref0.Id);
+        WorkflowNode sampler1 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref1);
+
+        JObject s0Inputs = (JObject)sampler0.Node["inputs"];
+        JObject s1Inputs = (JObject)sampler1.Node["inputs"];
+
+        Assert.Equal(12.0, (double)s0Inputs["cfg"]);
+        Assert.Equal("euler", $"{s0Inputs["sampler_name"]}");
+        Assert.Equal("normal", $"{s0Inputs["scheduler"]}");
+
+        Assert.Equal(4.5, (double)s1Inputs["cfg"]);
+        Assert.Equal("dpmpp_2m", $"{s1Inputs["sampler_name"]}");
+        Assert.Equal("karras", $"{s1Inputs["scheduler"]}");
+    }
+
+    [Fact]
+    public void Stage1_inherits_refiner_cfg_sampler_scheduler_and_vae_when_unset_and_stage1_model_is_use_refiner()
+    {
+        using var _ = new SwarmUiTestContext();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
+        var vaeHandler = new T2IModelHandler { ModelType = "VAE" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler,
+            ["VAE"] = vaeHandler
+        };
+        var baseModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+        sdHandler.Models[baseModel.Name] = baseModel;
+        var refinerVae = new T2IModel(vaeHandler, "/tmp", "/tmp/UnitTest_RefinerVae.safetensors", "UnitTest_RefinerVae.safetensors");
+        vaeHandler.Models[refinerVae.Name] = refinerVae;
+
+        T2IParamInput input = BuildInputWithStage0("Base");
+        input.Set(T2IParamTypes.Model, baseModel);
+        input.Set(T2IParamTypes.RefinerModel, baseModel);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditCFGScale, 12.0);
+        input.Set(T2IParamTypes.RefinerCFGScale, 9.0);
+        input.Set(ComfyUIBackendExtension.RefinerSamplerParam, "dpmpp_2m");
+        input.Set(ComfyUIBackendExtension.RefinerSchedulerParam, "karras");
+        input.Set(T2IParamTypes.RefinerVAE, refinerVae);
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["steps"] = 5
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        Assert.Equal(2, refs.Count);
+
+        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
+        WorkflowNode sampler0 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+        WorkflowNode ref1 = refs.Single(n => n.Id != ref0.Id);
+        WorkflowNode sampler1 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref1);
+
+        JObject s1Inputs = (JObject)sampler1.Node["inputs"];
+        Assert.Equal(9.0, (double)s1Inputs["cfg"]);
+        Assert.Equal("dpmpp_2m", $"{s1Inputs["sampler_name"]}");
+        Assert.Equal("karras", $"{s1Inputs["scheduler"]}");
+
+        WorkflowNode vaeLoader = WorkflowUtils.NodesOfType(workflow, "VAELoader")
+            .Single(n => $"{((JObject)n.Node["inputs"])["vae_name"]}".Contains("UnitTest_RefinerVae.safetensors"));
+        WorkflowNode vaeEncode = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
+            .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
+        Assert.NotNull(vaeEncode.Node);
     }
 
     [Fact]
