@@ -274,7 +274,7 @@ class StageEditor
         }
 
         const stageIds = [0, ...stages.map((_, i) => i + 1)];
-        const applyElem = document.getElementById(`${prefix}applyafter`) as HTMLSelectElement | null;
+        const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
         if (applyElem) {
             this.cleanApplyAfterOptions(applyElem, stageIds, stageId);
             this.validateApplyAfter(prefix, stageIds, stageId);
