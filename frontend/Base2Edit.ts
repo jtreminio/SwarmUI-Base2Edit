@@ -1,3 +1,5 @@
+/// <reference path="./StageEditor.ts" />
+
 class Base2Edit
 {
     private base2editButtonLabel = "Base2Edit";
@@ -5,9 +7,9 @@ class Base2Edit
     private stageEditor: StageEditor;
     private imageButtonsWrapped = false;
 
-    public constructor()
+    public constructor(stageEditor: StageEditor)
     {
-        this.stageEditor = new StageEditor();
+        this.stageEditor = stageEditor;
         this.registerEditPromptPrefix();
         window.base2editRunEditOnlyFromImage = this.runEditOnlyFromImage.bind(this);
         this.waitForButtons();
@@ -146,4 +148,4 @@ class Base2Edit
     }
 }
 
-new Base2Edit();
+new Base2Edit(new StageEditor());
