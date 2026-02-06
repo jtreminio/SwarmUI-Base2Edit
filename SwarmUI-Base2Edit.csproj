@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <AssemblyName>SwarmUI-Base2Edit</AssemblyName>
+    <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
 
   <Import Project="../../SwarmUI.extension.props" />
