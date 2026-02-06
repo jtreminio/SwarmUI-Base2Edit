@@ -36,6 +36,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="bin/**/*.cs" />
+    <Compile Remove="obj/**/*.cs" />
     <Compile Remove="**/._*" />
   </ItemGroup>
 
