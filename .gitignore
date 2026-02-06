@@ -11,3 +11,7 @@ Properties/
 .aspnet/
 .local/
 **/Directory.Build.local.props
+
+# Node / TypeScript
+node_modules/
+*.js.map

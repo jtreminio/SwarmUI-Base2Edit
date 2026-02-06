@@ -1,0 +1,13 @@
+{
+  "name": "swarmui-base2edit-extension",
+  "version": "1.0.0",
+  "description": "Base2Edit extension for SwarmUI - multi-stage edit workflows",
+  "private": true,
+  "scripts": {
+    "build": "npm run clean && node node_modules/typescript/bin/tsc",
+    "clean": "rm -f Assets/base2edit.js Assets/base2edit.js.map"
+  },
+  "devDependencies": {
+    "typescript": "^5.9"
+  }
+}
