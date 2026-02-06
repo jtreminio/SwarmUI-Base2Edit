@@ -10,4 +10,4 @@ Properties/
 .dotnet/
 .aspnet/
 .local/
-Directory.Build.props
+**/Directory.Build.local.props
