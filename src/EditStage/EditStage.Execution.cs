@@ -7,13 +7,13 @@ namespace Base2Edit;
 
 public partial class EditStage
 {
-    private static void RunEditStage(WorkflowGenerator g, bool isFinalStep, int stageIndex)
+    private static void RunEditStage(WorkflowGenerator g, bool isFinalStep, int stageIndex, bool trackResolvedModelForMetadata = true)
     {
         var prompts = new EditPrompts(
             ExtractPrompt(g.UserInput.Get(T2IParamTypes.Prompt, ""), stageIndex),
             ExtractPrompt(g.UserInput.Get(T2IParamTypes.NegativePrompt, ""), stageIndex)
         );
-        var modelState = PrepareEditModelAndVae(g, isFinalStep, stageIndex);
+        var modelState = PrepareEditModelAndVae(g, isFinalStep, stageIndex, trackResolvedModelForMetadata);
         string modelSelection = g.UserInput.Get(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
@@ -117,7 +117,7 @@ public partial class EditStage
         return g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, "normal");
     }
 
-    private static EditModelState PrepareEditModelAndVae(WorkflowGenerator g, bool isFinalStep, int stageIndex)
+    private static EditModelState PrepareEditModelAndVae(WorkflowGenerator g, bool isFinalStep, int stageIndex, bool trackResolvedModelForMetadata)
     {
         int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
         JArray preEditVae = g.FinalVae;
@@ -128,6 +128,10 @@ public partial class EditStage
         if (!ModelPrep.TryResolveEditModel(g, Base2EditExtension.EditModel, out T2IModel editModel, out var mustReencode))
         {
             return new EditModelState(model, clip, vae, preEditVae, mustReencode);
+        }
+        if (trackResolvedModelForMetadata)
+        {
+            g.UserInput.Set(Base2EditExtension.EditModelResolvedForMetadata, editModel);
         }
 
         // - Prompt selection: if there is no <edit> / <edit[n]> section, we fall back to the global prompt text

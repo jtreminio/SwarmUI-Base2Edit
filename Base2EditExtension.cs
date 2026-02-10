@@ -20,12 +20,14 @@ public class Base2EditExtension : Extension
     public static T2IRegisteredParam<string> ApplyEditAfter;
     public static T2IRegisteredParam<string> EditStages;
     public static T2IRegisteredParam<string> EditModel;
+    public static T2IRegisteredParam<T2IModel> EditModelResolvedForMetadata;
     public static T2IRegisteredParam<T2IModel> EditVAE;
     public static T2IRegisteredParam<int> EditSteps;
     public static T2IRegisteredParam<double> EditCFGScale;
     public static T2IRegisteredParam<string> EditSampler;
     public static T2IRegisteredParam<string> EditScheduler;
     public static T2IRegisteredParam<double> EditControl;
+    private static bool _postGenerateHookRegistered;
 
     public override void OnPreInit()
     {
@@ -52,8 +54,27 @@ public class Base2EditExtension : Extension
     {
         Logs.Info("Base2Edit Extension initializing...");
         RegisterParameters();
+        if (!_postGenerateHookRegistered)
+        {
+            T2IEngine.PostGenerateEvent += HandlePostGenerateMetadata;
+            _postGenerateHookRegistered = true;
+        }
         WorkflowGenerator.AddStep(g => EditStage.Run(g, isFinalStep: false), -4.2);
         WorkflowGenerator.AddStep(g => EditStage.Run(g, isFinalStep: true), 7);
+    }
+
+    private static void HandlePostGenerateMetadata(T2IEngine.PostGenerationEventParams evt)
+    {
+        if (evt?.UserInput is null || EditModel?.Type is null || EditModelResolvedForMetadata is null)
+        {
+            return;
+        }
+        if (!evt.UserInput.TryGet(EditModelResolvedForMetadata, out T2IModel resolvedModel) || resolvedModel is null)
+        {
+            return;
+        }
+        evt.UserInput.InternalSet.ValuesInput[EditModel.Type.ID] = resolvedModel;
+        evt.UserInput.Remove(EditModelResolvedForMetadata);
     }
 
     private void RegisterParameters()
@@ -124,6 +145,23 @@ public class Base2EditExtension : Extension
             FeatureFlag: "comfyui",
             ChangeWeight: 9,
             DoNotPreview: true
+        ));
+
+        EditModelResolvedForMetadata = T2IParamTypes.Register<T2IModel>(new T2IParamType(
+            Name: "Edit Model Resolved",
+            Description: "Internal Base2Edit metadata tracker for resolved edit model hash.",
+            Default: "",
+            IgnoreIf: "",
+            Subtype: "Stable-Diffusion",
+            Group: Base2EditGroup,
+            FeatureFlag: "comfyui",
+            VisibleNormally: false,
+            ExtraHidden: true,
+            IsAdvanced: true,
+            HideFromMetadata: true,
+            DoNotPreview: true,
+            IntentionalUnused: true,
+            Nonreusable: true
         ));
 
         EditSteps = T2IParamTypes.Register<int>(new T2IParamType(
