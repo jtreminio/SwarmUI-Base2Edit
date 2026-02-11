@@ -36,6 +36,7 @@ public partial class EditStage
             Steps: g.UserInput.Get(Base2EditExtension.EditSteps, 20),
             Cfg: ResolveInheritedCfg(g, modelSelection),
             Control: g.UserInput.Get(Base2EditExtension.EditControl, 1.0),
+            RefineOnly: g.UserInput.Get(Base2EditExtension.EditRefineOnly, false),
             Guidance: g.UserInput.Get(T2IParamTypes.FluxGuidanceScale, -1),
             Seed: g.UserInput.Get(T2IParamTypes.Seed) + EditSeedOffset + stageIndex,
             Sampler: ResolveInheritedSampler(g, modelSelection),
@@ -525,14 +526,19 @@ public partial class EditStage
     )
     {
         string posCondNode = CreateConditioningNode(g, clip, prompts.Positive, editParams);
-        string refLatentNode = g.CreateNode("ReferenceLatent", new JObject()
+        JArray positiveConditioning = [posCondNode, 0];
+        if (!editParams.RefineOnly)
         {
-            ["conditioning"] = new JArray { posCondNode, 0 },
-            ["latent"] = g.FinalSamples
-        });
+            string refLatentNode = g.CreateNode("ReferenceLatent", new JObject()
+            {
+                ["conditioning"] = new JArray { posCondNode, 0 },
+                ["latent"] = g.FinalSamples
+            });
+            positiveConditioning = [refLatentNode, 0];
+        }
         string negCondNode = CreateConditioningNode(g, clip, prompts.Negative, editParams);
 
-        return new EditConditioning([refLatentNode, 0], [negCondNode, 0]);
+        return new EditConditioning(positiveConditioning, [negCondNode, 0]);
     }
 
     private static string CreateConditioningNode(

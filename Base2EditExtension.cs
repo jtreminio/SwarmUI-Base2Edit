@@ -17,6 +17,7 @@ public class Base2EditExtension : Extension
     public static int EditSectionIdForStage(int stageIndex) => SectionID_Edit + 1 + stageIndex;
     public static T2IParamGroup Base2EditGroup;
     public static T2IRegisteredParam<bool> KeepPreEditImage;
+    public static T2IRegisteredParam<bool> EditRefineOnly;
     public static T2IRegisteredParam<string> ApplyEditAfter;
     public static T2IRegisteredParam<string> EditStages;
     public static T2IRegisteredParam<string> EditModel;
@@ -97,6 +98,15 @@ public class Base2EditExtension : Extension
             Default: "false",
             Group: Base2EditGroup,
             OrderPriority: 1,
+            FeatureFlag: "comfyui"
+        ));
+
+        EditRefineOnly = T2IParamTypes.Register<bool>(new T2IParamType(
+            Name: "Refine Only",
+            Description: "When enabled, skips ReferenceLatent for this edit stage and runs a plain refinement pass.",
+            Default: "false",
+            Group: Base2EditGroup,
+            OrderPriority: 1.5,
             FeatureFlag: "comfyui"
         ));
 

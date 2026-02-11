@@ -4,6 +4,7 @@ interface RootStage {
     vae: HTMLSelectElement;
     sampler: HTMLSelectElement;
     scheduler: HTMLSelectElement;
+    refineOnly: HTMLInputElement;
     control: HTMLInputElement;
     steps: HTMLInputElement;
     cfg: HTMLInputElement;
@@ -12,6 +13,7 @@ interface RootStage {
 interface Stage {
     applyAfter: string;
     keepPreEditImage: boolean;
+    refineOnly?: boolean;
     control: number;
     model: string;
     steps: number;
@@ -82,6 +84,7 @@ class StageEditor
             vae: Utils.getSelectElement("input_editvae"),
             sampler: Utils.getSelectElement("input_editsampler"),
             scheduler: Utils.getSelectElement("input_editscheduler"),
+            refineOnly: Utils.getInputElement("input_refineonly"),
             control: Utils.getInputElement("input_editcontrol"),
             steps: Utils.getInputElement("input_editsteps"),
             cfg: Utils.getInputElement("input_editcfgscale"),
@@ -107,6 +110,7 @@ class StageEditor
         return {
             applyAfter: applyAfter,
             keepPreEditImage: Utils.getInputElement("input_keeppreeditimage").checked,
+            refineOnly: Utils.getInputElement("input_refineonly").checked,
             control: parseFloat(Utils.getInputElement("input_editcontrol").value),
             model: Utils.getInputElement("input_editmodel").value,
             steps: parseInt(Utils.getInputElement("input_editsteps").value),
@@ -474,6 +478,16 @@ class StageEditor
             feature_flag: null,
         }, prefix));
         parts.push(getHtmlForParam({
+            id: "editrefineonly",
+            name: "Refine Only",
+            description: "When enabled, this stage skips ReferenceLatent and runs as a plain refinement pass.",
+            type: "boolean",
+            default: `${stage.refineOnly ?? rootStage.refineOnly.checked}`,
+            toggleable: false,
+            view_type: "normal",
+            feature_flag: null,
+        }, prefix));
+        parts.push(getHtmlForParam({
             id: "editcontrol",
             name: "Edit Control",
             description: "Controls how much of the edit sampling is applied.",
@@ -611,6 +625,7 @@ class StageEditor
 
         stage.applyAfter = `${val("applyafter") || stage.applyAfter}`;
         stage.keepPreEditImage = !!val("keeppreeditimage", true);
+        stage.refineOnly = !!val("editrefineonly", true);
         stage.control = parseFloat(String(val("editcontrol") ?? stage.control));
         stage.model = `${val("editmodel") || stage.model}`;
         stage.steps = parseInt(String(val("editsteps") || stage.steps), 10);

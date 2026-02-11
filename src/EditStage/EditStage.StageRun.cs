@@ -103,6 +103,7 @@ public partial class EditStage
     {
         private readonly WorkflowGenerator _g;
         private readonly bool _hadKeep;
+        private readonly bool _hadRefineOnly;
         private readonly bool _hadApplyAfter;
         private readonly bool _hadControl;
         private readonly bool _hadModel;
@@ -112,6 +113,7 @@ public partial class EditStage
         private readonly bool _hadSampler;
         private readonly bool _hadScheduler;
         private readonly bool _keep;
+        private readonly bool _refineOnly;
         private readonly string _applyAfter;
         private readonly double _control;
         private readonly string _model;
@@ -125,6 +127,7 @@ public partial class EditStage
         {
             _g = g;
             _hadKeep = g.UserInput.TryGet(Base2EditExtension.KeepPreEditImage, out _keep);
+            _hadRefineOnly = g.UserInput.TryGet(Base2EditExtension.EditRefineOnly, out _refineOnly);
             _hadApplyAfter = g.UserInput.TryGet(Base2EditExtension.ApplyEditAfter, out _applyAfter);
             _hadControl = g.UserInput.TryGet(Base2EditExtension.EditControl, out _control);
             _hadModel = g.UserInput.TryGet(Base2EditExtension.EditModel, out _model);
@@ -138,6 +141,7 @@ public partial class EditStage
         public void Restore()
         {
             if (_hadKeep) _g.UserInput.Set(Base2EditExtension.KeepPreEditImage, _keep); else _g.UserInput.Remove(Base2EditExtension.KeepPreEditImage);
+            if (_hadRefineOnly) _g.UserInput.Set(Base2EditExtension.EditRefineOnly, _refineOnly); else _g.UserInput.Remove(Base2EditExtension.EditRefineOnly);
             if (_hadApplyAfter) _g.UserInput.Set(Base2EditExtension.ApplyEditAfter, _applyAfter); else _g.UserInput.Remove(Base2EditExtension.ApplyEditAfter);
             if (_hadControl) _g.UserInput.Set(Base2EditExtension.EditControl, _control); else _g.UserInput.Remove(Base2EditExtension.EditControl);
             if (_hadModel) _g.UserInput.Set(Base2EditExtension.EditModel, _model); else _g.UserInput.Remove(Base2EditExtension.EditModel);
@@ -158,6 +162,11 @@ public partial class EditStage
         if (stage.KeepPreEditImage.HasValue)
         {
             g.UserInput.Set(Base2EditExtension.KeepPreEditImage.Type, stage.KeepPreEditImage.Value ? "true" : "false");
+        }
+
+        if (stage.RefineOnly.HasValue)
+        {
+            g.UserInput.Set(Base2EditExtension.EditRefineOnly.Type, stage.RefineOnly.Value ? "true" : "false");
         }
 
         if (!string.IsNullOrWhiteSpace(stage.ApplyAfter))

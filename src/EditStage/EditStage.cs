@@ -21,6 +21,7 @@ internal record EditParameters(
     int Steps,
     double Cfg,
     double Control,
+    bool RefineOnly,
     double Guidance,
     long Seed,
     string Sampler,

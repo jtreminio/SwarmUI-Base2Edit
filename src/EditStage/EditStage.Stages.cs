@@ -11,6 +11,7 @@ public partial class EditStage
         int? Id,
         string ApplyAfter,
         bool? KeepPreEditImage,
+        bool? RefineOnly,
         double? Control,
         string Model,
         string Vae,
@@ -24,6 +25,7 @@ public partial class EditStage
         int Id,
         string ApplyAfter,
         bool? KeepPreEditImage,
+        bool? RefineOnly,
         double? Control,
         string Model,
         string Vae,
@@ -43,10 +45,12 @@ public partial class EditStage
 
     private static List<StageSpec> BuildUnifiedStages(WorkflowGenerator g, List<JsonStageSpec> jsonStages)
     {
-        static StageSpec toStage(JsonStageSpec s, int id) => new(
+        bool rootRefineOnly = g.UserInput.Get(Base2EditExtension.EditRefineOnly, false);
+        static StageSpec toStage(JsonStageSpec s, int id, bool defaultRefineOnly) => new(
             Id: id,
             ApplyAfter: s.ApplyAfter,
             KeepPreEditImage: s.KeepPreEditImage,
+            RefineOnly: s.RefineOnly ?? defaultRefineOnly,
             Control: s.Control,
             Model: s.Model,
             Vae: s.Vae,
@@ -57,7 +61,7 @@ public partial class EditStage
         );
 
         List<JsonStageSpec> additional = [.. jsonStages ?? []];
-        List<StageSpec> others = [.. additional.Select((s, idx) => toStage(s, idx + 1))];
+        List<StageSpec> others = [.. additional.Select((s, idx) => toStage(s, idx + 1, rootRefineOnly))];
 
         return [BuildStage0(g), .. others];
     }
@@ -75,6 +79,7 @@ public partial class EditStage
             Id: 0,
             ApplyAfter: g.UserInput.Get(Base2EditExtension.ApplyEditAfter),
             KeepPreEditImage: g.UserInput.Get(Base2EditExtension.KeepPreEditImage),
+            RefineOnly: g.UserInput.Get(Base2EditExtension.EditRefineOnly),
             Control: g.UserInput.Get(Base2EditExtension.EditControl),
             Model: g.UserInput.Get(Base2EditExtension.EditModel),
             Steps: g.UserInput.Get(Base2EditExtension.EditSteps),
@@ -185,6 +190,7 @@ public partial class EditStage
                     Id: getIntRaw("id"),
                     ApplyAfter: getStr("applyAfter"),
                     KeepPreEditImage: getBool("keepPreEditImage"),
+                    RefineOnly: getBool("refineOnly"),
                     Control: getDouble("control"),
                     Model: getStr("model"),
                     Vae: getStr("vae"),
