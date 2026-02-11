@@ -80,6 +80,27 @@ public class WorkflowTests
     private static WorkflowNode RequireSingleSampler(JObject workflow) =>
         RequireSingleNodeOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
 
+    private static List<string> CollectEncoderPrompts(JObject workflow)
+    {
+        IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
+        Assert.NotEmpty(encoders);
+
+        List<string> prompts = [];
+        foreach (WorkflowNode enc in encoders)
+        {
+            if (enc.Node?["inputs"] is not JObject inputs)
+            {
+                continue;
+            }
+            if (inputs.TryGetValue("prompt", out JToken pTok) && pTok is JValue pVal && !string.IsNullOrWhiteSpace($"{pVal}"))
+            {
+                prompts.Add($"{pVal}");
+            }
+        }
+
+        return prompts;
+    }
+
     private static T2IParamInput BuildEditInput(string applyAfter, bool enableBase2EditGroup = true, string prompt = "global <edit>do the edit")
     {
         _ = WorkflowTestHarness.Base2EditSteps();
@@ -228,21 +249,7 @@ public class WorkflowTests
         Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
         Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
 
-        IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
-        Assert.NotEmpty(encoders);
-
-        List<string> prompts = [];
-        foreach (WorkflowNode enc in encoders)
-        {
-            if (enc.Node?["inputs"] is not JObject inputs)
-            {
-                continue;
-            }
-            if (inputs.TryGetValue("prompt", out JToken pTok) && pTok is JValue pVal && !string.IsNullOrWhiteSpace($"{pVal}"))
-            {
-                prompts.Add($"{pVal}");
-            }
-        }
+        List<string> prompts = CollectEncoderPrompts(workflow);
 
         Assert.Contains(prompts, p => p.Contains("global") && !p.Contains("do stage1 edit"));
         Assert.DoesNotContain(prompts, p => p.Contains("do stage1 edit"));
@@ -267,23 +274,77 @@ public class WorkflowTests
         Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
         Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
 
-        IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
-        Assert.NotEmpty(encoders);
-
-        List<string> prompts = [];
-        foreach (WorkflowNode enc in encoders)
-        {
-            if (enc.Node?["inputs"] is not JObject inputs)
-            {
-                continue;
-            }
-            if (inputs.TryGetValue("prompt", out JToken pTok) && pTok is JValue pVal && !string.IsNullOrWhiteSpace($"{pVal}"))
-            {
-                prompts.Add($"{pVal}");
-            }
-        }
+        List<string> prompts = CollectEncoderPrompts(workflow);
 
         Assert.Contains(prompts, p => p.Contains("global prompt only"));
+    }
+
+    [Fact]
+    public void B2EPrompt_base_reference_uses_base_prompt_text()
+    {
+        T2IParamInput input = BuildEditInput(
+            "Base",
+            enableBase2EditGroup: true,
+            prompt: "global prompt <base>base prompt <refiner>refiner prompt <edit[0]><b2eprompt[base]>"
+        );
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        List<string> prompts = CollectEncoderPrompts(workflow);
+
+        Assert.Contains(prompts, p => p.Contains("base prompt"));
+        Assert.DoesNotContain(prompts, p => p.Contains("global prompt"));
+        Assert.DoesNotContain(prompts, p => p.Contains("refiner prompt"));
+        Assert.DoesNotContain(prompts, p => p.Contains("<b2eprompt", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void B2EPrompt_named_stage_reference_falls_back_to_global_when_stage_missing()
+    {
+        T2IParamInput input = BuildEditInput(
+            "Base",
+            enableBase2EditGroup: true,
+            prompt: "global prompt <edit[0]><b2eprompt[base]>"
+        );
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        List<string> prompts = CollectEncoderPrompts(workflow);
+
+        Assert.Contains(prompts, p => p.Contains("global prompt"));
+        Assert.DoesNotContain(prompts, p => p.Contains("<b2eprompt", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void B2EPrompt_numeric_reference_uses_final_processed_prompt_and_falls_back_when_missing()
+    {
+        T2IParamInput input = BuildEditInput(
+            "Base",
+            enableBase2EditGroup: true,
+            prompt: "global prompt <edit[0]><b2eprompt[1]> <b2eprompt[5]> <edit[1]>stage1 <random:resolved>"
+        );
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["vae"] = "None",
+                ["steps"] = 20,
+                ["cfgScale"] = 7.0,
+                ["sampler"] = "euler",
+                ["scheduler"] = "normal"
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        List<string> prompts = CollectEncoderPrompts(workflow);
+
+        Assert.Contains(prompts, p => p.Contains("stage1 resolved"));
+        Assert.Contains(prompts, p => p.Contains("global prompt"));
+        Assert.DoesNotContain(prompts, p => p.Contains("<random", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(prompts, p => p.Contains("<b2eprompt", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -311,21 +372,7 @@ public class WorkflowTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
-        Assert.True(encoders.Count >= 2, "Expected at least positive+negative SwarmClipTextEncodeAdvanced nodes.");
-
-        List<string> prompts = [];
-        foreach (WorkflowNode enc in encoders)
-        {
-            if (enc.Node?["inputs"] is not JObject inputs)
-            {
-                continue;
-            }
-            if (inputs.TryGetValue("prompt", out JToken pTok) && pTok is JValue pVal && !string.IsNullOrWhiteSpace($"{pVal}"))
-            {
-                prompts.Add($"{pVal}");
-            }
-        }
+        List<string> prompts = CollectEncoderPrompts(workflow);
 
         Assert.Contains(prompts, p => p.Contains("GLOBAL") && !p.Contains("STAGE1"));
         Assert.Contains(prompts, p => p.Contains("GLOBAL") && p.Contains("STAGE1"));

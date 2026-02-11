@@ -503,6 +503,7 @@ class Base2Edit {
     constructor(stageEditor) {
         this.stageEditor = stageEditor;
         this.registerEditPromptPrefix();
+        this.registerB2EPromptPrefix();
         window.base2editRunEditOnlyFromImage = this.runEditOnlyFromImage.bind(this);
         this.waitForButtons();
         if (!this.tryRegisterStageEditor()) {
@@ -551,6 +552,23 @@ class Base2Edit {
             '\nUse "<edit>..." to apply to ALL Base2Edit edit stages (including LoRAs inside the section).',
             '\nUse "<edit[0]>..." to apply only to edit stage 0, "<edit[1]>..." for stage 1, etc.',
             '\nIf no "<edit>" / "<edit[0]>" section exists for a stage, Base2Edit falls back to the global prompt.'
+        ], true);
+    }
+    registerB2EPromptPrefix() {
+        promptTabComplete.registerPrefix("b2eprompt", "Use a Base2Edit prompt reference by stage: global, base, refiner, or edit stage number.", () => [
+            '\nUse "<b2eprompt[global]>" to reuse the final global prompt.',
+            '\nUse "<b2eprompt[base]>" / "<b2eprompt[refiner]>" to reuse that stage prompt (fallback to global if missing).',
+            '\nUse "<b2eprompt[0]>", "<b2eprompt[1]>", etc. for edit stage index 0+ (0-indexed, fallback to global if undefined).'
+        ], false);
+        promptTabComplete.registerPrefix("b2eprompt[global]", 'Base2Edit prompt reference: final global prompt text.', () => [
+            '\nInserts "<b2eprompt[global]>"'
+        ], true);
+        promptTabComplete.registerPrefix("b2eprompt[base]", 'Base2Edit prompt reference: base prompt text (fallback to global if missing).', () => [
+            '\nInserts "<b2eprompt[base]>"'
+        ], true);
+        promptTabComplete.registerPrefix("b2eprompt[refiner]", 'Base2Edit prompt reference: refiner prompt text (fallback to global if missing).', () => [
+            '\nInserts "<b2eprompt[refiner]>"',
+            '\nFor edit stages, use numeric index 0+ (example: "<b2eprompt[0]>").'
         ], true);
     }
     isMediaSupported(src) {

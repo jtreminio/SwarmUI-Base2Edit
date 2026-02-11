@@ -12,6 +12,19 @@ For multi-stage workflows, you can also target a specific edit stage using `<edi
 - `<edit[0]>` applies to **only** edit stage 0, `<edit[1]>` to stage 1, etc.
 - If no `<edit>` / `<edit[n]>` section exists for a stage, that stage falls back to the global prompt.
 
+You can also reuse another stage prompt inside an edit section with `<b2eprompt[n]>`:
+- `n` can be `global`, `base`, `refiner`, or a 0-indexed edit stage number (`0`, `1`, `2`, ...)
+- If the target stage prompt is not defined, it falls back to the global prompt
+- The inserted text is the final parsed prompt text (not raw `<random>`, `<wildcard>`, `<lora>`, etc.)
+
+Example:
+```
+global prompt
+<base>base prompt
+<refiner>refiner prompt
+<edit[0]><b2eprompt[base]>
+```
+
 You can choose when the edit happens:
 - **After Base** - Edit right after the initial generation, before any upscaling or refining
 - **After Refiner** - Edit the final image after all other stages are done
