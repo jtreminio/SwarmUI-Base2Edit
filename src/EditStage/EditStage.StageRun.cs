@@ -47,7 +47,13 @@ public partial class EditStage
 
                 ResolvedStage primary = group[0];
                 ApplyStageOverrides(g, primary.Spec);
-                RunEditStage(g, isFinalStep: isFinalStep, stageIndex: primary.Spec.Id, trackResolvedModelForMetadata: true);
+                RunEditStage(
+                    g,
+                    isFinalStep: isFinalStep,
+                    stageIndex: primary.Spec.Id,
+                    trackResolvedModelForMetadata: true,
+                    allowFinalDecodeRetarget: group.Count == 1
+                );
                 executed.Add(primary.Spec.Id);
 
                 JArray primarySamples = g.FinalSamples;
@@ -63,7 +69,13 @@ public partial class EditStage
                     g.FinalImageOut = anchorImageOut;
 
                     ApplyStageOverrides(g, parallel.Spec);
-                    RunEditStage(g, isFinalStep: isFinalStep, stageIndex: parallel.Spec.Id, trackResolvedModelForMetadata: false);
+                    RunEditStage(
+                        g,
+                        isFinalStep: isFinalStep,
+                        stageIndex: parallel.Spec.Id,
+                        trackResolvedModelForMetadata: false,
+                        allowFinalDecodeRetarget: false
+                    );
 
                     JArray parallelSamples = g.FinalSamples;
                     JArray parallelVae = g.FinalVae;

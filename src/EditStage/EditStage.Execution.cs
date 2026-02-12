@@ -7,7 +7,12 @@ namespace Base2Edit;
 
 public partial class EditStage
 {
-    private static void RunEditStage(WorkflowGenerator g, bool isFinalStep, int stageIndex, bool trackResolvedModelForMetadata = true)
+    private static void RunEditStage(
+        WorkflowGenerator g,
+        bool isFinalStep,
+        int stageIndex,
+        bool trackResolvedModelForMetadata = true,
+        bool allowFinalDecodeRetarget = true)
     {
         var prompts = new EditPrompts(
             ExtractPrompt(g.UserInput.Get(T2IParamTypes.Prompt, ""), stageIndex),
@@ -56,7 +61,7 @@ public partial class EditStage
             g.FinalVae = modelState.Vae;
         }
 
-        FinalizeEditOutput(g, modelState.Vae, isFinalStep);
+        FinalizeEditOutput(g, modelState.Vae, isFinalStep, allowFinalDecodeRetarget);
     }
 
     private static double ResolveInheritedCfg(WorkflowGenerator g, string modelSelection)
@@ -591,11 +596,21 @@ public partial class EditStage
         g.FinalSamples = [samplerNode, 0];
     }
 
-    private static void FinalizeEditOutput(WorkflowGenerator g, JArray vae, bool isFinalStep)
+    private static void FinalizeEditOutput(WorkflowGenerator g, JArray vae, bool isFinalStep, bool allowFinalDecodeRetarget)
     {
         if (!isFinalStep)
         {
             g.FinalImageOut = null;
+            return;
+        }
+
+        // Common case: a pre-edit decode was already emitted by upstream steps but is still unused.
+        // Retarget it to the post-edit latent to avoid leaving a dangling decode node.
+        if (allowFinalDecodeRetarget &&
+            g.FinalImageOut is not null &&
+            VaeNodeReuse.TryRetargetUnconsumedVaeDecode(g, g.FinalImageOut, vae, g.FinalSamples, out JArray retargetedImage))
+        {
+            g.FinalImageOut = retargetedImage;
             return;
         }
 

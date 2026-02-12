@@ -8,6 +8,79 @@ namespace Base2Edit;
 public static class VaeNodeReuse
 {
     /// <summary>
+    /// Re-target an existing unconsumed final decode node to point at new samples+VAE.
+    /// This avoids leaving a dangling pre-edit decode when Base2Edit runs after the normal decode step.
+    /// </summary>
+    public static bool TryRetargetUnconsumedVaeDecode(
+        WorkflowGenerator g,
+        JArray imageRef,
+        JArray intendedVaeRef,
+        JArray samplesRef,
+        out JArray imageOutRef)
+    {
+        imageOutRef = null;
+
+        if (g?.Workflow is null || imageRef is null || intendedVaeRef is null || samplesRef is null || imageRef.Count != 2)
+        {
+            return false;
+        }
+
+        try
+        {
+            string nodeId = $"{imageRef[0]}";
+            string outIdx = $"{imageRef[1]}";
+            if (outIdx != "0")
+            {
+                return false;
+            }
+
+            if (g.Workflow[nodeId] is not JObject nodeObj)
+            {
+                return false;
+            }
+
+            string classType = $"{nodeObj["class_type"]}";
+            if (classType != "VAEDecode" && classType != "VAEDecodeTiled")
+            {
+                return false;
+            }
+
+            // If this decode output already feeds any other node, treat it as in-use and do not mutate it.
+            if (WorkflowUtils.FindInputConnections(g.Workflow, imageRef).Count > 0)
+            {
+                return false;
+            }
+
+            if (nodeObj["inputs"] is not JObject inputs)
+            {
+                return false;
+            }
+
+            inputs["vae"] = new JArray(intendedVaeRef[0], intendedVaeRef[1]);
+            if (inputs.ContainsKey("samples"))
+            {
+                inputs["samples"] = new JArray(samplesRef[0], samplesRef[1]);
+            }
+            else if (inputs.ContainsKey("latent"))
+            {
+                inputs["latent"] = new JArray(samplesRef[0], samplesRef[1]);
+            }
+            else
+            {
+                return false;
+            }
+
+            imageOutRef = [nodeId, 0];
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logs.Debug($"Base2Edit: Failed to retarget existing VAEDecode node: {ex}");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Find a VAEDecode node that already consumes samplesRef
     /// Sets imageOutRef to [nodeId, 0] when found
     /// </summary>

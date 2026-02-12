@@ -231,6 +231,32 @@ public class MultiStageMergeTests
     }
 
     [Fact]
+    public void Base_upscale_refiner_with_edit_does_not_leave_decode_on_pre_edit_latent()
+    {
+        // Repro shape:
+        // base image -> upscale -> refiner -> edit (after refiner).
+        // The pre-edit decode generated before the edit stage must be reused/retargeted,
+        // not left dangling on the pre-edit latent.
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseThenUpscaleThenRefiner()
+                .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        WorkflowNode editRefLatent = WorkflowAssertions.RequireNodeOfType(workflow, "ReferenceLatent");
+        JArray preEditLatent = RequireConnectionInput(editRefLatent.Node, "latent");
+
+        IReadOnlyList<WorkflowNode> danglingPreEditDecodes = WorkflowUtils.FindVaeDecodesBySamples(workflow, preEditLatent);
+        Assert.Empty(danglingPreEditDecodes);
+
+        WorkflowNode editSampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, editRefLatent);
+        IReadOnlyList<WorkflowNode> finalDecodes = WorkflowUtils.FindVaeDecodesBySamples(workflow, new JArray(editSampler.Id, 0));
+        Assert.Single(finalDecodes);
+    }
+
+    [Fact]
     public void Different_models_and_vae_override_can_apply_per_stage()
     {
         using var _ = new SwarmUiTestContext();
