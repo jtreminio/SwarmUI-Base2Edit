@@ -326,8 +326,15 @@ public class MultiStageMergeTests
         WorkflowNode vaeEncode = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
             .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
 
-        // The stage1 sampler should take its latent_image from the VAEEncode output
-        Assert.True(JToken.DeepEquals(s1Inputs["latent_image"], new JArray(vaeEncode.Id, 0)));
+        // Stage1 still references the VAE-encoded source latent, but sampler.latent_image now
+        // starts from a fresh empty latent.
+        Assert.True(JToken.DeepEquals(RequireConnectionInput(stage1Ref.Node, "latent"), new JArray(vaeEncode.Id, 0)));
+        JArray stage1LatentImage = RequireConnectionInput(stage1Sampler.Node, "latent_image", "latent");
+        Assert.False(JToken.DeepEquals(stage1LatentImage, new JArray(vaeEncode.Id, 0)));
+        Assert.True(workflow.TryGetValue($"{stage1LatentImage[0]}", out JToken latentTok));
+        Assert.True(latentTok is JObject);
+        JObject latentNode = (JObject)latentTok;
+        Assert.Contains("Empty", $"{latentNode["class_type"]}");
     }
 
     [Fact]

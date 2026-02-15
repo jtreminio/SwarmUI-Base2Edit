@@ -576,11 +576,30 @@ public partial class EditStage
     {
         int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
         int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
+        JArray samplerLatent = g.FinalSamples;
+        if (!editParams.RefineOnly)
+        {
+            int latentWidth = editParams.Width;
+            int latentHeight = editParams.Height;
+            if (WorkflowUtils.TryResolveSpatialSizeFromLatent(g.Workflow, g.FinalSamples, out int resolvedWidth, out int resolvedHeight))
+            {
+                latentWidth = resolvedWidth;
+                latentHeight = resolvedHeight;
+            }
+            string emptyLatentNode = g.CreateNode("EmptyLatentImage", new JObject()
+            {
+                ["batch_size"] = g.UserInput.Get(T2IParamTypes.BatchSize, 1),
+                ["height"] = latentHeight,
+                ["width"] = latentWidth
+            }
+            );
+            samplerLatent = [emptyLatentNode, 0];
+        }
         string samplerNode = g.CreateKSampler(
             model,
             conditioning.Positive,
             conditioning.Negative,
-            g.FinalSamples,
+            samplerLatent,
             editParams.Cfg,
             editParams.Steps,
             startStep,
