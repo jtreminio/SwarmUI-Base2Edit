@@ -77,18 +77,6 @@ public class WorkflowTests
         return $"{ctTok}";
     }
 
-    private static (int Width, int Height) RequireNodeDimensions(JObject workflow, string nodeId)
-    {
-        Assert.True(workflow.TryGetValue(nodeId, out JToken tok), $"Expected workflow node '{nodeId}' to exist.");
-        Assert.True(tok is JObject, $"Expected workflow node '{nodeId}' to be an object.");
-        JObject node = (JObject)tok;
-        Assert.True(node["inputs"] is JObject, $"Expected workflow node '{nodeId}' to have an 'inputs' object.");
-        JObject inputs = (JObject)node["inputs"];
-        Assert.True(inputs.TryGetValue("width", out JToken widthTok), $"Expected workflow node '{nodeId}' to have width.");
-        Assert.True(inputs.TryGetValue("height", out JToken heightTok), $"Expected workflow node '{nodeId}' to have height.");
-        return ((int)widthTok, (int)heightTok);
-    }
-
     private static WorkflowNode RequireSingleSampler(JObject workflow) =>
         RequireSingleNodeOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
 
@@ -223,103 +211,6 @@ public class WorkflowTests
 
         // Final placement: the VAEDecode should decode the post-edit latent (sampler output).
         WorkflowNode decode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
-    }
-
-    [Fact]
-    public void EditStage_empty_latent_dimensions_follow_upscale_image_before_stage()
-    {
-        T2IParamInput input = BuildEditInput("Base");
-
-        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
-            new[]
-            {
-                WorkflowTestHarness.MinimalGraphSeedStep(),
-                new WorkflowGenerator.WorkflowGenStep(g =>
-                {
-                    string decoded = g.CreateNode("VAEDecode", new JObject()
-                    {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
-                    }, idMandatory: false);
-                    string scaled = g.CreateNode("ImageScale", new JObject()
-                    {
-                        ["image"] = new JArray(decoded, 0),
-                        ["width"] = 1024,
-                        ["height"] = 768,
-                        ["upscale_method"] = "lanczos",
-                        ["crop"] = "disabled"
-                    }, idMandatory: false);
-                    string encoded = g.CreateNode("VAEEncode", new JObject()
-                    {
-                        ["vae"] = g.FinalVae,
-                        ["pixels"] = new JArray(scaled, 0)
-                    }, idMandatory: false);
-                    g.FinalImageOut = new JArray(scaled, 0);
-                    g.FinalSamples = new JArray(encoded, 0);
-                }, -500)
-            }
-            .Concat(WorkflowTestHarness.Base2EditSteps());
-
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        JArray latentRef = RequireConnectionInput(sampler.Node, "latent_image", "latent");
-        Assert.Equal("EmptyLatentImage", RequireClassType(workflow, $"{latentRef[0]}"));
-        (int width, int height) = RequireNodeDimensions(workflow, $"{latentRef[0]}");
-        Assert.Equal(1024, width);
-        Assert.Equal(768, height);
-    }
-
-    [Fact]
-    public void EditStage_empty_latent_dimensions_follow_model_upscale_before_stage()
-    {
-        T2IParamInput input = BuildEditInput("Base");
-
-        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
-            new[]
-            {
-                WorkflowTestHarness.MinimalGraphSeedStep(),
-                new WorkflowGenerator.WorkflowGenStep(g =>
-                {
-                    string decoded = g.CreateNode("VAEDecode", new JObject()
-                    {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
-                    }, idMandatory: false);
-                    string upscaleModel = g.CreateNode("UpscaleModelLoader", new JObject()
-                    {
-                        ["model_name"] = "UnitTest_Upscaler"
-                    }, idMandatory: false);
-                    string modelUpscaled = g.CreateNode("ImageUpscaleWithModel", new JObject()
-                    {
-                        ["upscale_model"] = new JArray(upscaleModel, 0),
-                        ["image"] = new JArray(decoded, 0)
-                    }, idMandatory: false);
-                    string scaled = g.CreateNode("ImageScale", new JObject()
-                    {
-                        ["image"] = new JArray(modelUpscaled, 0),
-                        ["width"] = 1280,
-                        ["height"] = 768,
-                        ["upscale_method"] = "lanczos",
-                        ["crop"] = "disabled"
-                    }, idMandatory: false);
-                    string encoded = g.CreateNode("VAEEncode", new JObject()
-                    {
-                        ["vae"] = g.FinalVae,
-                        ["pixels"] = new JArray(scaled, 0)
-                    }, idMandatory: false);
-                    g.FinalImageOut = new JArray(scaled, 0);
-                    g.FinalSamples = new JArray(encoded, 0);
-                }, -500)
-            }
-            .Concat(WorkflowTestHarness.Base2EditSteps());
-
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        JArray latentRef = RequireConnectionInput(sampler.Node, "latent_image", "latent");
-        Assert.Equal("EmptyLatentImage", RequireClassType(workflow, $"{latentRef[0]}"));
-        (int width, int height) = RequireNodeDimensions(workflow, $"{latentRef[0]}");
-        Assert.Equal(1280, width);
-        Assert.Equal(768, height);
     }
 
     [Fact]

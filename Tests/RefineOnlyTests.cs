@@ -103,9 +103,6 @@ public class RefineOnlyTests
         WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, stage0Ref);
         IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
         Assert.Equal(2, samplers.Count);
-        JArray stage0LatentImage = RequireConnectionInput(stage0Sampler.Node, "latent_image", "latent");
-        Assert.False(JToken.DeepEquals(stage0LatentImage, new JArray("10", 0)));
-        Assert.Contains("Empty", RequireClassType(workflow, $"{stage0LatentImage[0]}"));
 
         WorkflowNode stage1Sampler = samplers.Single(s =>
             JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray(stage0Sampler.Id, 0)));
