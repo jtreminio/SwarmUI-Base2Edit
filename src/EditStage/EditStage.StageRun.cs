@@ -12,8 +12,14 @@ public partial class EditStage
         using StageParamSnapshot snapshot = new(g);
         try
         {
-            List<ResolvedStage> resolved = ResolveStages(stages);
             StageHook currentHook = isFinalStep ? StageHook.Refiner : StageHook.Base;
+            bool preferCurrentImageAnchor = ShouldPreferCurrentImageAnchor(g, currentHook);
+            if (isFinalStep)
+            {
+                NormalizeFinalStepAnchor(g, preferCurrentImageAnchor);
+            }
+
+            List<ResolvedStage> resolved = ResolveStages(stages);
             HashSet<int> executed = [];
 
             // Group stages by (Hook, DependsOnStageId). Stages in the same group share the same anchor
@@ -51,8 +57,12 @@ public partial class EditStage
                     g,
                     isFinalStep: isFinalStep,
                     stageIndex: primary.Spec.Id,
-                    trackResolvedModelForMetadata: true,
-                    allowFinalDecodeRetarget: group.Count == 1
+                    options: new RunEditStageOptions(
+                        TrackResolvedModelForMetadata: true,
+                        AllowFinalDecodeRetarget: group.Count == 1,
+                        ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
+                        RewireFinalConsumers: !preferCurrentImageAnchor
+                    )
                 );
                 executed.Add(primary.Spec.Id);
 
@@ -73,8 +83,12 @@ public partial class EditStage
                         g,
                         isFinalStep: isFinalStep,
                         stageIndex: parallel.Spec.Id,
-                        trackResolvedModelForMetadata: false,
-                        allowFinalDecodeRetarget: false
+                        options: new RunEditStageOptions(
+                            TrackResolvedModelForMetadata: false,
+                            AllowFinalDecodeRetarget: false,
+                            ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
+                            RewireFinalConsumers: !preferCurrentImageAnchor
+                        )
                     );
 
                     JArray parallelSamples = g.FinalSamples;
@@ -104,10 +118,79 @@ public partial class EditStage
                     executed.Add(parallel.Spec.Id);
                 }
             }
+
+            if (isFinalStep)
+            {
+                CleanupDanglingVaeDecodeNodes(g);
+            }
         }
         finally
         {
             snapshot.Restore();
+        }
+    }
+
+    private static void NormalizeFinalStepAnchor(WorkflowGenerator g, bool preferCurrentImageAnchor = false)
+    {
+        if (g?.Workflow is null)
+        {
+            return;
+        }
+
+        if (preferCurrentImageAnchor)
+        {
+            return;
+        }
+
+        // Prefer resolving from the current image tail first. This avoids anchoring to a stale
+        // sampler when FinalSamples still points at refiner output but FinalImageOut has drifted
+        // into a downstream chain
+        if (g.FinalImageOut is not null
+            && WorkflowUtils.TryResolveNearestSamplerOrDecodeAnchor(
+                g.Workflow,
+                samplesRef: null,
+                imageRef: g.FinalImageOut,
+                out JArray imagePathSamples,
+                out JArray imagePathImageOut,
+                out JArray imagePathVae))
+        {
+            if (imagePathSamples is not null)
+            {
+                g.FinalSamples = imagePathSamples;
+            }
+            if (imagePathImageOut is not null)
+            {
+                g.FinalImageOut = imagePathImageOut;
+            }
+            if (imagePathVae is not null)
+            {
+                g.FinalVae = imagePathVae;
+            }
+            return;
+        }
+
+        if (!WorkflowUtils.TryResolveNearestSamplerOrDecodeAnchor(
+                g.Workflow,
+                g.FinalSamples,
+                g.FinalImageOut,
+                out JArray anchorSamples,
+                out JArray anchorImageOut,
+                out JArray anchorVae))
+        {
+            return;
+        }
+
+        if (anchorSamples is not null)
+        {
+            g.FinalSamples = anchorSamples;
+        }
+        if (anchorImageOut is not null)
+        {
+            g.FinalImageOut = anchorImageOut;
+        }
+        if (anchorVae is not null)
+        {
+            g.FinalVae = anchorVae;
         }
     }
 

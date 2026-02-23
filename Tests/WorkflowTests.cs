@@ -214,6 +214,348 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void EditStage_refiner_hook_anchors_before_downstream_postprocess_encode()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    // Simulate an extension that mutates FinalSamples after decode by adding an image
+                    // postprocess chain and re-encoding it. Base2Edit should still anchor at sampler/decode.
+                    string decoded = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "801", idMandatory: false);
+                    string post = g.CreateNode("UnitTest_PostProcessImage", new JObject()
+                    {
+                        ["image"] = new JArray(decoded, 0)
+                    }, id: "802", idMandatory: false);
+                    string encoded = g.CreateNode("VAEEncode", new JObject()
+                    {
+                        ["pixels"] = new JArray(post, 0),
+                        ["vae"] = g.FinalVae
+                    }, id: "803", idMandatory: false);
+                    g.FinalImageOut = new JArray(post, 0);
+                    g.FinalSamples = new JArray(encoded, 0);
+                }, 2)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
+
+        WorkflowNode refLatent = WorkflowAssertions.RequireNodeOfType(workflow, "ReferenceLatent");
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput(refLatent.Node, "latent"));
+    }
+
+    [Fact]
+    public void EditStage_refiner_hook_retargets_existing_image_consumers_to_post_edit_decode()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    // Pre-existing downstream image chain (simulates SeedVR2-style consumers) wired
+                    // before Base2Edit final-stage run.
+                    string preDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "801", idMandatory: false);
+                    g.FinalImageOut = new JArray(preDecode, 0);
+                    g.CreateNode("UnitTest_ImageConsumer", new JObject()
+                    {
+                        ["image"] = g.FinalImageOut
+                    }, id: "802", idMandatory: false);
+                }, 2)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
+
+        WorkflowNode sampler = WorkflowAssertions.RequireNodeOfType(workflow, "KSamplerAdvanced");
+        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
+        WorkflowNode consumer = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_ImageConsumer");
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(consumer.Node, "image"));
+    }
+
+    [Fact]
+    public void EditStage_refiner_hook_retargets_seedvr_style_chain_even_when_final_image_has_drifted()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    // Simulate SeedVR2 timing/shape: decode current latent, build an image chain from that decode,
+                    // and drift FinalImageOut to the chain output before Base2Edit final step executes.
+                    string preDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "801", idMandatory: false);
+                    string chainA = g.CreateNode("UnitTest_SeedVR2Like_A", new JObject()
+                    {
+                        ["image"] = new JArray(preDecode, 0)
+                    }, id: "802", idMandatory: false);
+                    string chainB = g.CreateNode("UnitTest_SeedVR2Like_B", new JObject()
+                    {
+                        ["image"] = new JArray(chainA, 0)
+                    }, id: "803", idMandatory: false);
+                    g.FinalImageOut = new JArray(chainB, 0);
+                }, 5.8)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
+
+        WorkflowNode sampler = WorkflowAssertions.RequireNodeOfType(workflow, "KSamplerAdvanced");
+        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
+        WorkflowNode chainConsumer = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_A");
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(chainConsumer.Node, "image"));
+
+        // Final output should remain the downstream chain endpoint, not the edit decode.
+        WorkflowNode chainTail = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_B");
+        Assert.Equal(new JArray(chainTail.Id, 0), generator.FinalImageOut);
+
+        // Cleanup pass should remove the explicit pre-edit decode that got orphaned by rewiring.
+        Assert.False(workflow.ContainsKey("801"));
+    }
+
+    [Fact]
+    public void EditStage_refiner_hook_infers_downstream_tail_when_final_imageout_was_not_set()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    // Build a downstream image chain from a decode, but do not assign g.FinalImageOut
+                    // to the chain tail (mimics extensions that leave FinalImageOut stale/null)
+                    string preDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "801", idMandatory: false);
+                    string mid = g.CreateNode("UnitTest_SeedVR2Like_Mid", new JObject()
+                    {
+                        ["image"] = new JArray(preDecode, 0)
+                    }, id: "802", idMandatory: false);
+                    string tail = g.CreateNode("UnitTest_SeedVR2Like_Tail", new JObject()
+                    {
+                        ["image"] = new JArray(mid, 0)
+                    }, id: "803", idMandatory: false);
+                }, 5.8)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
+
+        WorkflowNode tail = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_Tail");
+        Assert.Equal(new JArray(tail.Id, 0), generator.FinalImageOut);
+    }
+
+    [Fact]
+    public void EditStage_refiner_hook_cleanup_removes_orphan_preedit_decode_in_refiner_shape()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    // Mimic a refiner-shaped handoff where a decode already exists before final-stage edit.
+                    string refinerLatent = g.CreateNode("UnitTest_RefinerLatent", new JObject(), id: "23", idMandatory: false);
+                    g.FinalSamples = new JArray(refinerLatent, 0);
+                    string preEditDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "8", idMandatory: false);
+                    g.FinalImageOut = new JArray(preEditDecode, 0);
+                }, -100),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    string chainA = g.CreateNode("UnitTest_SeedVR2Like_A", new JObject()
+                    {
+                        ["image"] = g.FinalImageOut
+                    }, id: "802", idMandatory: false);
+                    string chainB = g.CreateNode("UnitTest_SeedVR2Like_B", new JObject()
+                    {
+                        ["image"] = new JArray(chainA, 0)
+                    }, id: "803", idMandatory: false);
+                    g.FinalImageOut = new JArray(chainB, 0);
+                }, 5.8)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        Assert.False(workflow.ContainsKey("8"));
+    }
+
+    [Fact]
+    public void EditStage_refiner_hook_skips_retarget_when_it_would_create_feedback_cycle()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    // Create a downstream image branch that is also used to re-encode latent.
+                    // Rewiring this branch to post-edit decode would create a cycle.
+                    string preDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "801", idMandatory: false);
+                    string chainTail = g.CreateNode("UnitTest_SeedVR2Like_Tail", new JObject()
+                    {
+                        ["image"] = new JArray(preDecode, 0)
+                    }, id: "802", idMandatory: false);
+                    string encoded = g.CreateNode("VAEEncode", new JObject()
+                    {
+                        ["pixels"] = new JArray(chainTail, 0),
+                        ["vae"] = g.FinalVae
+                    }, id: "803", idMandatory: false);
+                    g.FinalImageOut = new JArray(chainTail, 0);
+                    g.FinalSamples = new JArray(encoded, 0);
+                }, 5.8)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        WorkflowNode chainTail = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_Tail");
+        JArray chainInput = RequireConnectionInput(chainTail.Node, "image");
+        Assert.Equal("VAEDecode", RequireClassType(workflow, $"{chainInput[0]}"));
+    }
+
+    [Fact]
+    public void EditStage_refiner_hook_prefers_image_anchor_when_samples_and_image_drift()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+        input.Set(Base2EditExtension.EditRefineOnly, true);
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    // Simulate refiner-shape drift:
+                    // - samples still point at the refiner sampler output
+                    // - image has moved into a downstream chain with an existing encode
+                    string preDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "801", idMandatory: false);
+                    string chainTail = g.CreateNode("UnitTest_SeedVR2Like_Tail", new JObject()
+                    {
+                        ["image"] = new JArray(preDecode, 0)
+                    }, id: "802", idMandatory: false);
+                    _ = g.CreateNode("VAEEncode", new JObject()
+                    {
+                        ["pixels"] = new JArray(chainTail, 0),
+                        ["vae"] = g.FinalVae
+                    }, id: "803", idMandatory: false);
+                    g.FinalImageOut = new JArray(chainTail, 0);
+                    // Keep FinalSamples unchanged to mimic "samples/image drift".
+                }, 5.8)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
+        WorkflowNode editSampler = samplers.Single(s =>
+        {
+            if (s.Node?["inputs"] is not JObject inputs || !inputs.TryGetValue("positive", out JToken posTok) || posTok is not JArray posRef)
+            {
+                return false;
+            }
+            return RequireClassType(workflow, $"{posRef[0]}") == "SwarmClipTextEncodeAdvanced";
+        });
+
+        JArray latentRef = RequireConnectionInput(editSampler.Node, "latent_image", "latent");
+        Assert.NotEqual("803", $"{latentRef[0]}");
+    }
+
+    [Fact]
+    public void EditStage_refiner_hook_with_segments_runs_after_segment_image_tail()
+    {
+        // Repro shape:
+        // - Refiner latent exists.
+        // - A segment-like image node chain is already attached after refiner.
+        // - Edit is also "after refiner".
+        // Expected: edit should consume latent encoded from the segment tail image (not pre-segment latent/decode).
+        T2IParamInput input = BuildEditInput(
+            "Refiner",
+            enableBase2EditGroup: true,
+            prompt: "global <edit>do edit <segment:face,0.2,0.2>"
+        );
+        input.Set(T2IParamTypes.SegmentApplyAfter, "Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    string refinerLatent = g.CreateNode("UnitTest_RefinerLatent", new JObject(), id: "23", idMandatory: false);
+                    g.FinalSamples = new JArray(refinerLatent, 0);
+                }, -400),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    string preSegmentDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "1801", idMandatory: false);
+                    string segmentTail = g.CreateNode("UnitTest_SegmentAfterRefiner", new JObject()
+                    {
+                        ["image"] = new JArray(preSegmentDecode, 0)
+                    }, id: "1802", idMandatory: false);
+                    g.FinalImageOut = new JArray(segmentTail, 0);
+                }, 5.8)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        WorkflowNode sampler = RequireSingleSampler(workflow);
+        JArray latentRef = RequireConnectionInput(sampler.Node, "latent_image", "latent");
+        Assert.Equal("VAEEncode", RequireClassType(workflow, $"{latentRef[0]}"));
+
+        WorkflowNode encode = WorkflowAssertions.RequireNodeById(workflow, $"{latentRef[0]}");
+        Assert.Equal(new JArray("1802", 0), RequireConnectionInput(encode.Node, "pixels", "image"));
+
+        // Segment chain should remain upstream of edit (ie not rewired to post-edit decode).
+        WorkflowNode segmentTailNode = WorkflowAssertions.RequireNodeById(workflow, "1802");
+        Assert.Equal(new JArray("1801", 0), RequireConnectionInput(segmentTailNode.Node, "image"));
+    }
+
+    [Fact]
     public void EditStage_defaults_to_refiner_when_apply_after_missing()
     {
         // If ApplyEditAfter isn't present, Base2Edit should still run on the final step
@@ -450,6 +792,80 @@ public class WorkflowTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
         Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SaveImage"));
+    }
+
+    [Fact]
+    public void Refiner_edit_retargets_existing_save_node_to_post_edit_output()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    string preDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "801", idMandatory: false);
+                    g.FinalImageOut = new JArray(preDecode, 0);
+                    g.CreateNode("SaveImage", new JObject()
+                    {
+                        ["images"] = g.FinalImageOut
+                    }, id: "900", idMandatory: false);
+                }, 2)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        WorkflowNode save = WorkflowAssertions.RequireNodeById(workflow, "900");
+        WorkflowNode sampler = RequireSingleSampler(workflow);
+        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(save.Node, "images"));
+    }
+
+    [Fact]
+    public void KeepPreEditImage_preserves_preedit_save_and_retargets_existing_save_to_final_output()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+        input.Set(Base2EditExtension.KeepPreEditImage, true);
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    string preDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.FinalSamples,
+                        ["vae"] = g.FinalVae
+                    }, id: "801", idMandatory: false);
+                    g.FinalImageOut = new JArray(preDecode, 0);
+                    g.CreateNode("SaveImage", new JObject()
+                    {
+                        ["images"] = g.FinalImageOut
+                    }, id: "900", idMandatory: false);
+                }, 2)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        WorkflowNode existingSave = WorkflowAssertions.RequireNodeById(workflow, "900");
+        WorkflowNode sampler = RequireSingleSampler(workflow);
+        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(existingSave.Node, "images"));
+
+        IReadOnlyList<WorkflowNode> saves = WorkflowUtils.NodesOfType(workflow, "SaveImage");
+        Assert.True(saves.Count >= 2, "Expected dedicated pre-edit save plus existing final save.");
+        WorkflowNode preEditSave = saves.Single(s => s.Id != "900");
+        string preEditDecodeId = $"{RequireConnectionInput(preEditSave.Node, "images")[0]}";
+        WorkflowNode preEditDecodeNode = new(preEditDecodeId, (JObject)workflow[preEditDecodeId]);
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput(preEditDecodeNode.Node, "samples", "latent"));
     }
 
     [Fact]

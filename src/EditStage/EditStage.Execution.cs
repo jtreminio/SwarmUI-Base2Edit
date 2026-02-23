@@ -11,18 +11,29 @@ public partial class EditStage
         WorkflowGenerator g,
         bool isFinalStep,
         int stageIndex,
-        bool trackResolvedModelForMetadata = true,
-        bool allowFinalDecodeRetarget = true)
+        RunEditStageOptions options = default)
     {
         var prompts = new EditPrompts(
             ExtractPrompt(g.UserInput.Get(T2IParamTypes.Prompt, ""), stageIndex),
             ExtractPrompt(g.UserInput.Get(T2IParamTypes.NegativePrompt, ""), stageIndex)
         );
-        var modelState = PrepareEditModelAndVae(g, isFinalStep, stageIndex, trackResolvedModelForMetadata);
+        var modelState = PrepareEditModelAndVae(g, isFinalStep, stageIndex, options.TrackResolvedModelForMetadata);
         string modelSelection = g.UserInput.Get(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
+        string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
         bool needsPreEditImage = shouldSavePreEdit || modelState.MustReencode || g.FinalSamples is null;
+        JArray preEditImageTailRef = g.FinalImageOut is null ? null : new JArray(g.FinalImageOut[0], g.FinalImageOut[1]);
+        JArray preEditConsumerSourceRef = preEditImageTailRef;
+        if (isFinalStep && g.FinalSamples is not null)
+        {
+            IReadOnlyList<WorkflowNode> preEditDecodes = WorkflowUtils.FindVaeDecodesBySamples(g.Workflow, g.FinalSamples);
+            if (preEditDecodes.Count > 0)
+            {
+                WorkflowNode decode = preEditDecodes[0];
+                preEditConsumerSourceRef = new JArray(decode.Id, 0);
+            }
+        }
 
         if (needsPreEditImage)
         {
@@ -34,7 +45,9 @@ public partial class EditStage
             SavePreEditImageIfNeeded(g, stageIndex);
         }
 
-        ReencodeIfNeeded(g, modelState);
+        ReencodeIfNeeded(g, modelState, new ReencodeOptions(
+            ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
+        ));
         var editParams = new EditParameters(
             Width: g.UserInput.GetImageWidth(),
             Height: g.UserInput.GetImageHeight(),
@@ -61,7 +74,157 @@ public partial class EditStage
             g.FinalVae = modelState.Vae;
         }
 
-        FinalizeEditOutput(g, modelState.Vae, isFinalStep, allowFinalDecodeRetarget);
+        FinalizeEditOutput(g, modelState.Vae, isFinalStep, options.AllowFinalDecodeRetarget);
+
+        // Final-step edit runs late in the workflow. If earlier extensions already wired image consumers
+        // (eg postprocess/upscaler chains), repoint them from pre-edit image to post-edit image.
+        if (isFinalStep
+            && options.RewireFinalConsumers
+            && preEditConsumerSourceRef is not null
+            && g.FinalImageOut is not null
+            && !JToken.DeepEquals(preEditConsumerSourceRef, g.FinalImageOut))
+        {
+            string postEditImageNodeId = $"{g.FinalImageOut[0]}";
+            int rewired = WorkflowUtils.RetargetInputConnections(
+                g.Workflow,
+                preEditConsumerSourceRef,
+                g.FinalImageOut,
+                conn =>
+                {
+                    if (g.Workflow?[conn.NodeId] is not JObject node)
+                    {
+                        return true;
+                    }
+                    string classType = $"{node["class_type"]}";
+                    if (classType == "SaveImage" || classType == "SwarmSaveImageWS")
+                    {
+                        return conn.NodeId != preEditSaveNodeId;
+                    }
+
+                    // Avoid feedback loops by rewiring a consumer that already flows
+                    // into the post-edit image branch (eg image->encode->sampler->decode).
+                    return !WorkflowUtils.IsNodeReachableFromNode(g.Workflow, conn.NodeId, postEditImageNodeId);
+                });
+
+            // If we rewired an existing downstream branch (eg upscaler chain),
+            // keep that branch endpoint as the final output so later save nodes attach there.
+            if (rewired > 0 && preEditImageTailRef is not null
+                && WorkflowUtils.IsNodeReachableFromNode(g.Workflow, postEditImageNodeId, $"{preEditImageTailRef[0]}"))
+            {
+                g.FinalImageOut = preEditImageTailRef;
+            }
+            else if (rewired > 0 && preEditImageTailRef is null
+                && TryResolveUniqueDownstreamImageTail(g, g.FinalImageOut, out JArray inferredTail))
+            {
+                g.FinalImageOut = inferredTail;
+            }
+
+            if (rewired > 0
+                && preEditConsumerSourceRef.Count == 2
+                && g.Workflow.TryGetValue($"{preEditConsumerSourceRef[0]}", out JToken sourceTok)
+                && sourceTok is JObject sourceNode)
+            {
+                string classType = $"{sourceNode["class_type"]}";
+                if ((classType == "VAEDecode" || classType == "VAEDecodeTiled")
+                    && WorkflowUtils.FindInputConnections(g.Workflow, preEditConsumerSourceRef).Count == 0)
+                {
+                    _ = g.Workflow.Remove($"{preEditConsumerSourceRef[0]}");
+                }
+            }
+        }
+
+    }
+
+    private static void CleanupDanglingVaeDecodeNodes(WorkflowGenerator g)
+    {
+        if (g?.Workflow is null)
+        {
+            return;
+        }
+
+        string keepNodeId = g.FinalImageOut is not null ? $"{g.FinalImageOut[0]}" : null;
+        List<WorkflowNode> candidates =
+        [
+            .. WorkflowUtils.NodesOfType(g.Workflow, "VAEDecode"),
+            .. WorkflowUtils.NodesOfType(g.Workflow, "VAEDecodeTiled")
+        ];
+
+        foreach (WorkflowNode node in candidates)
+        {
+            if (node.Node is null)
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(keepNodeId) && node.Id == keepNodeId)
+            {
+                continue;
+            }
+
+            JArray outRef = new(node.Id, 0);
+            if (WorkflowUtils.FindInputConnections(g.Workflow, outRef).Count == 0)
+            {
+                _ = g.Workflow.Remove(node.Id);
+            }
+        }
+    }
+
+    private static bool TryResolveUniqueDownstreamImageTail(WorkflowGenerator g, JArray startImageRef, out JArray tailImageRef)
+    {
+        tailImageRef = startImageRef;
+        if (g?.Workflow is null || startImageRef is null || startImageRef.Count != 2)
+        {
+            return false;
+        }
+
+        static bool IsImageFlowInputName(string inputName) =>
+            inputName == "image" || inputName == "images" || inputName == "image_pass";
+
+        HashSet<string> visited = [];
+        JArray current = new(startImageRef[0], startImageRef[1]);
+
+        while (true)
+        {
+            string currentKey = $"{current[0]}:{current[1]}";
+            if (!visited.Add(currentKey))
+            {
+                return false;
+            }
+
+            List<WorkflowInputConnection> imageConsumers = [];
+            foreach (WorkflowInputConnection conn in WorkflowUtils.FindInputConnections(g.Workflow, current))
+            {
+                if (!IsImageFlowInputName(conn.InputName))
+                {
+                    continue;
+                }
+                if (g.Workflow[conn.NodeId] is not JObject node)
+                {
+                    continue;
+                }
+
+                string classType = $"{node["class_type"]}";
+                if (classType == "SaveImage" || classType == "SwarmSaveImageWS")
+                {
+                    continue;
+                }
+                imageConsumers.Add(conn);
+            }
+
+            if (imageConsumers.Count == 0)
+            {
+                tailImageRef = current;
+                return true;
+            }
+            if (imageConsumers.Count > 1)
+            {
+                tailImageRef = current;
+                return false;
+            }
+
+            WorkflowInputConnection onlyConsumer = imageConsumers[0];
+            current = new JArray(onlyConsumer.NodeId, 0);
+        }
     }
 
     private static double ResolveInheritedCfg(WorkflowGenerator g, string modelSelection)
@@ -488,15 +651,33 @@ public partial class EditStage
         bool shouldSave = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
 
-        if (shouldSave && g.FinalImageOut is not null && !VaeNodeReuse.HasSaveForImage(g, g.FinalImageOut))
+        if (shouldSave && g.FinalImageOut is not null)
         {
-            g.CreateImageSaveNode(g.FinalImageOut, g.GetStableDynamicID(PreEditImageSaveId, stageIndex));
+            string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
+            if (!g.Workflow.ContainsKey(preEditSaveNodeId))
+            {
+                g.CreateImageSaveNode(g.FinalImageOut, preEditSaveNodeId);
+            }
             Logs.Debug("Base2Edit: Saved pre-edit image");
         }
     }
 
-    private static void ReencodeIfNeeded(WorkflowGenerator g, EditModelState modelState)
+    private static void ReencodeIfNeeded(WorkflowGenerator g, EditModelState modelState, ReencodeOptions options = default)
     {
+        if (options.ForceFromCurrentImage && g.FinalImageOut is not null)
+        {
+            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, g.FinalImageOut, modelState.Vae, out JArray imageTailSamples))
+            {
+                g.FinalSamples = imageTailSamples;
+            }
+            else
+            {
+                string forcedEncodeNode = g.CreateVAEEncode(modelState.Vae, g.FinalImageOut);
+                g.FinalSamples = [forcedEncodeNode, 0];
+            }
+            return;
+        }
+
         // Parallel stages (same anchor) reuse the same VAEDecode, so g.FinalImageOut points at
         // that decode's image. g.FinalSamples is still the anchor latent (ex base sampler output),
         // which is wrong for ReferenceLatent - we need the latent that comes from encoding this

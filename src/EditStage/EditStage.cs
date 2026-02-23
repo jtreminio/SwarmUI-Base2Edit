@@ -30,6 +30,17 @@ internal record EditParameters(
 
 internal record EditConditioning(JArray Positive, JArray Negative);
 
+internal readonly record struct RunEditStageOptions(
+    bool TrackResolvedModelForMetadata = true,
+    bool AllowFinalDecodeRetarget = true,
+    bool ForceReencodeFromCurrentImage = false,
+    bool RewireFinalConsumers = true
+);
+
+internal readonly record struct ReencodeOptions(
+    bool ForceFromCurrentImage = false
+);
+
 public partial class EditStage
 {
     private const int PreEditImageSaveId = 50200;

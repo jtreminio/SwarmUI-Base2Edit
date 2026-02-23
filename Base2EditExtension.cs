@@ -61,7 +61,7 @@ public class Base2EditExtension : Extension
             _postGenerateHookRegistered = true;
         }
         WorkflowGenerator.AddStep(g => EditStage.Run(g, isFinalStep: false), -4.2);
-        WorkflowGenerator.AddStep(g => EditStage.Run(g, isFinalStep: true), 7);
+        WorkflowGenerator.AddStep(g => EditStage.Run(g, isFinalStep: true), 5.9);
     }
 
     private static void HandlePostGenerateMetadata(T2IEngine.PostGenerationEventParams evt)
