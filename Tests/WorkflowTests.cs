@@ -721,6 +721,113 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void Edit_stage_with_only_tags_falls_back_to_global_prompt_for_stage0()
+    {
+        T2IParamInput input = BuildEditInput(
+            "Base",
+            enableBase2EditGroup: true,
+            prompt: "global prompt <edit[0]><setvar[tmp,false]:only-tag>"
+        );
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        List<string> prompts = CollectEncoderPrompts(workflow);
+
+        Assert.Contains(prompts, p => p.Contains("global prompt", StringComparison.Ordinal));
+        Assert.DoesNotContain(prompts, p => p.Contains("only-tag", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Edit_stage_with_only_tags_falls_back_to_previous_edit_stage_then_global()
+    {
+        T2IParamInput input = BuildEditInput(
+            "Base",
+            enableBase2EditGroup: true,
+            prompt: "global prompt <edit[0]>stage0 text <edit[1]><setvar[tmp,false]:only-tag>"
+        );
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["vae"] = "None",
+                ["steps"] = 20,
+                ["cfgScale"] = 7.0,
+                ["sampler"] = "euler",
+                ["scheduler"] = "normal"
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
+        Assert.Equal(2, samplers.Count);
+
+        List<string> samplerPrompts = [];
+        foreach (WorkflowNode sampler in samplers)
+        {
+            JArray positiveRef = RequireConnectionInput(sampler.Node, "positive");
+            string positiveNodeId = $"{positiveRef[0]}";
+            string positiveClass = RequireClassType(workflow, positiveNodeId);
+
+            JArray conditioningRef = positiveRef;
+            if (positiveClass == "ReferenceLatent")
+            {
+                WorkflowNode referenceLatent = WorkflowAssertions.RequireNodeById(workflow, positiveNodeId);
+                conditioningRef = RequireConnectionInput(referenceLatent.Node, "conditioning");
+            }
+
+            WorkflowNode encoder = WorkflowAssertions.RequireNodeById(workflow, $"{conditioningRef[0]}");
+            Assert.Equal("SwarmClipTextEncodeAdvanced", RequireClassType(workflow, encoder.Id));
+            if (encoder.Node?["inputs"] is JObject encInputs
+                && encInputs.TryGetValue("prompt", out JToken promptTok))
+            {
+                samplerPrompts.Add($"{promptTok}");
+            }
+        }
+
+        Assert.Equal(2, samplerPrompts.Count);
+        Assert.All(samplerPrompts, p => Assert.Contains("stage0 text", p, StringComparison.Ordinal));
+        Assert.DoesNotContain(samplerPrompts, p => p.Contains("only-tag", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Stage_fallback_prompt_from_setvar_false_does_not_include_leading_lt()
+    {
+        const string portrait = "a portrait of a character in a scenic environment by Tom Everhart";
+        string prompt = "<setvar[mplength, false]:30-50>\n"
+            + "<setvar[style, false]:Mixed media in the style of Jim Dine, iconic personal motifs like hearts and robes, expressive mixed-media assemblage, raw and heavily textured gestural marks, expressive light, bold color palette, autobiographical and emotionally raw.>\n\n"
+            + $"{portrait}\n\n"
+            + "<edit[0]>aaa";
+
+        T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: prompt);
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Refiner",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.4,
+                ["model"] = ModelPrep.UseRefiner,
+                ["steps"] = 10,
+                ["cfgScale"] = 6.0,
+                ["sampler"] = "euler",
+                ["scheduler"] = "normal"
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        List<string> prompts = CollectEncoderPrompts(workflow);
+
+        Assert.Contains(prompts, p => p.Trim() == "aaa");
+        Assert.Contains(prompts, p => p.Contains(portrait, StringComparison.Ordinal) && !p.TrimStart().StartsWith("<", StringComparison.Ordinal));
+        Assert.DoesNotContain(prompts, p => p.Contains(portrait, StringComparison.Ordinal) && p.TrimStart().StartsWith("<", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void KeepPreEditImage_adds_save_image_node()
     {
         // Use a "final step" run so we can assert SaveImage is wired to the *pre-edit* decode
