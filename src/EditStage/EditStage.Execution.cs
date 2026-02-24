@@ -2,6 +2,7 @@ using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
+using Image = SwarmUI.Utils.Image;
 
 namespace Base2Edit;
 
@@ -710,26 +711,44 @@ public partial class EditStage
         int stageIndex
     )
     {
-        int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
-        int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
-        string samplerNode = g.CreateKSampler(
-            model,
-            conditioning.Positive,
-            conditioning.Negative,
-            g.FinalSamples,
-            editParams.Cfg,
-            editParams.Steps,
-            startStep,
-            10000,
-            editParams.Seed,
-            returnWithLeftoverNoise: false,
-            addNoise: true,
-            explicitSampler: editParams.Sampler,
-            explicitScheduler: editParams.Scheduler,
-            sectionId: stageSectionId
-        );
+        bool hadPromptImages = g.UserInput.TryGet(T2IParamTypes.PromptImages, out List<Image> promptImages);
+        if (hadPromptImages)
+        {
+            // Keep base-stage prompt-image behavior untouched, but prevent edit samplers from
+            // implicitly chaining prompt images unless the user explicitly requests <b2eimage[promptN]>.
+            g.UserInput.Remove(T2IParamTypes.PromptImages);
+        }
 
-        g.FinalSamples = [samplerNode, 0];
+        try
+        {
+            int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
+            int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
+            string samplerNode = g.CreateKSampler(
+                model,
+                conditioning.Positive,
+                conditioning.Negative,
+                g.FinalSamples,
+                editParams.Cfg,
+                editParams.Steps,
+                startStep,
+                10000,
+                editParams.Seed,
+                returnWithLeftoverNoise: false,
+                addNoise: true,
+                explicitSampler: editParams.Sampler,
+                explicitScheduler: editParams.Scheduler,
+                sectionId: stageSectionId
+            );
+
+            g.FinalSamples = [samplerNode, 0];
+        }
+        finally
+        {
+            if (hadPromptImages)
+            {
+                g.UserInput.Set(T2IParamTypes.PromptImages, promptImages);
+            }
+        }
     }
 
     private static void FinalizeEditOutput(WorkflowGenerator g, JArray vae, bool isFinalStep, bool allowFinalDecodeRetarget)

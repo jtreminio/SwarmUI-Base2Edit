@@ -333,6 +333,67 @@ public class B2EImageReferenceTests
     }
 
     [Fact]
+    public void B2EImage_prompt_images_are_not_auto_referenced_in_edit_stages_without_tag()
+    {
+        using var testContext = new SwarmUiTestContext();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler
+        };
+
+        var flux2ModelClass = new T2IModelClass
+        {
+            ID = "unit-test-flux2",
+            Name = "UnitTest Flux2",
+            CompatClass = T2IModelClassSorter.CompatFlux2,
+            StandardWidth = 1024,
+            StandardHeight = 1024
+        };
+        var flux2Model = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Flux2.safetensors", "UnitTest_Flux2.safetensors")
+        {
+            ModelClass = flux2ModelClass
+        };
+        sdHandler.Models[flux2Model.Name] = flux2Model;
+
+        T2IParamInput input = BuildInput("Refiner", "global <edit[0]>stage0 <edit[1]>stage1");
+        input.Set(T2IParamTypes.Model, flux2Model);
+        input.Set(T2IParamTypes.RefinerModel, flux2Model);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditStages, new JArray(
+            MakeStage("Edit Stage 0", model: ModelPrep.UseBase)
+        ).ToString());
+        input.Set(T2IParamTypes.PromptImages, new List<Image> { new(TinyPngBytes, MediaType.ImagePng) });
+
+        WorkflowGenerator.WorkflowGenStep fluxSeedStep = new(g =>
+        {
+            _ = g.CreateNode("UnitTest_Model", new JObject(), id: "4", idMandatory: false);
+            _ = g.CreateNode("UnitTest_Latent", new JObject(), id: "10", idMandatory: false);
+
+            g.FinalModel = ["4", 0];
+            g.FinalClip = ["4", 1];
+            g.FinalVae = ["4", 2];
+            g.FinalSamples = ["10", 0];
+            g.FinalImageOut = null;
+            g.FinalLoadedModel = flux2Model;
+            g.FinalLoadedModelList = [flux2Model];
+        }, -1000);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+            input,
+            new[] { fluxSeedStep }.Concat(WorkflowTestHarness.Base2EditSteps())
+        );
+
+        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        Assert.Equal(2, refs.Count);
+        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "LoadImage"));
+        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SwarmLoadImageB64"));
+    }
+
+    [Fact]
     public void B2EImage_prompt_reference_is_skipped_when_prompt_image_missing()
     {
         T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0 <b2eimage[prompt1]>");
