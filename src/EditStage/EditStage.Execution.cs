@@ -65,7 +65,7 @@ public partial class EditStage
             Sampler: ResolveInheritedSampler(g, modelSelection),
             Scheduler: ResolveInheritedScheduler(g, modelSelection)
         );
-        var conditioning = CreateEditConditioning(g, modelState.Clip, prompts, editParams);
+        var conditioning = CreateEditConditioning(g, modelState.Clip, prompts, editParams, stageIndex, modelState.Vae);
         ExecuteEditSampler(g, modelState.Model, conditioning, editParams, stageIndex);
 
         // Keep g.FinalVae aligned with the current samples for any subsequent stages
@@ -637,21 +637,47 @@ public partial class EditStage
         WorkflowGenerator g,
         JArray clip,
         EditPrompts prompts,
-        EditParameters editParams
+        EditParameters editParams,
+        int stageIndex,
+        JArray currentStageVae
     )
     {
-        string posCondNode = CreateConditioningNode(g, clip, prompts.Positive, editParams);
+        B2EImagePromptParseResult imageRefs = ParseB2EImageTags(prompts, stageIndex);
+        EditPrompts cleanedPrompts = imageRefs.Prompts;
+        string posCondNode = CreateConditioningNode(g, clip, cleanedPrompts.Positive, editParams);
         JArray positiveConditioning = [posCondNode, 0];
+
         if (!editParams.RefineOnly)
         {
-            string refLatentNode = g.CreateNode("ReferenceLatent", new JObject()
+            List<JArray> referencedLatents = ResolveB2EImageReferenceLatents(
+                g,
+                imageRefs.References,
+                stageIndex,
+                currentStageVae
+            );
+
+            foreach (JArray referencedLatent in referencedLatents)
             {
-                ["conditioning"] = new JArray { posCondNode, 0 },
+                string referenceNode = g.CreateNode("ReferenceLatent", new JObject()
+                {
+                    ["conditioning"] = positiveConditioning,
+                    ["latent"] = referencedLatent
+                });
+                positiveConditioning = [referenceNode, 0];
+            }
+
+            string currentStageReferenceNode = g.CreateNode("ReferenceLatent", new JObject()
+            {
+                ["conditioning"] = positiveConditioning,
                 ["latent"] = g.FinalSamples
             });
-            positiveConditioning = [refLatentNode, 0];
+            positiveConditioning = [currentStageReferenceNode, 0];
         }
-        string negCondNode = CreateConditioningNode(g, clip, prompts.Negative, editParams);
+        else if (imageRefs.References.Count > 0)
+        {
+            Logs.Warning($"Base2Edit: Ignoring <b2eimage[...]> references in stage {stageIndex} because Refine Only is enabled.");
+        }
+        string negCondNode = CreateConditioningNode(g, clip, cleanedPrompts.Negative, editParams);
 
         return new EditConditioning(positiveConditioning, [negCondNode, 0]);
     }

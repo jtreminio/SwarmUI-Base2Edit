@@ -17,6 +17,7 @@ public partial class EditStage
             if (isFinalStep)
             {
                 NormalizeFinalStepAnchor(g, preferCurrentImageAnchor);
+                CaptureRefinerAnchorForB2EImage(g);
             }
 
             List<ResolvedStage> resolved = ResolveStages(stages);
@@ -64,6 +65,7 @@ public partial class EditStage
                         RewireFinalConsumers: !preferCurrentImageAnchor
                     )
                 );
+                CaptureEditStageOutputForB2EImage(g, primary.Spec.Id);
                 executed.Add(primary.Spec.Id);
 
                 JArray primarySamples = g.FinalSamples;
@@ -90,6 +92,7 @@ public partial class EditStage
                             RewireFinalConsumers: !preferCurrentImageAnchor
                         )
                     );
+                    CaptureEditStageOutputForB2EImage(g, parallel.Spec.Id);
 
                     JArray parallelSamples = g.FinalSamples;
                     JArray parallelVae = g.FinalVae;

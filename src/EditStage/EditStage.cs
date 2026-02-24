@@ -60,7 +60,9 @@ public partial class EditStage
 
         if (!isFinalStep)
         {
+            ResetB2EImageReferenceStore(g);
             CaptureBaseStageModelState(g);
+            CaptureBaseAnchorForB2EImage(g);
         }
 
         _ = TryGetEditStages(g, out List<JsonStageSpec> jsonStages);

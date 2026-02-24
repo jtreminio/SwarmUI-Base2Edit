@@ -12,6 +12,7 @@ class Base2Edit
         this.stageEditor = stageEditor;
         this.registerEditPromptPrefix();
         this.registerB2EPromptPrefix();
+        this.registerB2EImagePrefix();
         window.base2editRunEditOnlyFromImage = this.runEditOnlyFromImage.bind(this);
         this.waitForButtons();
 
@@ -114,6 +115,57 @@ class Base2Edit
             () => [
                 '\nInserts "<b2eprompt[refiner]>"',
                 '\nFor edit stages, use numeric index 0+ (example: "<b2eprompt[0]>").'
+            ],
+            true,
+        );
+    }
+
+    private registerB2EImagePrefix(): void
+    {
+        promptTabComplete.registerPrefix(
+            "b2eimage",
+            "Use an image reference from an earlier stage inside an <edit> section.",
+            () => [
+                '\nUse "<b2eimage[base]>" to reference the base-stage image.',
+                '\nUse "<b2eimage[refiner]>" to reference the refiner-stage image (only available in final-stage edits).',
+                '\nUse "<b2eimage[edit0]>" for earlier edit stages.',
+                '\nUse "<b2eimage[prompt0]>" for prompt image index 0.'
+            ],
+            false,
+        );
+
+        promptTabComplete.registerPrefix(
+            "b2eimage[base]",
+            "Base2Edit image reference: base stage image.",
+            () => [
+                '\nInserts "<b2eimage[base]>"'
+            ],
+            true,
+        );
+
+        promptTabComplete.registerPrefix(
+            "b2eimage[refiner]",
+            "Base2Edit image reference: refiner stage image.",
+            () => [
+                '\nInserts "<b2eimage[refiner]>"'
+            ],
+            true,
+        );
+
+        promptTabComplete.registerPrefix(
+            "b2eimage[edit0]",
+            "Base2Edit image reference: edit stage 0 output image.",
+            () => [
+                '\nInserts "<b2eimage[edit0]>"'
+            ],
+            true,
+        );
+
+        promptTabComplete.registerPrefix(
+            "b2eimage[prompt0]",
+            "Base2Edit image reference: prompt image 0.",
+            () => [
+                '\nInserts "<b2eimage[prompt0]>"'
             ],
             true,
         );

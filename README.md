@@ -17,6 +17,13 @@ You can also reuse another stage prompt inside an edit section with `<b2eprompt[
 - If the target stage prompt is not defined, it falls back to the global prompt
 - The inserted text is the final parsed prompt text (not raw `<random>`, `<wildcard>`, `<lora>`, etc.)
 
+You can also reference images from earlier stages with `<b2eimage[n]>` (inside `<edit>` / `<edit[n]>`):
+- `n` can be `base`, `refiner`, `edit0`, `edit1`, ... or prompt image index (`prompt0`, `prompt1`, ...)
+- Edit-stage references must target an earlier edit stage (current/future stage refs are ignored)
+- Invalid or unavailable references are ignored with a warning
+- If `Refine Only` is enabled, `<b2eimage>` tags are ignored
+- When VAE conversion is required, Base2Edit reuses existing decode/encode nodes when possible
+
 Example:
 ```
 global prompt

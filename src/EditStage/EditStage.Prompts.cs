@@ -133,7 +133,11 @@ public partial class EditStage
         string sourceSection = ExtractPromptWithoutB2EPrompt(sourcePrompt, stageIndex);
         if (string.IsNullOrWhiteSpace(sourceSection))
         {
-            // Preserve "explicitly empty section" behavior.
+            return false;
+        }
+
+        if (sourceSection.Contains("<b2eimage", StringComparison.OrdinalIgnoreCase))
+        {
             return false;
         }
 
