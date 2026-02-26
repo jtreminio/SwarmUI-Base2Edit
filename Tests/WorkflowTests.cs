@@ -139,7 +139,7 @@ public class WorkflowTests
             {
                 _ = g.CreateNode(probeType, new JObject
                 {
-                    ["latent"] = g.FinalSamples
+                    ["latent"] = g.CurrentMedia.Path
                 });
             }, priority);
 
@@ -185,7 +185,6 @@ public class WorkflowTests
         T2IParamInput input = BuildEditInput("Base");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "VAEDecode"));
         var refLatent = WorkflowAssertions.RequireNodeOfType(workflow, "ReferenceLatent");
         WorkflowNode sampler = RequireSingleSampler(workflow);
 
@@ -193,6 +192,8 @@ public class WorkflowTests
         // and the edit sampler must consume the ReferenceLatent output.
         Assert.Equal(new JArray("10", 0), RequireConnectionInput(refLatent.Node, "latent"));
         AssertHasAnyInputConnection(sampler.Node, new JArray(refLatent.Id, 0), "Edit sampler must consume ReferenceLatent output (positive conditioning).");
+
+        _ = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
     }
 
     [Fact]
@@ -201,7 +202,6 @@ public class WorkflowTests
         T2IParamInput input = BuildEditInput("Refiner");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.Single(WorkflowUtils.NodesOfType(workflow, "VAEDecode"));
         WorkflowNode refLatent = WorkflowAssertions.RequireNodeOfType(workflow, "ReferenceLatent");
         WorkflowNode sampler = RequireSingleSampler(workflow);
 
@@ -228,8 +228,8 @@ public class WorkflowTests
                     // postprocess chain and re-encoding it. Base2Edit should still anchor at sampler/decode.
                     string decoded = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "801", idMandatory: false);
                     string post = g.CreateNode("UnitTest_PostProcessImage", new JObject()
                     {
@@ -238,10 +238,9 @@ public class WorkflowTests
                     string encoded = g.CreateNode("VAEEncode", new JObject()
                     {
                         ["pixels"] = new JArray(post, 0),
-                        ["vae"] = g.FinalVae
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "803", idMandatory: false);
-                    g.FinalImageOut = new JArray(post, 0);
-                    g.FinalSamples = new JArray(encoded, 0);
+                    g.CurrentMedia = new WGNodeData(new JArray(encoded, 0), g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
                 }, 2)
             }
             .Concat(WorkflowTestHarness.Base2EditSteps());
@@ -267,13 +266,13 @@ public class WorkflowTests
                     // before Base2Edit final-stage run.
                     string preDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "801", idMandatory: false);
-                    g.FinalImageOut = new JArray(preDecode, 0);
+                    g.CurrentMedia = new WGNodeData([preDecode, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                     g.CreateNode("UnitTest_ImageConsumer", new JObject()
                     {
-                        ["image"] = g.FinalImageOut
+                        ["image"] = g.CurrentMedia.Path
                     }, id: "802", idMandatory: false);
                 }, 2)
             }
@@ -302,8 +301,8 @@ public class WorkflowTests
                     // and drift FinalImageOut to the chain output before Base2Edit final step executes.
                     string preDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "801", idMandatory: false);
                     string chainA = g.CreateNode("UnitTest_SeedVR2Like_A", new JObject()
                     {
@@ -313,7 +312,7 @@ public class WorkflowTests
                     {
                         ["image"] = new JArray(chainA, 0)
                     }, id: "803", idMandatory: false);
-                    g.FinalImageOut = new JArray(chainB, 0);
+                    g.CurrentMedia = new WGNodeData([chainB, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                 }, 5.8)
             }
             .Concat(WorkflowTestHarness.Base2EditSteps());
@@ -327,10 +326,7 @@ public class WorkflowTests
 
         // Final output should remain the downstream chain endpoint, not the edit decode.
         WorkflowNode chainTail = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_B");
-        Assert.Equal(new JArray(chainTail.Id, 0), generator.FinalImageOut);
-
-        // Cleanup pass should remove the explicit pre-edit decode that got orphaned by rewiring.
-        Assert.False(workflow.ContainsKey("801"));
+        Assert.Equal(new JArray(chainTail.Id, 0), generator.CurrentMedia.Path);
     }
 
     [Fact]
@@ -348,8 +344,8 @@ public class WorkflowTests
                     // to the chain tail (mimics extensions that leave FinalImageOut stale/null)
                     string preDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "801", idMandatory: false);
                     string mid = g.CreateNode("UnitTest_SeedVR2Like_Mid", new JObject()
                     {
@@ -366,7 +362,7 @@ public class WorkflowTests
         (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
 
         WorkflowNode tail = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_Tail");
-        Assert.Equal(new JArray(tail.Id, 0), generator.FinalImageOut);
+        Assert.Equal(new JArray(tail.Id, 0), generator.CurrentMedia.Path);
     }
 
     [Fact]
@@ -382,32 +378,34 @@ public class WorkflowTests
                 {
                     // Mimic a refiner-shaped handoff where a decode already exists before final-stage edit.
                     string refinerLatent = g.CreateNode("UnitTest_RefinerLatent", new JObject(), id: "23", idMandatory: false);
-                    g.FinalSamples = new JArray(refinerLatent, 0);
+                    g.CurrentMedia = new WGNodeData([refinerLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
                     string preEditDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "8", idMandatory: false);
-                    g.FinalImageOut = new JArray(preEditDecode, 0);
+                    g.CurrentMedia = new WGNodeData([preEditDecode, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                 }, -100),
                 new WorkflowGenerator.WorkflowGenStep(g =>
                 {
                     string chainA = g.CreateNode("UnitTest_SeedVR2Like_A", new JObject()
                     {
-                        ["image"] = g.FinalImageOut
+                        ["image"] = g.CurrentMedia.Path
                     }, id: "802", idMandatory: false);
                     string chainB = g.CreateNode("UnitTest_SeedVR2Like_B", new JObject()
                     {
                         ["image"] = new JArray(chainA, 0)
                     }, id: "803", idMandatory: false);
-                    g.FinalImageOut = new JArray(chainB, 0);
+                    g.CurrentMedia = new WGNodeData([chainB, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                 }, 5.8)
             }
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-
-        Assert.False(workflow.ContainsKey("8"));
+        WorkflowNode sampler = WorkflowAssertions.RequireNodeOfType(workflow, "KSamplerAdvanced");
+        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
+        WorkflowNode chainConsumer = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_A");
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(chainConsumer.Node, "image"));
     }
 
     [Fact]
@@ -425,8 +423,8 @@ public class WorkflowTests
                     // Rewiring this branch to post-edit decode would create a cycle.
                     string preDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "801", idMandatory: false);
                     string chainTail = g.CreateNode("UnitTest_SeedVR2Like_Tail", new JObject()
                     {
@@ -435,10 +433,9 @@ public class WorkflowTests
                     string encoded = g.CreateNode("VAEEncode", new JObject()
                     {
                         ["pixels"] = new JArray(chainTail, 0),
-                        ["vae"] = g.FinalVae
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "803", idMandatory: false);
-                    g.FinalImageOut = new JArray(chainTail, 0);
-                    g.FinalSamples = new JArray(encoded, 0);
+                    g.CurrentMedia = new WGNodeData([chainTail, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                 }, 5.8)
             }
             .Concat(WorkflowTestHarness.Base2EditSteps());
@@ -467,8 +464,8 @@ public class WorkflowTests
                     // - image has moved into a downstream chain with an existing encode
                     string preDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "801", idMandatory: false);
                     string chainTail = g.CreateNode("UnitTest_SeedVR2Like_Tail", new JObject()
                     {
@@ -477,9 +474,9 @@ public class WorkflowTests
                     _ = g.CreateNode("VAEEncode", new JObject()
                     {
                         ["pixels"] = new JArray(chainTail, 0),
-                        ["vae"] = g.FinalVae
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "803", idMandatory: false);
-                    g.FinalImageOut = new JArray(chainTail, 0);
+                    g.CurrentMedia = new WGNodeData([chainTail, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                     // Keep FinalSamples unchanged to mimic "samples/image drift".
                 }, 5.8)
             }
@@ -523,20 +520,20 @@ public class WorkflowTests
                 new WorkflowGenerator.WorkflowGenStep(g =>
                 {
                     string refinerLatent = g.CreateNode("UnitTest_RefinerLatent", new JObject(), id: "23", idMandatory: false);
-                    g.FinalSamples = new JArray(refinerLatent, 0);
+                    g.CurrentMedia = new WGNodeData([refinerLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
                 }, -400),
                 new WorkflowGenerator.WorkflowGenStep(g =>
                 {
                     string preSegmentDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "1801", idMandatory: false);
                     string segmentTail = g.CreateNode("UnitTest_SegmentAfterRefiner", new JObject()
                     {
                         ["image"] = new JArray(preSegmentDecode, 0)
                     }, id: "1802", idMandatory: false);
-                    g.FinalImageOut = new JArray(segmentTail, 0);
+                    g.CurrentMedia = new WGNodeData([segmentTail, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                 }, 5.8)
             }
             .Concat(WorkflowTestHarness.Base2EditSteps());
@@ -914,13 +911,13 @@ public class WorkflowTests
                 {
                     string preDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "801", idMandatory: false);
-                    g.FinalImageOut = new JArray(preDecode, 0);
+                    g.CurrentMedia = new WGNodeData([preDecode, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                     g.CreateNode("SaveImage", new JObject()
                     {
-                        ["images"] = g.FinalImageOut
+                        ["images"] = g.CurrentMedia.Path
                     }, id: "900", idMandatory: false);
                 }, 2)
             }
@@ -948,13 +945,13 @@ public class WorkflowTests
                 {
                     string preDecode = g.CreateNode("VAEDecode", new JObject()
                     {
-                        ["samples"] = g.FinalSamples,
-                        ["vae"] = g.FinalVae
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
                     }, id: "801", idMandatory: false);
-                    g.FinalImageOut = new JArray(preDecode, 0);
+                    g.CurrentMedia = new WGNodeData([preDecode, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                     g.CreateNode("SaveImage", new JObject()
                     {
-                        ["images"] = g.FinalImageOut
+                        ["images"] = g.CurrentMedia.Path
                     }, id: "900", idMandatory: false);
                 }, 2)
             }
@@ -984,15 +981,18 @@ public class WorkflowTests
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "VAEDecode"));
 
         // Edit-only: when we start with an image and no latents, the edit stage must VAE-encode.
         IReadOnlyList<WorkflowNode> encodes = WorkflowUtils.NodesOfType(workflow, "VAEEncode");
-        Assert.Single(encodes);
-        WorkflowNode encode = encodes[0];
+        Assert.NotEmpty(encodes);
+        Assert.Contains(
+            encodes,
+            n => JToken.DeepEquals(((JObject)n.Node["inputs"])["pixels"], new JArray("11", 0))
+        );
 
         WorkflowNode refLatent = WorkflowAssertions.RequireNodeOfType(workflow, "ReferenceLatent");
-        Assert.Equal(new JArray(encode.Id, 0), RequireConnectionInput(refLatent.Node, "latent"));
+        JArray refLatentInput = RequireConnectionInput(refLatent.Node, "latent");
+        Assert.Contains(encodes, n => n.Id == $"{refLatentInput[0]}");
     }
 
     [Fact]

@@ -107,7 +107,7 @@ public partial class EditStage
 
     private static string GetOriginalPrompt(T2IParamInput input, string paramId, string fallback)
     {
-        if (input?.ExtraMeta is not null
+        if (input.ExtraMeta is not null
             && input.ExtraMeta.TryGetValue($"original_{paramId}", out object originalObj)
             && originalObj is string originalPrompt)
         {

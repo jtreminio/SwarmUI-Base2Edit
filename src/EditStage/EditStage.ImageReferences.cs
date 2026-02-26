@@ -46,28 +46,18 @@ public partial class EditStage
 
     private static void ResetB2EImageReferenceStore(WorkflowGenerator g)
     {
-        if (g?.UserInput?.ExtraMeta is null)
-        {
-            return;
-        }
-
         g.UserInput.ExtraMeta[B2EImageReferenceStoreKey] = new B2EImageReferenceStore();
     }
 
     private static void CaptureBaseAnchorForB2EImage(WorkflowGenerator g)
     {
-        if (g?.UserInput?.ExtraMeta is null)
-        {
-            return;
-        }
-
         B2EImageReferenceStore store = GetOrCreateB2EImageReferenceStore(g.UserInput);
         if (store.Base is not null)
         {
             return;
         }
 
-        B2EImageStageReference snap = SnapshotStageReference(g.FinalSamples, g.FinalVae, g.FinalImageOut);
+        B2EImageStageReference snap = SnapshotCurrentStageReference(g);
         if (snap is not null)
         {
             store.Base = snap;
@@ -76,13 +66,8 @@ public partial class EditStage
 
     private static void CaptureRefinerAnchorForB2EImage(WorkflowGenerator g)
     {
-        if (g?.UserInput?.ExtraMeta is null)
-        {
-            return;
-        }
-
         B2EImageReferenceStore store = GetOrCreateB2EImageReferenceStore(g.UserInput);
-        B2EImageStageReference snap = SnapshotStageReference(g.FinalSamples, g.FinalVae, g.FinalImageOut);
+        B2EImageStageReference snap = SnapshotCurrentStageReference(g);
         if (snap is not null)
         {
             store.Refiner = snap;
@@ -91,16 +76,75 @@ public partial class EditStage
 
     private static void CaptureEditStageOutputForB2EImage(WorkflowGenerator g, int stageIndex)
     {
-        if (g?.UserInput?.ExtraMeta is null || stageIndex < 0)
+        if (stageIndex < 0)
         {
             return;
         }
 
         B2EImageReferenceStore store = GetOrCreateB2EImageReferenceStore(g.UserInput);
-        B2EImageStageReference snap = SnapshotStageReference(g.FinalSamples, g.FinalVae, g.FinalImageOut);
+        B2EImageStageReference snap = SnapshotCurrentStageReference(g);
         if (snap is not null)
         {
             store.EditStages[stageIndex] = snap;
+        }
+    }
+
+    private static B2EImageStageReference SnapshotCurrentStageReference(WorkflowGenerator g)
+    {
+        JArray samples = CloneNodeRef(TryGetCurrentSamplesRef(g));
+        JArray vae = CloneNodeRef(TryGetCurrentVaeRef(g));
+        JArray image = CloneNodeRef(TryGetCurrentImageRef(g));
+        return SnapshotStageReference(samples, vae, image);
+    }
+
+    private static JArray TryGetCurrentSamplesRef(WorkflowGenerator g)
+    {
+        if (g.CurrentMedia?.IsLatentData == true && g.CurrentMedia.Path is JArray latentPath)
+        {
+            return latentPath;
+        }
+
+        try
+        {
+            return g.CurrentMedia?.AsLatentImage(g.CurrentVae)?.Path;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static JArray TryGetCurrentImageRef(WorkflowGenerator g)
+    {
+        if (g.CurrentMedia?.IsRawMedia == true && g.CurrentMedia.Path is JArray imagePath)
+        {
+            return imagePath;
+        }
+
+        try
+        {
+            return g.CurrentMedia?.AsRawImage(g.CurrentVae)?.Path;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static JArray TryGetCurrentVaeRef(WorkflowGenerator g)
+    {
+        if (g.CurrentVae?.Path is JArray currentVaePath)
+        {
+            return currentVaePath;
+        }
+
+        try
+        {
+            return g.CurrentVae?.Path;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -120,7 +164,7 @@ public partial class EditStage
 
     private static B2EImageReferenceStore GetOrCreateB2EImageReferenceStore(T2IParamInput input)
     {
-        if (input?.ExtraMeta is null)
+        if (input.ExtraMeta is null)
         {
             return new B2EImageReferenceStore();
         }
@@ -274,7 +318,7 @@ public partial class EditStage
     {
         List<JArray> resolved = [];
 
-        if (g?.UserInput is null || references is null || references.Count == 0)
+        if (references is null || references.Count == 0)
         {
             return resolved;
         }
@@ -299,7 +343,8 @@ public partial class EditStage
 
             // Current-stage latent is always appended by the existing final ReferenceLatent node;
             // avoid generating a duplicate no-op chain entry when a b2eimage resolves to the same latent.
-            if (g.FinalSamples is not null && JToken.DeepEquals(resolvedLatent, g.FinalSamples))
+            JArray currentSamples = TryGetCurrentSamplesRef(g);
+            if (currentSamples is not null && JToken.DeepEquals(resolvedLatent, currentSamples))
             {
                 continue;
             }
@@ -366,8 +411,8 @@ public partial class EditStage
             return null;
         }
 
-        string imageNode = g.CreateLoadImageNode(promptImages[reference.Index], $"${{promptimages.{reference.Index}}}", false);
-        JArray imageRef = [imageNode, 0];
+        WGNodeData loadedImage = g.LoadImage(promptImages[reference.Index], $"${{promptimages.{reference.Index}}}", false);
+        JArray imageRef = loadedImage.Path;
 
         if (VaeNodeReuse.ReuseVaeEncodeForImage(g, imageRef, currentStageVae, out JArray reusedSamples))
         {
@@ -430,8 +475,9 @@ public partial class EditStage
             }
             else
             {
-                string decodeNode = g.CreateVAEDecode(stageRef.Vae, stageRef.Samples);
-                imageRef = [decodeNode, 0];
+                WGNodeData decoded = new WGNodeData(stageRef.Samples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+                    .DecodeLatents(new WGNodeData(stageRef.Vae, g, WGNodeData.DT_VAE, g.CurrentCompat()), false);
+                imageRef = decoded.Path;
             }
         }
 

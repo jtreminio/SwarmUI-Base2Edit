@@ -28,12 +28,14 @@ public partial class EditStage
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
         string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
-        bool needsPreEditImage = shouldSavePreEdit || modelState.MustReencode || g.FinalSamples is null;
-        JArray preEditImageTailRef = g.FinalImageOut is null ? null : new JArray(g.FinalImageOut[0], g.FinalImageOut[1]);
+        JArray currentSamples = TryGetCurrentSamplesRef(g);
+        JArray currentImageOut = TryGetCurrentImageRef(g);
+        bool needsPreEditImage = shouldSavePreEdit || modelState.MustReencode || currentSamples is null;
+        JArray preEditImageTailRef = currentImageOut is null ? null : new JArray(currentImageOut[0], currentImageOut[1]);
         JArray preEditConsumerSourceRef = preEditImageTailRef;
-        if (isFinalStep && g.FinalSamples is not null)
+        if (isFinalStep && currentSamples is not null)
         {
-            IReadOnlyList<WorkflowNode> preEditDecodes = WorkflowUtils.FindVaeDecodesBySamples(g.Workflow, g.FinalSamples);
+            IReadOnlyList<WorkflowNode> preEditDecodes = WorkflowUtils.FindVaeDecodesBySamples(g.Workflow, currentSamples);
             if (preEditDecodes.Count > 0)
             {
                 WorkflowNode decode = preEditDecodes[0];
@@ -69,35 +71,32 @@ public partial class EditStage
         var conditioning = CreateEditConditioning(g, modelState.Clip, prompts, editParams, stageIndex, modelState.Vae);
         ExecuteEditSampler(g, modelState.Model, conditioning, editParams, stageIndex);
 
-        // Keep g.FinalVae aligned with the current samples for any subsequent stages
-        g.FinalVae = modelState.Vae;
-
-        // If the edit stage is injected mid-workflow (after Base but before upscale/refiner),
-        // subsequent steps will decode/encode the current latent using g.FinalVae.
-        // Ensure it matches the VAE that corresponds to the edited latent.
-        if (!isFinalStep)
+        // Keep the pipeline VAE aligned when we have a concrete VAE reference.
+        // Avoid setting placeholder refs early, which can carry null compat metadata in new SwarmUI.
+        if (modelState.Vae is not null && g.CurrentCompat() is not null)
         {
-            g.FinalVae = modelState.Vae;
+            g.CurrentVae = new WGNodeData(modelState.Vae, g, WGNodeData.DT_VAE, g.CurrentCompat());
         }
 
         FinalizeEditOutput(g, modelState.Vae, isFinalStep, options.AllowFinalDecodeRetarget);
 
         // Final-step edit runs late in the workflow. If earlier extensions already wired image consumers
         // (eg postprocess/upscaler chains), repoint them from pre-edit image to post-edit image.
+        JArray postEditImageOut = TryGetCurrentImageRef(g);
         if (isFinalStep
             && options.RewireFinalConsumers
             && preEditConsumerSourceRef is not null
-            && g.FinalImageOut is not null
-            && !JToken.DeepEquals(preEditConsumerSourceRef, g.FinalImageOut))
+            && postEditImageOut is not null
+            && !JToken.DeepEquals(preEditConsumerSourceRef, postEditImageOut))
         {
-            string postEditImageNodeId = $"{g.FinalImageOut[0]}";
+            string postEditImageNodeId = $"{postEditImageOut[0]}";
             int rewired = WorkflowUtils.RetargetInputConnections(
                 g.Workflow,
                 preEditConsumerSourceRef,
-                g.FinalImageOut,
+                postEditImageOut,
                 conn =>
                 {
-                    if (g.Workflow?[conn.NodeId] is not JObject node)
+                    if (g.Workflow[conn.NodeId] is not JObject node)
                     {
                         return true;
                     }
@@ -117,12 +116,12 @@ public partial class EditStage
             if (rewired > 0 && preEditImageTailRef is not null
                 && WorkflowUtils.IsNodeReachableFromNode(g.Workflow, postEditImageNodeId, $"{preEditImageTailRef[0]}"))
             {
-                g.FinalImageOut = preEditImageTailRef;
+                g.CurrentMedia = new WGNodeData(preEditImageTailRef, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             }
             else if (rewired > 0 && preEditImageTailRef is null
-                && TryResolveUniqueDownstreamImageTail(g, g.FinalImageOut, out JArray inferredTail))
+                && TryResolveUniqueDownstreamImageTail(g, postEditImageOut, out JArray inferredTail))
             {
-                g.FinalImageOut = inferredTail;
+                g.CurrentMedia = new WGNodeData(inferredTail, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             }
 
             if (rewired > 0
@@ -143,12 +142,8 @@ public partial class EditStage
 
     private static void CleanupDanglingVaeDecodeNodes(WorkflowGenerator g)
     {
-        if (g?.Workflow is null)
-        {
-            return;
-        }
-
-        string keepNodeId = g.FinalImageOut is not null ? $"{g.FinalImageOut[0]}" : null;
+        JArray currentImageOut = TryGetCurrentImageRef(g);
+        string keepNodeId = currentImageOut is not null ? $"{currentImageOut[0]}" : null;
         List<WorkflowNode> candidates =
         [
             .. WorkflowUtils.NodesOfType(g.Workflow, "VAEDecode"),
@@ -178,7 +173,7 @@ public partial class EditStage
     private static bool TryResolveUniqueDownstreamImageTail(WorkflowGenerator g, JArray startImageRef, out JArray tailImageRef)
     {
         tailImageRef = startImageRef;
-        if (g?.Workflow is null || startImageRef is null || startImageRef.Count != 2)
+        if (startImageRef is null || startImageRef.Count != 2)
         {
             return false;
         }
@@ -295,10 +290,10 @@ public partial class EditStage
     private static EditModelState PrepareEditModelAndVae(WorkflowGenerator g, bool isFinalStep, int stageIndex, bool trackResolvedModelForMetadata)
     {
         int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
-        JArray preEditVae = g.FinalVae;
-        JArray model = g.FinalModel;
-        JArray clip = g.FinalClip;
-        JArray vae = g.FinalVae;
+        JArray preEditVae = TryGetCurrentVaeRef(g);
+        JArray model = g.CurrentModel.Path;
+        JArray clip = g.CurrentTextEnc.Path;
+        JArray vae = TryGetCurrentVaeRef(g);
 
         if (!ModelPrep.TryResolveEditModel(g, Base2EditExtension.EditModel, out T2IModel editModel, out var mustReencode))
         {
@@ -363,7 +358,7 @@ public partial class EditStage
         {
             mustReencode = true;
             vae = g.CreateVAELoader(refinerVaeOverride.ToString(g.ModelFolderFormat));
-            g.FinalVae = vae;
+            g.CurrentVae = new WGNodeData(vae, g, WGNodeData.DT_VAE, g.CurrentCompat());
         }
 
         // Step 2: if an <edit> section exists and includes <lora>, stack those LoRAs on top of the chosen model stack
@@ -397,7 +392,7 @@ public partial class EditStage
         {
             mustReencode = true;
             vae = g.CreateVAELoader(altEditVae.ToString(g.ModelFolderFormat));
-            g.FinalVae = vae;
+            g.CurrentVae = new WGNodeData(vae, g, WGNodeData.DT_VAE, g.CurrentCompat());
         }
 
         return new EditModelState(model, clip, vae, preEditVae, mustReencode);
@@ -447,11 +442,6 @@ public partial class EditStage
         clip = null;
         vae = null;
 
-        if (g?.UserInput?.ExtraMeta is null)
-        {
-            return false;
-        }
-
         const string kModel = "base2edit.base_model_ref";
         const string kClip = "base2edit.base_clip_ref";
         const string kVae = "base2edit.base_vae_ref";
@@ -478,8 +468,7 @@ public partial class EditStage
 
     private static (List<string> Loras, List<string> Weights, List<string> TencWeights) ExtractEditPromptLoras(WorkflowGenerator g, int stageIndex)
     {
-        if (g?.UserInput is null
-            || !g.UserInput.TryGet(T2IParamTypes.Loras, out List<string> loras)
+        if (!g.UserInput.TryGet(T2IParamTypes.Loras, out List<string> loras)
             || loras is null
             || loras.Count == 0)
         {
@@ -536,22 +525,17 @@ public partial class EditStage
         const string kClip = "base2edit.base_clip_ref";
         const string kVae = "base2edit.base_vae_ref";
 
-        if (g?.UserInput?.ExtraMeta is null)
-        {
-            return;
-        }
-
-        if (!g.UserInput.ExtraMeta.ContainsKey(kModel) && g.FinalModel is JArray fm && fm.Count == 2)
+        if (!g.UserInput.ExtraMeta.ContainsKey(kModel) && g.CurrentModel.Path is JArray fm && fm.Count == 2)
         {
             g.UserInput.ExtraMeta[kModel] = new JArray(fm[0], fm[1]);
         }
 
-        if (!g.UserInput.ExtraMeta.ContainsKey(kClip) && g.FinalClip is JArray fc && fc.Count == 2)
+        if (!g.UserInput.ExtraMeta.ContainsKey(kClip) && g.CurrentTextEnc.Path is JArray fc && fc.Count == 2)
         {
             g.UserInput.ExtraMeta[kClip] = new JArray(fc[0], fc[1]);
         }
 
-        if (!g.UserInput.ExtraMeta.ContainsKey(kVae) && g.FinalVae is JArray fv && fv.Count == 2)
+        if (!g.UserInput.ExtraMeta.ContainsKey(kVae) && TryGetCurrentVaeRef(g) is JArray fv && fv.Count == 2)
         {
             g.UserInput.ExtraMeta[kVae] = new JArray(fv[0], fv[1]);
         }
@@ -559,21 +543,27 @@ public partial class EditStage
 
     private static void EnsureImageAvailable(WorkflowGenerator g, JArray preEditVae)
     {
-        if (g.FinalImageOut is not null)
+        if (TryGetCurrentImageRef(g) is not null)
         {
             return;
         }
 
         // If a prior stage already created a decode node for the current samples,
         // reuse it instead of emitting a duplicate VAEDecode.
-        if (VaeNodeReuse.ReuseVaeDecodeForSamples(g, g.FinalSamples, out JArray reusedImage))
+        JArray currentSamples = TryGetCurrentSamplesRef(g);
+        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamples(g, currentSamples, out JArray reusedImage))
         {
-            g.FinalImageOut = reusedImage;
+            g.CurrentMedia = new WGNodeData(reusedImage, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             return;
         }
 
-        string decodeNode = g.CreateVAEDecode(preEditVae, g.FinalSamples);
-        g.FinalImageOut = [decodeNode, 0];
+        if (currentSamples is null)
+        {
+            return;
+        }
+
+        g.CurrentMedia = new WGNodeData(currentSamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+            .DecodeLatents(new WGNodeData(preEditVae, g, WGNodeData.DT_VAE, g.CurrentCompat()), false);
     }
 
     private static void SavePreEditImageIfNeeded(WorkflowGenerator g, int stageIndex)
@@ -581,12 +571,14 @@ public partial class EditStage
         bool shouldSave = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
 
-        if (shouldSave && g.FinalImageOut is not null)
+        JArray currentImageOut = TryGetCurrentImageRef(g);
+        if (shouldSave && currentImageOut is not null)
         {
             string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
             if (!g.Workflow.ContainsKey(preEditSaveNodeId))
             {
-                g.CreateImageSaveNode(g.FinalImageOut, preEditSaveNodeId);
+                new WGNodeData(currentImageOut, g, WGNodeData.DT_IMAGE, g.CurrentCompat())
+                    .SaveOutput(null, null, id: preEditSaveNodeId);
             }
             Logs.Debug("Base2Edit: Saved pre-edit image");
         }
@@ -594,16 +586,17 @@ public partial class EditStage
 
     private static void ReencodeIfNeeded(WorkflowGenerator g, EditModelState modelState, ReencodeOptions options = default)
     {
-        if (options.ForceFromCurrentImage && g.FinalImageOut is not null)
+        JArray currentImageOut = TryGetCurrentImageRef(g);
+        if (options.ForceFromCurrentImage && currentImageOut is not null)
         {
-            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, g.FinalImageOut, modelState.Vae, out JArray imageTailSamples))
+            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut, modelState.Vae, out JArray imageTailSamples))
             {
-                g.FinalSamples = imageTailSamples;
+                g.CurrentMedia = new WGNodeData(imageTailSamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             }
             else
             {
-                string forcedEncodeNode = g.CreateVAEEncode(modelState.Vae, g.FinalImageOut);
-                g.FinalSamples = [forcedEncodeNode, 0];
+                string forcedEncodeNode = g.CreateVAEEncode(modelState.Vae, currentImageOut);
+                g.CurrentMedia = new WGNodeData([forcedEncodeNode, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             }
             return;
         }
@@ -613,25 +606,50 @@ public partial class EditStage
         // which is wrong for ReferenceLatent - we need the latent that comes from encoding this
         // image with the edit VAE. Reuse an existing VAEEncode for this image+VAE if the primary
         // stage already created one; otherwise we would feed raw anchor latent into the edit sampler.
-        if (g.FinalImageOut is not null &&
-            VaeNodeReuse.ReuseVaeEncodeForImage(g, g.FinalImageOut, modelState.Vae, out JArray reusedSamples))
+        if (currentImageOut is not null &&
+            VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut, modelState.Vae, out JArray reusedSamples))
         {
-            g.FinalSamples = reusedSamples;
+            g.CurrentMedia = new WGNodeData(reusedSamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             return;
         }
 
-        if (!modelState.MustReencode && g.FinalSamples is not null)
-        {
-            return;
-        }
-
-        if (g.FinalImageOut is null)
+        if (!modelState.MustReencode && TryGetCurrentSamplesRef(g) is not null)
         {
             return;
         }
 
-        string encodeNode = g.CreateVAEEncode(modelState.Vae, g.FinalImageOut);
-        g.FinalSamples = [encodeNode, 0];
+        if (currentImageOut is null)
+        {
+            return;
+        }
+
+        string encodeNode = g.CreateVAEEncode(modelState.Vae, currentImageOut);
+        g.CurrentMedia = new WGNodeData([encodeNode, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+    }
+
+    private static JArray EnsureCurrentSamplesForEdit(WorkflowGenerator g, JArray preferredVae)
+    {
+        JArray currentSamples = TryGetCurrentSamplesRef(g);
+        if (currentSamples is not null)
+        {
+            return currentSamples;
+        }
+
+        JArray currentImageOut = TryGetCurrentImageRef(g);
+        JArray vae = preferredVae ?? TryGetCurrentVaeRef(g);
+        if (currentImageOut is null || vae is null)
+        {
+            // Keep legacy fallback behavior when no media anchor has been established yet.
+            return ["10", 0];
+        }
+
+        if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut, vae, out JArray reusedSamples))
+        {
+            return reusedSamples;
+        }
+
+        string encodeNode = g.CreateVAEEncode(vae, currentImageOut);
+        return [encodeNode, 0];
     }
 
     private static EditConditioning CreateEditConditioning(
@@ -667,10 +685,17 @@ public partial class EditStage
                 positiveConditioning = [referenceNode, 0];
             }
 
+            JArray currentStageSamples = EnsureCurrentSamplesForEdit(g, currentStageVae);
+            if (currentStageSamples is null)
+            {
+                Logs.Warning($"Base2Edit: Stage {stageIndex} has no latent anchor; skipping implicit current-stage ReferenceLatent.");
+                return new EditConditioning(positiveConditioning, [CreateConditioningNode(g, clip, cleanedPrompts.Negative, editParams), 0]);
+            }
+
             string currentStageReferenceNode = g.CreateNode("ReferenceLatent", new JObject()
             {
                 ["conditioning"] = positiveConditioning,
-                ["latent"] = g.FinalSamples
+                ["latent"] = currentStageSamples
             });
             positiveConditioning = [currentStageReferenceNode, 0];
         }
@@ -723,11 +748,16 @@ public partial class EditStage
         {
             int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
             int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
+            JArray currentStageSamples = EnsureCurrentSamplesForEdit(g, preferredVae: null);
+            if (currentStageSamples is null)
+            {
+                throw new SwarmReadableErrorException("Base2Edit: No latent anchor is available for edit-stage sampling.");
+            }
             string samplerNode = g.CreateKSampler(
                 model,
                 conditioning.Positive,
                 conditioning.Negative,
-                g.FinalSamples,
+                currentStageSamples,
                 editParams.Cfg,
                 editParams.Steps,
                 startStep,
@@ -740,7 +770,7 @@ public partial class EditStage
                 sectionId: stageSectionId
             );
 
-            g.FinalSamples = [samplerNode, 0];
+            g.CurrentMedia = new WGNodeData([samplerNode, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
         }
         finally
         {
@@ -755,29 +785,34 @@ public partial class EditStage
     {
         if (!isFinalStep)
         {
-            g.FinalImageOut = null;
             return;
         }
 
         // Common case: a pre-edit decode was already emitted by upstream steps but is still unused.
         // Retarget it to the post-edit latent to avoid leaving a dangling decode node.
+        JArray currentImageOut = TryGetCurrentImageRef(g);
+        JArray currentSamples = TryGetCurrentSamplesRef(g);
         if (allowFinalDecodeRetarget &&
-            g.FinalImageOut is not null &&
-            VaeNodeReuse.TryRetargetUnconsumedVaeDecode(g, g.FinalImageOut, vae, g.FinalSamples, out JArray retargetedImage))
+            currentImageOut is not null &&
+            currentSamples is not null &&
+            VaeNodeReuse.TryRetargetUnconsumedVaeDecode(g, currentImageOut, vae, currentSamples, out JArray retargetedImage))
         {
-            g.FinalImageOut = retargetedImage;
+            g.CurrentMedia = new WGNodeData(retargetedImage, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             return;
         }
 
         // If a decode node already exists for the current samples with the intended VAE,
         // reuse it instead of emitting a duplicate VAEDecode.
-        if (VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, g.FinalSamples, vae, out JArray reusedImage))
+        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, currentSamples, vae, out JArray reusedImage))
         {
-            g.FinalImageOut = reusedImage;
+            g.CurrentMedia = new WGNodeData(reusedImage, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             return;
         }
 
-        g.FinalImageOut = [g.CreateVAEDecode(vae, g.FinalSamples), 0];
+        if (currentSamples is not null)
+        {
+            g.CurrentMedia = new WGNodeData(currentSamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+                .DecodeLatents(new WGNodeData(vae, g, WGNodeData.DT_VAE, g.CurrentCompat()), false);
+        }
     }
-
 }

@@ -20,7 +20,7 @@ public static class VaeNodeReuse
     {
         imageOutRef = null;
 
-        if (g?.Workflow is null || imageRef is null || intendedVaeRef is null || samplesRef is null || imageRef.Count != 2)
+        if (imageRef is null || intendedVaeRef is null || samplesRef is null || imageRef.Count != 2)
         {
             return false;
         }
@@ -88,7 +88,7 @@ public static class VaeNodeReuse
     {
         imageOutRef = null;
 
-        if (g?.Workflow is null || samplesRef is null)
+        if (samplesRef is null)
         {
             return false;
         }
@@ -121,7 +121,7 @@ public static class VaeNodeReuse
     {
         samplesOutRef = null;
 
-        if (g?.Workflow is null || imageRef is null || intendedVaeRef is null)
+        if (imageRef is null || intendedVaeRef is null)
         {
             return false;
         }
@@ -165,7 +165,7 @@ public static class VaeNodeReuse
     {
         imageOutRef = null;
 
-        if (g?.Workflow is null || samplesRef is null || intendedVaeRef is null)
+        if (samplesRef is null || intendedVaeRef is null)
         {
             return false;
         }
@@ -207,7 +207,7 @@ public static class VaeNodeReuse
     /// </summary>
     public static bool HasSaveForImage(WorkflowGenerator g, JArray imageRef)
     {
-        if (g?.Workflow is null || imageRef is null || imageRef.Count != 2)
+        if (imageRef is null || imageRef.Count != 2)
         {
             return false;
         }

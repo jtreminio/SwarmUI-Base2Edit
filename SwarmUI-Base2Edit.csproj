@@ -7,11 +7,12 @@
 
   <Import Project="../../SwarmUI.extension.props" />
 
-  <ItemGroup Condition="'$(DesignTimeBuild)' == 'true' and Exists('../../SwarmUI.csproj')">
+  <ItemGroup Condition="Exists('../../SwarmUI.csproj')">
     <Reference Remove="SwarmUI" />
     <ProjectReference Include="../../SwarmUI.csproj">
       <Private>false</Private>
       <Properties>_EnableMacOSCodeSign=false</Properties>
+      <GlobalPropertiesToRemove>BaseIntermediateOutputPath;TargetName</GlobalPropertiesToRemove>
     </ProjectReference>
   </ItemGroup>
 

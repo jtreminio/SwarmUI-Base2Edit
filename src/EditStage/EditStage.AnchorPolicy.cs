@@ -11,7 +11,7 @@ public partial class EditStage
     /// </summary>
     private static bool ShouldPreferCurrentImageAnchor(SwarmUI.Builtin_ComfyUIBackend.WorkflowGenerator g, StageHook hook)
     {
-        if (g?.UserInput is null || hook != StageHook.Refiner)
+        if (hook != StageHook.Refiner)
         {
             return false;
         }

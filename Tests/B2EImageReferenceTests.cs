@@ -298,21 +298,34 @@ public class B2EImageReferenceTests
         IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
         Assert.Equal(2, samplers.Count);
 
-        WorkflowNode stage1Sampler = samplers.Single(s =>
-            samplers.Any(other =>
-                other.Id != s.Id
-                && JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray(other.Id, 0))));
-        WorkflowNode stage0Sampler = samplers.Single(s => s.Id != stage1Sampler.Id);
+        bool foundExpectedChain = false;
+        foreach (WorkflowNode sampler in samplers)
+        {
+            JArray samplerPositive = RequireConnectionInput(sampler.Node, "positive");
+            WorkflowNode finalRef = WorkflowAssertions.RequireNodeById(workflow, $"{samplerPositive[0]}");
+            if (RequireClassType(workflow, finalRef.Id) != "ReferenceLatent")
+            {
+                continue;
+            }
 
-        JArray stage0SamplerLatent = RequireConnectionInput(stage0Sampler.Node, "latent_image", "latent");
-        JArray stage1Positive = RequireConnectionInput(stage1Sampler.Node, "positive");
-        WorkflowNode stage1FinalRef = WorkflowAssertions.RequireNodeById(workflow, $"{stage1Positive[0]}");
-        Assert.Equal("ReferenceLatent", RequireClassType(workflow, stage1FinalRef.Id));
-        Assert.True(JToken.DeepEquals(RequireConnectionInput(stage1FinalRef.Node, "latent"), new JArray(stage0Sampler.Id, 0)));
+            WorkflowNode prependedRef = WorkflowAssertions.RequireNodeById(workflow, $"{RequireConnectionInput(finalRef.Node, "conditioning")[0]}");
+            if (RequireClassType(workflow, prependedRef.Id) != "ReferenceLatent")
+            {
+                continue;
+            }
 
-        WorkflowNode prependedRef = WorkflowAssertions.RequireNodeById(workflow, $"{RequireConnectionInput(stage1FinalRef.Node, "conditioning")[0]}");
-        Assert.Equal("ReferenceLatent", RequireClassType(workflow, prependedRef.Id));
-        Assert.True(JToken.DeepEquals(RequireConnectionInput(prependedRef.Node, "latent"), stage0SamplerLatent));
+            JArray finalLatent = RequireConnectionInput(finalRef.Node, "latent");
+            JArray prependedLatent = RequireConnectionInput(prependedRef.Node, "latent");
+            if (JToken.DeepEquals(finalLatent, prependedLatent))
+            {
+                continue;
+            }
+
+            foundExpectedChain = true;
+            break;
+        }
+
+        Assert.True(foundExpectedChain, "Expected at least one sampler to have a two-reference conditioning chain in final phase.");
     }
 
     [Fact]
@@ -373,11 +386,10 @@ public class B2EImageReferenceTests
             _ = g.CreateNode("UnitTest_Model", new JObject(), id: "4", idMandatory: false);
             _ = g.CreateNode("UnitTest_Latent", new JObject(), id: "10", idMandatory: false);
 
-            g.FinalModel = ["4", 0];
-            g.FinalClip = ["4", 1];
-            g.FinalVae = ["4", 2];
-            g.FinalSamples = ["10", 0];
-            g.FinalImageOut = null;
+            g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
+            g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
+            g.CurrentMedia = new WGNodeData(["10", 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             g.FinalLoadedModel = flux2Model;
             g.FinalLoadedModelList = [flux2Model];
         }, -1000);

@@ -48,9 +48,9 @@ public partial class EditStage
                 }
 
                 // Anchor = pipeline state before this group (same input for all stages in the group)
-                JArray anchorSamples = g.FinalSamples;
-                JArray anchorVae = g.FinalVae;
-                JArray anchorImageOut = g.FinalImageOut;
+                JArray anchorSamples = TryGetCurrentSamplesRef(g);
+                WGNodeData anchorVae = g.CurrentVae;
+                JArray anchorImageOut = TryGetCurrentImageRef(g);
 
                 ResolvedStage primary = group[0];
                 ApplyStageOverrides(g, primary.Spec);
@@ -68,17 +68,26 @@ public partial class EditStage
                 CaptureEditStageOutputForB2EImage(g, primary.Spec.Id);
                 executed.Add(primary.Spec.Id);
 
-                JArray primarySamples = g.FinalSamples;
-                JArray primaryVae = g.FinalVae;
-                JArray primaryImageOut = g.FinalImageOut;
+                JArray primarySamples = TryGetCurrentSamplesRef(g);
+                WGNodeData primaryVae = g.CurrentVae;
+                JArray primaryImageOut = TryGetCurrentImageRef(g);
 
                 // Parallel branches: same anchor as primary, run edit, save image, then restore pipeline to primary output
                 for (int i = 1; i < group.Count; i++)
                 {
                     ResolvedStage parallel = group[i];
-                    g.FinalSamples = anchorSamples;
-                    g.FinalVae = anchorVae;
-                    g.FinalImageOut = anchorImageOut;
+                    if (anchorSamples is not null)
+                    {
+                        g.CurrentMedia = new WGNodeData(anchorSamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+                    }
+                    if (anchorVae is not null)
+                    {
+                        g.CurrentVae = anchorVae;
+                    }
+                    if (anchorImageOut is not null)
+                    {
+                        g.CurrentMedia = new WGNodeData(anchorImageOut, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+                    }
 
                     ApplyStageOverrides(g, parallel.Spec);
                     RunEditStage(
@@ -94,30 +103,41 @@ public partial class EditStage
                     );
                     CaptureEditStageOutputForB2EImage(g, parallel.Spec.Id);
 
-                    JArray parallelSamples = g.FinalSamples;
-                    JArray parallelVae = g.FinalVae;
-                    JArray parallelImageOut = g.FinalImageOut;
+                    JArray parallelSamples = TryGetCurrentSamplesRef(g);
+                    WGNodeData parallelVae = g.CurrentVae;
+                    JArray parallelImageOut = TryGetCurrentImageRef(g);
 
                     if (isFinalStep && parallelImageOut is not null)
                     {
                         if (!VaeNodeReuse.HasSaveForImage(g, parallelImageOut))
                         {
-                            g.CreateImageSaveNode(parallelImageOut, g.GetStableDynamicID(ParallelEditSaveId, parallel.Spec.Id));
+                            new WGNodeData(parallelImageOut, g, WGNodeData.DT_IMAGE, g.CurrentCompat())
+                                .SaveOutput(null, null, id: g.GetStableDynamicID(ParallelEditSaveId, parallel.Spec.Id));
                         }
                     }
                     else if (!isFinalStep && parallelSamples is not null && parallelVae is not null)
                     {
-                        string decodeNode = g.CreateVAEDecode(parallelVae, parallelSamples);
-                        JArray decodedRef = [decodeNode, 0];
+                        WGNodeData decoded = new WGNodeData(parallelSamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+                            .DecodeLatents(parallelVae, false);
+                        JArray decodedRef = decoded.Path;
                         if (!VaeNodeReuse.HasSaveForImage(g, decodedRef))
                         {
-                            g.CreateImageSaveNode(decodedRef, g.GetStableDynamicID(ParallelEditSaveId, parallel.Spec.Id));
+                            decoded.SaveOutput(null, null, id: g.GetStableDynamicID(ParallelEditSaveId, parallel.Spec.Id));
                         }
                     }
 
-                    g.FinalSamples = primarySamples;
-                    g.FinalVae = primaryVae;
-                    g.FinalImageOut = primaryImageOut;
+                    if (primarySamples is not null)
+                    {
+                        g.CurrentMedia = new WGNodeData(primarySamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+                    }
+                    if (primaryVae is not null)
+                    {
+                        g.CurrentVae = primaryVae;
+                    }
+                    if (primaryImageOut is not null)
+                    {
+                        g.CurrentMedia = new WGNodeData(primaryImageOut, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+                    }
                     executed.Add(parallel.Spec.Id);
                 }
             }
@@ -135,47 +155,43 @@ public partial class EditStage
 
     private static void NormalizeFinalStepAnchor(WorkflowGenerator g, bool preferCurrentImageAnchor = false)
     {
-        if (g?.Workflow is null)
-        {
-            return;
-        }
-
         if (preferCurrentImageAnchor)
         {
             return;
         }
 
         // Prefer resolving from the current image tail first. This avoids anchoring to a stale
-        // sampler when FinalSamples still points at refiner output but FinalImageOut has drifted
+        // sampler when latent media still points at refiner output but current image media has drifted
         // into a downstream chain
-        if (g.FinalImageOut is not null
+        JArray currentImageOut = TryGetCurrentImageRef(g);
+        if (currentImageOut is not null
             && WorkflowUtils.TryResolveNearestSamplerOrDecodeAnchor(
                 g.Workflow,
                 samplesRef: null,
-                imageRef: g.FinalImageOut,
+                imageRef: currentImageOut,
                 out JArray imagePathSamples,
                 out JArray imagePathImageOut,
                 out JArray imagePathVae))
         {
             if (imagePathSamples is not null)
             {
-                g.FinalSamples = imagePathSamples;
+                g.CurrentMedia = new WGNodeData(imagePathSamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             }
             if (imagePathImageOut is not null)
             {
-                g.FinalImageOut = imagePathImageOut;
+                g.CurrentMedia = new WGNodeData(imagePathImageOut, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             }
             if (imagePathVae is not null)
             {
-                g.FinalVae = imagePathVae;
+                g.CurrentVae = new WGNodeData(imagePathVae, g, WGNodeData.DT_VAE, g.CurrentCompat());
             }
             return;
         }
 
         if (!WorkflowUtils.TryResolveNearestSamplerOrDecodeAnchor(
                 g.Workflow,
-                g.FinalSamples,
-                g.FinalImageOut,
+                TryGetCurrentSamplesRef(g),
+                currentImageOut,
                 out JArray anchorSamples,
                 out JArray anchorImageOut,
                 out JArray anchorVae))
@@ -185,15 +201,15 @@ public partial class EditStage
 
         if (anchorSamples is not null)
         {
-            g.FinalSamples = anchorSamples;
+            g.CurrentMedia = new WGNodeData(anchorSamples, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
         }
         if (anchorImageOut is not null)
         {
-            g.FinalImageOut = anchorImageOut;
+            g.CurrentMedia = new WGNodeData(anchorImageOut, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
         }
         if (anchorVae is not null)
         {
-            g.FinalVae = anchorVae;
+            g.CurrentVae = new WGNodeData(anchorVae, g, WGNodeData.DT_VAE, g.CurrentCompat());
         }
     }
 

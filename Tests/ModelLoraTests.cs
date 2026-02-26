@@ -405,8 +405,8 @@ public class ModelLoraTests
                         // Simulate an upstream pipeline that has already applied a LoRA to the base model.
                         // The critical part is that g.FinalModel/g.FinalClip point at a "lora-applied" node chain.
                         _ = g.CreateNode("UnitTest_LoraAppliedModel", new JObject(), id: loraNodeId, idMandatory: false);
-                        g.FinalModel = [loraNodeId, 0];
-                        g.FinalClip = [loraNodeId, 1];
+                        g.CurrentModel = new WGNodeData([loraNodeId, 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+                        g.CurrentTextEnc = new WGNodeData([loraNodeId, 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
                     }, -800)
                 ])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
@@ -461,8 +461,8 @@ public class ModelLoraTests
                     {
                         // Simulate an upstream base-stage model stack that already has LoRAs applied
                         _ = g.CreateNode("UnitTest_BaseLoraAppliedModel", new JObject(), id: stageLoraNodeId, idMandatory: false);
-                        g.FinalModel = [stageLoraNodeId, 0];
-                        g.FinalClip = [stageLoraNodeId, 1];
+                        g.CurrentModel = new WGNodeData([stageLoraNodeId, 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+                        g.CurrentTextEnc = new WGNodeData([stageLoraNodeId, 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
                     }, -800)
                 ])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
@@ -702,8 +702,8 @@ public class ModelLoraTests
                         // Simulate refiner phase with an upstream refiner-stage lora-applied model stack
                         g.IsRefinerStage = true;
                         _ = g.CreateNode("UnitTest_RefinerLoraAppliedModel", new JObject(), id: stageLoraNodeId, idMandatory: false);
-                        g.FinalModel = [stageLoraNodeId, 0];
-                        g.FinalClip = [stageLoraNodeId, 1];
+                        g.CurrentModel = new WGNodeData([stageLoraNodeId, 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+                        g.CurrentTextEnc = new WGNodeData([stageLoraNodeId, 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
                     }, -800)
                 ])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
@@ -983,11 +983,10 @@ public class ModelLoraTests
                 _ = g.CreateNode("UnitTest_Model", new JObject(), id: "4", idMandatory: false);
                 _ = g.CreateNode("UnitTest_Latent", new JObject(), id: "10", idMandatory: false);
 
-                g.FinalModel = ["4", 0];
-                g.FinalClip = ["4", 1];
-                g.FinalVae = ["4", 2];
-                g.FinalSamples = ["10", 0];
-                g.FinalImageOut = null;
+                g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+                g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
+                g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
+                g.CurrentMedia = new WGNodeData(["10", 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
                 g.FinalLoadedModel = baseModel;  // Base model is loaded
                 g.FinalLoadedModelList = [baseModel];
             }, -1000));

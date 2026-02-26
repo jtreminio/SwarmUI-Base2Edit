@@ -93,10 +93,6 @@ public partial class EditStage
     private static bool TryGetEditStages(WorkflowGenerator g, out List<JsonStageSpec> stages)
     {
         stages = [];
-        if (g?.UserInput is null)
-        {
-            return false;
-        }
 
         if (!g.UserInput.TryGet(Base2EditExtension.EditStages, out string json) || string.IsNullOrWhiteSpace(json))
         {

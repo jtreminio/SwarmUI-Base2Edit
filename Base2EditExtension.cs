@@ -66,7 +66,7 @@ public class Base2EditExtension : Extension
 
     private static void HandlePostGenerateMetadata(T2IEngine.PostGenerationEventParams evt)
     {
-        if (evt?.UserInput is null || EditModel?.Type is null || EditModelResolvedForMetadata is null)
+        if (EditModel?.Type is null || EditModelResolvedForMetadata is null)
         {
             return;
         }

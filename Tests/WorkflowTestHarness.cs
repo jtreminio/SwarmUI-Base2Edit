@@ -126,11 +126,10 @@ internal static class WorkflowTestHarness
             _ = g.CreateNode("UnitTest_Model", new JObject(), id: "4", idMandatory: false);
             _ = g.CreateNode("UnitTest_Latent", new JObject(), id: "10", idMandatory: false);
 
-            g.FinalModel = ["4", 0];
-            g.FinalClip = ["4", 1];
-            g.FinalVae = ["4", 2];
-            g.FinalSamples = ["10", 0];
-            g.FinalImageOut = null;
+            g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
+            g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
+            g.CurrentMedia = new WGNodeData(["10", 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             g.FinalLoadedModel = null;
             g.FinalLoadedModelList = [];
         }, -1000);
@@ -142,10 +141,9 @@ internal static class WorkflowTestHarness
     public static WorkflowGenerator.WorkflowGenStep ImageOnlySeedStep() =>
         new(g =>
         {
-            string imageNode = g.CreateNode("UnitTest_Image", new JObject(), id: "11", idMandatory: false);
-            g.FinalImageOut = [imageNode, 0];
-            g.FinalInputImage = [imageNode, 0];
-            g.FinalSamples = null;
+            string imageNode = g.CreateNode("UnitTest_Image", [], id: "11", idMandatory: false);
+            g.CurrentMedia = new WGNodeData([imageNode, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+            g.BasicInputImage = new WGNodeData([imageNode, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
         }, -900);
 
     /// <summary>
@@ -155,13 +153,13 @@ internal static class WorkflowTestHarness
     public static WorkflowGenerator.WorkflowGenStep DecodeSamplesToImageStep() =>
         new(g =>
         {
-            if (g.FinalSamples is null || g.FinalVae is null)
+            if (g.CurrentMedia is null || g.CurrentVae is null)
             {
                 return;
             }
-            string decodeNode = g.CreateVAEDecode(g.FinalVae, g.FinalSamples);
-            g.FinalImageOut = [decodeNode, 0];
-            g.FinalInputImage ??= [decodeNode, 0];
+            WGNodeData decoded = g.CurrentMedia.DecodeLatents(g.CurrentVae, false);
+            g.CurrentMedia = decoded;
+            g.BasicInputImage = decoded;
         }, -950);
 
     /// <summary>Common workflow templates for tests.</summary>
@@ -182,9 +180,8 @@ internal static class WorkflowTestHarness
             new(g =>
             {
                 // Minimal stub: "upscale" produces a new latent and clears FinalImageOut (as many pipelines do).
-                string upLatent = g.CreateNode("UnitTest_UpscaleLatent", new JObject(), idMandatory: false);
-                g.FinalSamples = [upLatent, 0];
-                g.FinalImageOut = null;
+                string upLatent = g.CreateNode("UnitTest_UpscaleLatent", [], idMandatory: false);
+                g.CurrentMedia = new WGNodeData([upLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             }, -500)
         };
 
@@ -197,8 +194,8 @@ internal static class WorkflowTestHarness
             {
                 // Minimal stub: mark refiner stage and advance to a new latent.
                 g.IsRefinerStage = true;
-                string refLatent = g.CreateNode("UnitTest_RefinerLatent", new JObject(), idMandatory: false);
-                g.FinalSamples = [refLatent, 0];
+                string refLatent = g.CreateNode("UnitTest_RefinerLatent", [], idMandatory: false);
+                g.CurrentMedia = new WGNodeData([refLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             }, -400),
             DecodeSamplesToImageStep()
         };
@@ -211,8 +208,8 @@ internal static class WorkflowTestHarness
                     new(g =>
                     {
                         g.IsRefinerStage = true;
-                        string refLatent = g.CreateNode("UnitTest_RefinerLatent", new JObject(), idMandatory: false);
-                        g.FinalSamples = [refLatent, 0];
+                        string refLatent = g.CreateNode("UnitTest_RefinerLatent", [], idMandatory: false);
+                        g.CurrentMedia = new WGNodeData([refLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
                     }, -400),
                     DecodeSamplesToImageStep()
                 });
@@ -227,7 +224,7 @@ internal static class WorkflowTestHarness
                 new WorkflowGenerator.WorkflowGenStep(g =>
                 {
                     // Minimal stub: create "segment" nodes and set FinalMask reference.
-                    string seg = g.CreateNode($"UnitTest_Segment_{i}", new JObject(), idMandatory: false);
+                    string seg = g.CreateNode($"UnitTest_Segment_{i}", [], idMandatory: false);
                     g.FinalMask = [seg, 0];
                 }, -300 + i)));
 

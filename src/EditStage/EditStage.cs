@@ -53,7 +53,7 @@ public partial class EditStage
         // - Extension is considered ACTIVE when the root-level (stage0) "Edit Model" param is present.
         // - When ACTIVE, stage0 is ALWAYS included. Additional stages are optional and come from JSON.
         // - There is no scenario where stage1+ arrives without stage0 (stage0 comes from root-level fields).
-        if (g?.UserInput is null || !IsExtensionActive(g.UserInput))
+        if (!IsExtensionActive(g.UserInput))
         {
             return;
         }

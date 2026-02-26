@@ -20,12 +20,6 @@ public static class ModelPrep
         out bool mustReencode
     ) {
         mustReencode = false;
-        editModel = null;
-        if (g is null)
-        {
-            return false;
-        }
-
         string selection = g.UserInput.Get(editModelParam, UseRefiner);
         T2IModel baseModel = g.UserInput.Get(T2IParamTypes.Model, null);
         T2IModel refinerModel = g.UserInput.TryGet(T2IParamTypes.RefinerModel, out T2IModel rm) && rm is not null
@@ -58,8 +52,11 @@ public static class ModelPrep
         {
             snapshot.Remove();
 
-            (T2IModel _, JArray model, JArray clip, JArray vae) =
-                g.CreateStandardModelLoader(editModel, "Edit", sectionId: sectionId);
+            (T2IModel _, WGNodeData modelNode, WGNodeData clipNode, WGNodeData vaeNode) =
+                g.CreateModelLoader(editModel, "Edit", sectionId: sectionId);
+            JArray model = modelNode.Path;
+            JArray clip = clipNode.Path;
+            JArray vae = vaeNode.Path;
 
             (List<string> editLoras, List<string> editWeights, List<string> editTencWeights) = getEditPromptLoras(g);
             if (editLoras.Count == 0)
@@ -98,8 +95,11 @@ public static class ModelPrep
         try
         {
             snapshot.Remove();
-            (T2IModel _, JArray model, JArray clip, JArray vae) =
-                g.CreateStandardModelLoader(editModel, "Edit", sectionId: sectionId);
+            (T2IModel _, WGNodeData modelNode, WGNodeData clipNode, WGNodeData vaeNode) =
+                g.CreateModelLoader(editModel, "Edit", sectionId: sectionId);
+            JArray model = modelNode.Path;
+            JArray clip = clipNode.Path;
+            JArray vae = vaeNode.Path;
             return (model, clip, vae);
         }
         finally
