@@ -791,6 +791,56 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void Json_apply_after_edit_alias_and_stage_label_are_equivalent()
+    {
+        static JObject MakeStage(string applyAfter) => new()
+        {
+            ["applyAfter"] = applyAfter,
+            ["keepPreEditImage"] = false,
+            ["control"] = 1.0,
+            ["model"] = ModelPrep.UseRefiner,
+            ["vae"] = "None",
+            ["steps"] = 20,
+            ["cfgScale"] = 7.0,
+            ["sampler"] = "euler",
+            ["scheduler"] = "normal"
+        };
+
+        static void AssertStageChain(JObject workflow)
+        {
+            IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
+            Assert.Equal(2, samplers.Count);
+
+            WorkflowNode stage0Sampler = samplers.Single(s =>
+                JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray("10", 0)));
+            WorkflowNode stage1Sampler = samplers.Single(s =>
+                JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray(stage0Sampler.Id, 0)));
+
+            Assert.NotEqual(stage0Sampler.Id, stage1Sampler.Id);
+        }
+
+        T2IParamInput aliasInput = BuildEditInput(
+            "Base",
+            enableBase2EditGroup: true,
+            prompt: "global <edit[0]>stage0 text <edit[1]>stage1 text"
+        );
+        aliasInput.Set(Base2EditExtension.EditStages, new JArray(MakeStage("edit0")).ToString());
+
+        T2IParamInput stageLabelInput = BuildEditInput(
+            "Base",
+            enableBase2EditGroup: true,
+            prompt: "global <edit[0]>stage0 text <edit[1]>stage1 text"
+        );
+        stageLabelInput.Set(Base2EditExtension.EditStages, new JArray(MakeStage("Edit Stage 0")).ToString());
+
+        JObject aliasWorkflow = WorkflowTestHarness.GenerateWithSteps(aliasInput, BaseSteps());
+        JObject stageLabelWorkflow = WorkflowTestHarness.GenerateWithSteps(stageLabelInput, BaseSteps());
+
+        AssertStageChain(aliasWorkflow);
+        AssertStageChain(stageLabelWorkflow);
+    }
+
+    [Fact]
     public void Stage_fallback_prompt_from_setvar_false_does_not_include_leading_lt()
     {
         const string portrait = "a portrait of a character in a scenic environment by Tom Everhart";

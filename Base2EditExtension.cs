@@ -60,8 +60,8 @@ public class Base2EditExtension : Extension
             T2IEngine.PostGenerateEvent += HandlePostGenerateMetadata;
             _postGenerateHookRegistered = true;
         }
-        WorkflowGenerator.AddStep(g => EditStage.Run(g, isFinalStep: false), -4.2);
-        WorkflowGenerator.AddStep(g => EditStage.Run(g, isFinalStep: true), 5.9);
+        WorkflowGenerator.AddStep(g => new Runner(g).Run(isFinalStep: false), -4.2);
+        WorkflowGenerator.AddStep(g => new Runner(g).Run(isFinalStep: true), 5.9);
     }
 
     private static void HandlePostGenerateMetadata(T2IEngine.PostGenerationEventParams evt)
@@ -78,7 +78,7 @@ public class Base2EditExtension : Extension
         evt.UserInput.Remove(EditModelResolvedForMetadata);
     }
 
-    private void RegisterParameters()
+    private static void RegisterParameters()
     {
         Base2EditGroup = new(
             Name: "Base2Edit",

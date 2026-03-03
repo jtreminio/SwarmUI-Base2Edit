@@ -1,0 +1,3 @@
+#! /bin/bash
+
+dotnet test "SwarmUI-Base2Edit.Tests.sln"

@@ -447,4 +447,87 @@ public class B2EImageReferenceTests
         List<string> prompts = CollectEncoderPromptsIncludingEmpty(workflow);
         Assert.DoesNotContain(prompts, p => p.Contains("global prompt", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void B2EImage_edit_reference_alias_and_stage_label_resolve_the_same()
+    {
+        static void AssertStage2ReferencesStage0(JObject workflow)
+        {
+            IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+            Assert.Equal(3, samplers.Count);
+
+            WorkflowNode stage0Sampler = samplers.Single(s =>
+                JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray("10", 0)));
+            WorkflowNode stage1Sampler = samplers.Single(s =>
+                JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray(stage0Sampler.Id, 0)));
+            WorkflowNode stage2Sampler = samplers.Single(s =>
+                JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray(stage1Sampler.Id, 0)));
+
+            JArray stage2Positive = RequireConnectionInput(stage2Sampler.Node, "positive");
+            WorkflowNode finalRef = WorkflowAssertions.RequireNodeById(workflow, $"{stage2Positive[0]}");
+            Assert.Equal("ReferenceLatent", RequireClassType(workflow, finalRef.Id));
+
+            JArray chainedConditioning = RequireConnectionInput(finalRef.Node, "conditioning");
+            WorkflowNode prependedRef = WorkflowAssertions.RequireNodeById(workflow, $"{chainedConditioning[0]}");
+            Assert.Equal("ReferenceLatent", RequireClassType(workflow, prependedRef.Id));
+            Assert.True(JToken.DeepEquals(RequireConnectionInput(prependedRef.Node, "latent"), new JArray(stage0Sampler.Id, 0)));
+        }
+
+        T2IParamInput aliasInput = BuildInput(
+            "Base",
+            "global <edit[0]>stage0 <edit[1]>stage1 <edit[2]>stage2 <b2eimage[edit0]>"
+        );
+        aliasInput.Set(Base2EditExtension.EditStages, new JArray(MakeStage("Edit Stage 0"), MakeStage("Edit Stage 1")).ToString());
+
+        T2IParamInput stageLabelInput = BuildInput(
+            "Base",
+            "global <edit[0]>stage0 <edit[1]>stage1 <edit[2]>stage2 <b2eimage[Edit Stage 0]>"
+        );
+        stageLabelInput.Set(Base2EditExtension.EditStages, new JArray(MakeStage("Edit Stage 0"), MakeStage("Edit Stage 1")).ToString());
+
+        JObject aliasWorkflow = WorkflowTestHarness.GenerateWithSteps(aliasInput, BaseSteps());
+        JObject stageLabelWorkflow = WorkflowTestHarness.GenerateWithSteps(stageLabelInput, BaseSteps());
+
+        AssertStage2ReferencesStage0(aliasWorkflow);
+        AssertStage2ReferencesStage0(stageLabelWorkflow);
+    }
+
+    [Fact]
+    public void B2EImage_refiner_phase_stage_can_reference_base_phase_edit_stage()
+    {
+        T2IParamInput input = BuildInput(
+            "Base",
+            "global <edit[0]>stage0 <edit[1]>stage1 <b2eimage[edit0]>"
+        );
+        input.Set(Base2EditExtension.EditStages, new JArray(MakeStage("Refiner")).ToString());
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseOnlyLatents()
+                .Concat([
+                    new WorkflowGenerator.WorkflowGenStep(g =>
+                    {
+                        string midLatent = g.CreateNode("UnitTest_MidLatent", new JObject(), id: "2100", idMandatory: false);
+                        g.CurrentMedia = new WGNodeData([midLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+                    }, 0)
+                ])
+                .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        Assert.Equal(2, samplers.Count);
+
+        WorkflowNode stage0Sampler = samplers.Single(s =>
+            JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray("10", 0)));
+        WorkflowNode stage1Sampler = samplers.Single(s => s.Id != stage0Sampler.Id);
+
+        JArray stage1Positive = RequireConnectionInput(stage1Sampler.Node, "positive");
+        WorkflowNode finalRef = WorkflowAssertions.RequireNodeById(workflow, $"{stage1Positive[0]}");
+        Assert.Equal("ReferenceLatent", RequireClassType(workflow, finalRef.Id));
+
+        JArray chainedConditioning = RequireConnectionInput(finalRef.Node, "conditioning");
+        WorkflowNode prependedRef = WorkflowAssertions.RequireNodeById(workflow, $"{chainedConditioning[0]}");
+        Assert.Equal("ReferenceLatent", RequireClassType(workflow, prependedRef.Id));
+        Assert.True(JToken.DeepEquals(RequireConnectionInput(prependedRef.Node, "latent"), new JArray(stage0Sampler.Id, 0)));
+        Assert.False(JToken.DeepEquals(RequireConnectionInput(finalRef.Node, "latent"), new JArray(stage0Sampler.Id, 0)));
+    }
 }

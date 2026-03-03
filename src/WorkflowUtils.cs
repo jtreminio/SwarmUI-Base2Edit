@@ -130,6 +130,8 @@ public static class WorkflowUtils
             return true;
         }
 
+        Dictionary<string, List<string>> forwardEdges = BuildForwardAdjacency(workflow);
+
         Queue<string> pending = new();
         HashSet<string> visited = [];
         pending.Enqueue(startNodeId);
@@ -138,46 +140,71 @@ public static class WorkflowUtils
         while (pending.Count > 0)
         {
             string currentNodeId = pending.Dequeue();
-            foreach (JProperty nodeProperty in workflow.Properties())
+            if (!forwardEdges.TryGetValue(currentNodeId, out List<string> consumers))
             {
-                if (nodeProperty.Value is not JObject node || node["inputs"] is not JObject inputs)
+                continue;
+            }
+
+            foreach (string consumerId in consumers)
+            {
+                if (!visited.Add(consumerId))
                 {
                     continue;
                 }
 
-                bool consumesCurrentNode = false;
-                foreach (JProperty input in inputs.Properties())
-                {
-                    foreach (JArray upstreamRef in ExtractNodeRefs(workflow, input.Value))
-                    {
-                        if ($"{upstreamRef[0]}" == currentNodeId)
-                        {
-                            consumesCurrentNode = true;
-                            break;
-                        }
-                    }
-
-                    if (consumesCurrentNode)
-                    {
-                        break;
-                    }
-                }
-
-                if (!consumesCurrentNode || !visited.Add(nodeProperty.Name))
-                {
-                    continue;
-                }
-
-                if (nodeProperty.Name == targetNodeId)
+                if (consumerId == targetNodeId)
                 {
                     return true;
                 }
 
-                pending.Enqueue(nodeProperty.Name);
+                pending.Enqueue(consumerId);
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Builds a forward adjacency map: producerNodeId → [consumerNodeId, ...].
+    /// Single O(N*E) pass over the workflow, after which downstream lookups are O(1) per edge.
+    /// </summary>
+    private static Dictionary<string, List<string>> BuildForwardAdjacency(JObject workflow)
+    {
+        Dictionary<string, List<string>> forwardEdges = [];
+
+        foreach (JProperty nodeProperty in workflow.Properties())
+        {
+            if (nodeProperty.Value is not JObject node || node["inputs"] is not JObject inputs)
+            {
+                continue;
+            }
+
+            string consumerId = nodeProperty.Name;
+            foreach (JProperty input in inputs.Properties())
+            {
+                foreach (JArray upstreamRef in ExtractNodeRefs(workflow, input.Value))
+                {
+                    string producerId = $"{upstreamRef[0]}";
+                    if (string.IsNullOrWhiteSpace(producerId))
+                    {
+                        continue;
+                    }
+
+                    if (!forwardEdges.TryGetValue(producerId, out List<string> list))
+                    {
+                        list = [];
+                        forwardEdges[producerId] = list;
+                    }
+
+                    if (!list.Contains(consumerId))
+                    {
+                        list.Add(consumerId);
+                    }
+                }
+            }
+        }
+
+        return forwardEdges;
     }
 
     /// <summary>
@@ -197,7 +224,7 @@ public static class WorkflowUtils
         }
 
         List<WorkflowNode> matches = [];
-        foreach (WorkflowNode node in NodesOfType(workflow, "VAEDecode"))
+        foreach (WorkflowNode node in NodesOfType(workflow, NodeTypes.VAEDecode))
         {
             if (node.Node?["inputs"] is not JObject inputs)
             {
@@ -279,13 +306,13 @@ public static class WorkflowUtils
             }
 
             string classType = $"{node["class_type"]}";
-            if (classType == "SwarmKSampler" || classType == "KSamplerAdvanced")
+            if (classType == NodeTypes.SwarmKSampler || classType == NodeTypes.KSamplerAdvanced)
             {
                 anchorSamples = new JArray(nodeId, 0);
                 return true;
             }
 
-            if (classType == "VAEDecode" || classType == "VAEDecodeTiled")
+            if (classType == NodeTypes.VAEDecode || classType == NodeTypes.VAEDecodeTiled)
             {
                 anchorImageOut = new JArray(nodeId, 0);
 

@@ -44,19 +44,6 @@ public class MultiStageMergeTests
         return null;
     }
 
-    private static bool HasAnyInputConnection(JObject node, JArray expectedRef)
-    {
-        if (node?["inputs"] is not JObject inputs)
-        {
-            return false;
-        }
-
-        return inputs.Properties()
-            .Select(p => p.Value)
-            .OfType<JArray>()
-            .Any(arr => JToken.DeepEquals(arr, expectedRef));
-    }
-
     private static T2IParamInput BuildInputWithStage0(string applyAfter)
     {
         _ = WorkflowTestHarness.Base2EditSteps();
@@ -485,10 +472,10 @@ public class MultiStageMergeTests
     }
 
     [Fact]
-    public void Two_stages_after_same_anchor_run_in_parallel_save_and_stop()
+    public void Two_stages_after_same_anchor_primary_continues_branch_saves_separately()
     {
         // stage0 and stage1 both "after refiner" -> same anchor. Primary (stage0) continues pipeline;
-        // parallel (stage1) reads same refiner output, saves its image, and does not feed the pipeline
+        // branch (stage1) reads same refiner output, saves its image, and does not feed the pipeline
         T2IParamInput input = BuildInputWithStage0("Refiner");
         input.Set(Base2EditExtension.EditSteps, 11);
         input.Set(Base2EditExtension.EditSampler, "euler");
@@ -527,20 +514,19 @@ public class MultiStageMergeTests
         WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, refLatents[0]);
         WorkflowNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, refLatents[1]);
 
-        // Only one VAEDecode should feed the main pipeline (stage0); stage1's output is saved separately
         IReadOnlyList<WorkflowNode> decodes = WorkflowUtils.NodesOfType(workflow, "VAEDecode");
         Assert.True(decodes.Count >= 2, "Expected at least 2 VAEDecode (stage0 final + stage1 branch).");
 
-        // Parallel stage1 output is saved via a dedicated SaveImage (id = 1000 + 50300 + 1 = 51301)
-        string parallelSaveId = "51301";
-        Assert.True(workflow.ContainsKey(parallelSaveId), "Expected SaveImage for parallel stage1 output.");
-        Assert.Equal("SaveImage", $"{workflow[parallelSaveId]!["class_type"]}");
+        // Branch stage1 output is saved via a dedicated SaveImage (id = 1000 + 50300 + 1 = 51301)
+        string branchSaveId = "51301";
+        Assert.True(workflow.ContainsKey(branchSaveId), "Expected SaveImage for branch stage1 output.");
+        Assert.Equal("SaveImage", $"{workflow[branchSaveId]!["class_type"]}");
     }
 
     [Fact]
     public void At_most_one_SwarmSaveImageWS_per_VAEDecode_output()
     {
-        // Two parallel stages (both after refiner) with KeepPreEditImage: both would save the same
+        // Two stages (primary + branch, both after refiner) with KeepPreEditImage: both would save the same
         // pre-edit image (same VAEDecode output). Base2Edit must attach at most one SwarmSaveImageWS per decode
         T2IParamInput input = BuildInputWithStage0("Refiner");
         input.Set(Base2EditExtension.KeepPreEditImage, true);
@@ -624,4 +610,5 @@ public class MultiStageMergeTests
         WorkflowNode savedImageNode = WorkflowAssertions.RequireNodeById(workflow, $"{savedImageRef[0]}");
         Assert.Equal("VAEDecode", $"{savedImageNode.Node["class_type"]}");
     }
+
 }

@@ -40,7 +40,7 @@ public static class VaeNodeReuse
             }
 
             string classType = $"{nodeObj["class_type"]}";
-            if (classType != "VAEDecode" && classType != "VAEDecodeTiled")
+            if (classType != NodeTypes.VAEDecode && classType != NodeTypes.VAEDecodeTiled)
             {
                 return false;
             }
@@ -81,129 +81,35 @@ public static class VaeNodeReuse
     }
 
     /// <summary>
-    /// Find a VAEDecode node that already consumes samplesRef
-    /// Sets imageOutRef to [nodeId, 0] when found
+    /// Find a VAEDecode node that already consumes samplesRef.
     /// </summary>
     public static bool ReuseVaeDecodeForSamples(WorkflowGenerator g, JArray samplesRef, out JArray imageOutRef)
     {
-        imageOutRef = null;
-
-        if (samplesRef is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            foreach (var conn in WorkflowUtils.FindInputConnections(g.Workflow, samplesRef))
-            {
-                if (g.Workflow[conn.NodeId] is JObject nodeObj && $"{nodeObj["class_type"]}" == "VAEDecode")
-                {
-                    imageOutRef = [conn.NodeId, 0];
-                    return true;
-                }
-            }
-
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Logs.Debug($"Base2Edit: Failed to reuse existing VAEDecode node: {ex}");
-            return false;
-        }
+        return TryFindConsumerNode(g, samplesRef, NodeTypes.VAEDecode, vaeRef: null, out imageOutRef,
+            "reuse existing VAEDecode node");
     }
 
     /// <summary>
-    /// Find a VAEDecode node that already consumes samplesRef and uses intendedVaeRef
-    /// Sets samplesOutRef to [nodeId, 0] when found
+    /// Find a VAEEncode node that already consumes imageRef and uses intendedVaeRef.
     /// </summary>
     public static bool ReuseVaeEncodeForImage(WorkflowGenerator g, JArray imageRef, JArray intendedVaeRef, out JArray samplesOutRef)
     {
-        samplesOutRef = null;
-
-        if (imageRef is null || intendedVaeRef is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            foreach (var conn in WorkflowUtils.FindInputConnections(g.Workflow, imageRef))
-            {
-                if (g.Workflow[conn.NodeId] is not JObject nodeObj || $"{nodeObj["class_type"]}" != "VAEEncode")
-                {
-                    continue;
-                }
-
-                if (nodeObj["inputs"] is not JObject inputs)
-                {
-                    continue;
-                }
-
-                // Only reuse an encode that matches our intended VAE (avoid subtle cross-VAE bugs).
-                if (inputs.TryGetValue("vae", out JToken vaeTok) && JToken.DeepEquals(vaeTok, intendedVaeRef))
-                {
-                    samplesOutRef = [conn.NodeId, 0];
-                    return true;
-                }
-            }
-
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Logs.Debug($"Base2Edit: Failed to reuse existing VAEEncode node: {ex}");
-            return false;
-        }
+        return TryFindConsumerNode(g, imageRef, NodeTypes.VAEEncode, intendedVaeRef, out samplesOutRef,
+            "reuse existing VAEEncode node");
     }
 
     /// <summary>
-    /// Find a VAEDecode node that already consumes samplesRef and uses intendedVaeRef
-    /// Sets imageOutRef to [nodeId, 0] when found
+    /// Find a VAEDecode node that already consumes samplesRef and uses intendedVaeRef.
     /// </summary>
     public static bool ReuseVaeDecodeForSamplesAndVae(WorkflowGenerator g, JArray samplesRef, JArray intendedVaeRef, out JArray imageOutRef)
     {
-        imageOutRef = null;
-
-        if (samplesRef is null || intendedVaeRef is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            foreach (var conn in WorkflowUtils.FindInputConnections(g.Workflow, samplesRef))
-            {
-                if (g.Workflow[conn.NodeId] is not JObject nodeObj || $"{nodeObj["class_type"]}" != "VAEDecode")
-                {
-                    continue;
-                }
-
-                if (nodeObj["inputs"] is not JObject inputs)
-                {
-                    continue;
-                }
-
-                if (inputs.TryGetValue("vae", out JToken vaeTok) && JToken.DeepEquals(vaeTok, intendedVaeRef))
-                {
-                    imageOutRef = [conn.NodeId, 0];
-                    return true;
-                }
-            }
-
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Logs.Debug($"Base2Edit: Failed to reuse existing final VAEDecode node: {ex}");
-            return false;
-        }
+        return TryFindConsumerNode(g, samplesRef, NodeTypes.VAEDecode, intendedVaeRef, out imageOutRef,
+            "reuse existing final VAEDecode node");
     }
 
     /// <summary>
     /// Returns true if the workflow already has a SwarmSaveImageWS or SaveImage node
-    /// connected to the given image output ref. Used to avoid attaching multiple save
-    /// nodes to the same VAEDecode output.
+    /// connected to the given image output ref.
     /// </summary>
     public static bool HasSaveForImage(WorkflowGenerator g, JArray imageRef)
     {
@@ -212,27 +118,58 @@ public static class VaeNodeReuse
             return false;
         }
 
+        return TryFindConsumerNode(g, imageRef, NodeTypes.SwarmSaveImageWS, vaeRef: null, out _, "check existing save for image")
+            || TryFindConsumerNode(g, imageRef, NodeTypes.SaveImage, vaeRef: null, out _, "check existing save for image");
+    }
+
+    /// <summary>
+    /// Searches downstream consumers of <paramref name="sourceRef"/> for a node matching
+    /// <paramref name="classType"/>. When <paramref name="vaeRef"/> is non-null, only matches
+    /// nodes whose "vae" input equals the given ref.
+    /// </summary>
+    private static bool TryFindConsumerNode(
+        WorkflowGenerator g,
+        JArray sourceRef,
+        string classType,
+        JArray vaeRef,
+        out JArray outRef,
+        string debugLabel)
+    {
+        outRef = null;
+
+        if (sourceRef is null)
+        {
+            return false;
+        }
+
         try
         {
-            foreach (var conn in WorkflowUtils.FindInputConnections(g.Workflow, imageRef))
+            foreach (var conn in WorkflowUtils.FindInputConnections(g.Workflow, sourceRef))
             {
-                if (g.Workflow[conn.NodeId] is not JObject nodeObj)
+                if (g.Workflow[conn.NodeId] is not JObject nodeObj || $"{nodeObj["class_type"]}" != classType)
                 {
                     continue;
                 }
 
-                string classType = $"{nodeObj["class_type"]}";
-                if (classType == "SwarmSaveImageWS" || classType == "SaveImage")
+                if (vaeRef is not null)
                 {
-                    return true;
+                    if (nodeObj["inputs"] is not JObject inputs
+                        || !inputs.TryGetValue("vae", out JToken vaeTok)
+                        || !JToken.DeepEquals(vaeTok, vaeRef))
+                    {
+                        continue;
+                    }
                 }
+
+                outRef = [conn.NodeId, 0];
+                return true;
             }
 
             return false;
         }
         catch (Exception ex)
         {
-            Logs.Debug($"Base2Edit: Failed to check existing save for image: {ex}");
+            Logs.Debug($"Base2Edit: Failed to {debugLabel}: {ex}");
             return false;
         }
     }
