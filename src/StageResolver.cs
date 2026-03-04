@@ -160,7 +160,7 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
             return null;
         }
 
-        if (!store.Edit.TryGetValue(reference.Index, out StageRefStore.StageRef stageRef) || stageRef is null)
+        if (!store.TryGetEditRef(reference.Index, out StageRefStore.StageRef stageRef) || stageRef is null)
         {
             warning = "referenced edit stage output is unavailable.";
             return null;

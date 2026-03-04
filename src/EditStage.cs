@@ -46,6 +46,7 @@ public class EditStage
     public readonly WorkflowGenerator g;
     public readonly StageRefStore store;
     private readonly StageRunner runner;
+    private Dictionary<int, JsonParser.StageSpec> _parsedStages;
 
     public EditStage(WorkflowGenerator g, StageRefStore store)
     {
@@ -203,18 +204,21 @@ public class EditStage
     }
 
     /// <summary>
-    /// Lazily parses the edit stage JSON and caches the result in the store.
+    /// Lazily parses the edit stage JSON and caches the result for this run.
     /// Returns all parsed stages ordered by ID.
     /// </summary>
     private IReadOnlyList<JsonParser.StageSpec> GetCachedParsedStages()
     {
-        if (store.ParsedStages.Count == 0)
+        if (_parsedStages is null || _parsedStages.Count == 0)
         {
-            List<JsonParser.StageSpec> stages = new JsonParser(g).ParseEditStages();
-            store.SetParsedStages(stages);
+            _parsedStages = [];
+            foreach (JsonParser.StageSpec stage in new JsonParser(g).ParseEditStages())
+            {
+                _parsedStages[stage.Id] = stage;
+            }
         }
 
-        return [.. store.ParsedStages.Values.OrderBy(stage => stage.Id)];
+        return [.. _parsedStages.Values.OrderBy(stage => stage.Id)];
     }
 
     /// <summary>
@@ -304,7 +308,7 @@ public class EditStage
         }
         else if (StageRefStore.TryParseStageIndexKey(applyAfter, out int parentId))
         {
-            store.Edit.TryGetValue(parentId, out parentRef);
+            store.TryGetEditRef(parentId, out parentRef);
         }
 
         if (parentRef is null)

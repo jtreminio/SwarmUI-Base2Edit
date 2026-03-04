@@ -1,12 +1,11 @@
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
-using SwarmUI.Text2Image;
 
 namespace Base2Edit;
 
 public class StageRefStore(WorkflowGenerator g)
 {
-    private const string Key = "base2edit.ref_store";
+    private const string Prefix = "b2e.";
     private const string EditStagePrefix = "Edit Stage ";
     private const string EditAliasPrefix = "edit";
 
@@ -25,79 +24,75 @@ public class StageRefStore(WorkflowGenerator g)
         WGNodeData Vae
     );
 
-    private sealed class StoreData
+    private static string StageName(StageKind kind, int? index) => kind switch
     {
-        public StageRef Base;
-        public StageRef Refiner;
-        public Dictionary<int, StageRef> Edit { get; } = [];
-        public Dictionary<int, StageRef> Prompt { get; } = [];
-        public Dictionary<int, JsonParser.StageSpec> ParsedStages { get; } = [];
+        StageKind.Base => "base",
+        StageKind.Refiner => "refiner",
+        StageKind.Edit => $"edit.{index ?? 0}",
+        StageKind.Prompt => $"prompt.{index ?? 0}",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind))
+    };
+
+    private static string NodeKey(StageKind kind, int? index, string property) =>
+        $"{Prefix}{StageName(kind, index)}.{property}";
+
+    private void StoreNodeData(string key, WGNodeData data)
+    {
+        if (data?.Path is JArray arr && arr.Count == 2)
+        {
+            g.NodeHelpers[key] = $"{arr[0]}|{arr[1]}|{data.DataType}";
+        }
     }
 
-    private StoreData GetStore()
+    private WGNodeData LoadNodeData(string key, string fallbackDataType)
     {
-        if (g.UserInput.ExtraMeta is not null
-            && g.UserInput.ExtraMeta.TryGetValue(Key, out object existingObj)
-            && existingObj is StoreData existing)
+        if (!g.NodeHelpers.TryGetValue(key, out string encoded) || string.IsNullOrEmpty(encoded))
         {
-            return existing;
+            return null;
         }
 
-        StoreData store = new();
-        g.UserInput.ExtraMeta[Key] = store;
-        return store;
+        string[] parts = encoded.Split('|', 3);
+        if (parts.Length < 2)
+        {
+            return null;
+        }
+
+        JArray path = new(parts[0], int.Parse(parts[1]));
+        string dataType = parts.Length > 2 && !string.IsNullOrEmpty(parts[2]) ? parts[2] : fallbackDataType;
+        return new WGNodeData(path, g, dataType, g.CurrentCompat());
     }
 
-    public void ResetStore()
-    {
-        g.UserInput.ExtraMeta[Key] = new StoreData();
-    }
+    private bool HasCaptured(StageKind kind, int? index = null) =>
+        g.NodeHelpers.ContainsKey(NodeKey(kind, index, "model"));
 
-    public void DeleteStore()
-    {
-        g.UserInput.ExtraMeta.Remove(Key);
-    }
+    private StageRef LoadStageRef(StageKind kind, int? index = null) => new(
+        Model: LoadNodeData(NodeKey(kind, index, "model"), WGNodeData.DT_MODEL),
+        TextEnc: LoadNodeData(NodeKey(kind, index, "clip"), WGNodeData.DT_TEXTENC),
+        Media: LoadNodeData(NodeKey(kind, index, "media"), WGNodeData.DT_LATENT_IMAGE),
+        Vae: LoadNodeData(NodeKey(kind, index, "vae"), WGNodeData.DT_VAE)
+    );
 
-    public StageRef Base => GetStore().Base;
-    public StageRef Refiner => GetStore().Refiner;
-    public Dictionary<int, StageRef> Edit => GetStore().Edit;
-    public Dictionary<int, StageRef> Prompt => GetStore().Prompt;
-    public Dictionary<int, JsonParser.StageSpec> ParsedStages => GetStore().ParsedStages;
+    public StageRef Base => HasCaptured(StageKind.Base) ? LoadStageRef(StageKind.Base) : null;
+    public StageRef Refiner => HasCaptured(StageKind.Refiner) ? LoadStageRef(StageKind.Refiner) : null;
 
     public void Capture(StageKind stage, int? index = null)
     {
-        StageRef stageRef = new(
-            Model: g.CurrentModel,
-            TextEnc: g.CurrentTextEnc,
-            Media: g.CurrentMedia,
-            Vae: g.CurrentVae
-        );
-
-        switch (stage)
-        {
-            case StageKind.Base:
-                GetStore().Base = stageRef;
-                break;
-            case StageKind.Refiner:
-                GetStore().Refiner = stageRef;
-                break;
-            case StageKind.Edit:
-                GetStore().Edit[index ?? 0] = stageRef;
-                break;
-            case StageKind.Prompt:
-                GetStore().Prompt[index ?? 0] = stageRef;
-                break;
-        }
+        StoreNodeData(NodeKey(stage, index, "model"), g.CurrentModel);
+        StoreNodeData(NodeKey(stage, index, "clip"), g.CurrentTextEnc);
+        StoreNodeData(NodeKey(stage, index, "media"), g.CurrentMedia);
+        StoreNodeData(NodeKey(stage, index, "vae"), g.CurrentVae);
     }
 
-    public void SetParsedStages(IEnumerable<JsonParser.StageSpec> stages)
+    public bool TryGetEditRef(int index, out StageRef stageRef)
     {
-        Dictionary<int, JsonParser.StageSpec> parsed = GetStore().ParsedStages;
-        parsed.Clear();
-        foreach (JsonParser.StageSpec stage in stages ?? [])
+        stageRef = null;
+        if (!HasCaptured(StageKind.Edit, index))
         {
-            parsed[stage.Id] = stage;
+            return false;
         }
+
+        stageRef = LoadStageRef(StageKind.Edit, index);
+        return true;
     }
 
     public bool TryGetCapturedModelState(
@@ -110,14 +105,14 @@ public class StageRefStore(WorkflowGenerator g)
         clip = null;
         vae = null;
 
-        StageRef stageRef = stageKind switch
+        if (!HasCaptured(stageKind))
         {
-            StageKind.Base => Base,
-            StageKind.Refiner => Refiner,
-            _ => null
-        };
+            return false;
+        }
 
-        if (stageRef?.Model?.Path is not JArray m || m.Count != 2
+        StageRef stageRef = LoadStageRef(stageKind);
+
+        if (stageRef.Model?.Path is not JArray m || m.Count != 2
             || stageRef.TextEnc?.Path is not JArray c || c.Count != 2
             || stageRef.Vae?.Path is not JArray v || v.Count != 2)
         {
