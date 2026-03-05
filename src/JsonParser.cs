@@ -57,12 +57,11 @@ public class JsonParser(WorkflowGenerator g)
         List<object> jsonStages = GetJsonStagesArray();
         List<RawStageSpec> rawStages = [];
         int nextId = 1;
-
+        bool hasRefinerStageConfigured = HasRefinerStageConfigured();
         string stage0ApplyAfter = g.UserInput.Get(Base2EditExtension.ApplyEditAfter);
         if (!string.Equals(stage0ApplyAfter, "Base", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(stage0ApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
         {
-            Logs.Warning($"Base2Edit: invalid Apply After '{stage0ApplyAfter}', setting to 'Refiner'.");
             stage0ApplyAfter = "Refiner";
         }
 
@@ -125,6 +124,10 @@ public class JsonParser(WorkflowGenerator g)
             if (normalizedApplyAfter is null)
             {
                 continue;
+            }
+            if (!hasRefinerStageConfigured && string.Equals(normalizedApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
+            {
+                normalizedApplyAfter = "Base";
             }
 
             if (TryParseEditStageParent(normalizedApplyAfter, out int parentId))
@@ -320,6 +323,17 @@ public class JsonParser(WorkflowGenerator g)
     private static bool TryParseEditStageParent(string applyAfter, out int parentId)
     {
         return StageRefStore.TryParseStageIndexKey(applyAfter, out parentId);
+    }
+
+    private bool HasRefinerStageConfigured()
+    {
+        if (T2IParamTypes.RefinerMethod?.Type is null || T2IParamTypes.RefinerControl?.Type is null)
+        {
+            return false;
+        }
+
+        return g.UserInput.TryGetRaw(T2IParamTypes.RefinerMethod.Type, out object _)
+            && g.UserInput.TryGetRaw(T2IParamTypes.RefinerControl.Type, out object _);
     }
 
     private static string GetStr(string key, JObject obj)

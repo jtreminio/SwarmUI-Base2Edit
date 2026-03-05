@@ -86,8 +86,7 @@ public class Base2EditExtension : Extension
             Name: "Base2Edit",
             Description: "Applies an edit stage to your generated image using the <edit> prompt section.\n"
                 + "For multi-stage workflows you can also target a specific edit stage with <edit[n]> (0-indexed).\n"
-                + "If no <edit> / <edit[n]> section is provided for a stage, that stage falls back to the global prompt.\n"
-                + "The edit stage can be injected after the base stage or after the refiner stage.",
+                + "If no <edit> / <edit[n]> section is provided for a stage, that stage falls back to the global prompt.",
             Toggles: true,
             Open: false,
             OrderPriority: -2.9
@@ -114,14 +113,13 @@ public class Base2EditExtension : Extension
 
         ApplyEditAfter = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "Apply Edit After",
-            Description: "Where to inject the edit stage:\n"
-                + "'Base' applies edit after the base generation, before upscale/refiner.\n"
-                + "'Refiner' applies edit after all generation stages (base, upscale, refiner), editing the finalized image.",
+            Description: "Where to inject the edit stage.",
             Default: "Refiner",
-            GetValues: (_) => ["Base", "Refiner"],
+            GetValues: (_) => ["Refiner"],
             Group: Base2EditGroup,
             OrderPriority: 2,
-            FeatureFlag: "comfyui"
+            FeatureFlag: "comfyui",
+            VisibleNormally: false
         ));
 
         EditControl = T2IParamTypes.Register<double>(new T2IParamType(

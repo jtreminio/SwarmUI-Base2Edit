@@ -304,7 +304,7 @@ class StageEditor {
         });
     }
     buildApplyAfterList(stageIds, stageId, currentVal) {
-        const values = ["Base", "Refiner"];
+        const values = ["Refiner"];
         const refs = [...stageIds]
             .filter(id => id < stageId)
             .sort((a, b) => a - b)
@@ -318,7 +318,7 @@ class StageEditor {
     cleanApplyAfterOptions(applyElem, stageIds, stageId) {
         const selectedVal = `${applyElem.value}`;
         const isValid = (val) => {
-            if (val === "Base" || val === "Refiner") {
+            if (val === "Refiner") {
                 return true;
             }
             const m = `${val}`.match(/^Edit Stage (\d+)$/);

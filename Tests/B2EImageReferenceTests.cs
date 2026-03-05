@@ -292,6 +292,8 @@ public class B2EImageReferenceTests
             "Refiner",
             "global <edit[0]>stage0 <edit[1]>stage1 <b2eimage[refiner]>"
         );
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(Base2EditExtension.EditStages, new JArray(MakeStage("Edit Stage 0")).ToString());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, RefinerSteps());
@@ -499,6 +501,8 @@ public class B2EImageReferenceTests
             "Base",
             "global <edit[0]>stage0 <edit[1]>stage1 <b2eimage[edit0]>"
         );
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(Base2EditExtension.EditStages, new JArray(MakeStage("Refiner")).ToString());
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =

@@ -407,7 +407,7 @@ class StageEditor
 
     private buildApplyAfterList(stageIds: number[], stageId: number, currentVal: string): string[]
     {
-        const values = ["Base", "Refiner"];
+        const values = ["Refiner"];
         const refs = [...stageIds]
             .filter(id => id < stageId)
             .sort((a, b) => a - b)
@@ -425,7 +425,7 @@ class StageEditor
     {
         const selectedVal = `${applyElem.value}`;
         const isValid = (val: string) => {
-            if (val === "Base" || val === "Refiner") {
+            if (val === "Refiner") {
                 return true;
             }
 

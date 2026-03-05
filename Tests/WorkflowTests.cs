@@ -511,6 +511,8 @@ public class WorkflowTests
             enableBase2EditGroup: true,
             prompt: "global <edit>do edit <segment:face,0.2,0.2>"
         );
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(T2IParamTypes.SegmentApplyAfter, "Refiner");
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =

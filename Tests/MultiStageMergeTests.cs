@@ -170,6 +170,8 @@ public class MultiStageMergeTests
     {
         // stage0: Base hook, stage1: Refiner hook
         T2IParamInput input = BuildInputWithStage0("Base");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(Base2EditExtension.EditSteps, 11);
         input.Set(Base2EditExtension.EditSampler, "euler");
         input.Set(Base2EditExtension.EditScheduler, "normal");
@@ -239,6 +241,77 @@ public class MultiStageMergeTests
         WorkflowNode editSampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, editRefLatent);
         IReadOnlyList<WorkflowNode> finalDecodes = WorkflowUtils.FindVaeDecodesBySamples(workflow, new JArray(editSampler.Id, 0));
         Assert.Single(finalDecodes);
+    }
+
+    [Fact]
+    public void Stage0_apply_after_refiner_falls_back_to_base_when_no_refiner_is_configured()
+    {
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseOnlyLatents()
+                .Concat(
+                [
+                    new WorkflowGenerator.WorkflowGenStep(g =>
+                    {
+                        // Simulate a post-base pipeline change that happens after Base2Edit's base hook.
+                        // If stage0 incorrectly runs in the final hook, it would anchor to this latent.
+                        string postBaseLatent = g.CreateNode("UnitTest_PostBaseLatent", [], id: "2100", idMandatory: false);
+                        g.CurrentMedia = new WGNodeData([postBaseLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+                    }, 2)
+                ])
+                .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        WorkflowNode stage0Ref = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
+        _ = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, stage0Ref);
+
+        Assert.DoesNotContain(
+            WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"),
+            n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray("2100", 0))
+        );
+    }
+
+    [Fact]
+    public void Stage1_apply_after_refiner_falls_back_to_base_when_no_refiner_is_configured()
+    {
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(Base2EditExtension.EditStages, new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Refiner",
+                ["keepPreEditImage"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["vae"] = "None",
+                ["steps"] = 20,
+                ["cfgScale"] = 7.0,
+                ["sampler"] = "euler",
+                ["scheduler"] = "normal"
+            }
+        ).ToString());
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseOnlyLatents()
+                .Concat(
+                [
+                    new WorkflowGenerator.WorkflowGenStep(g =>
+                    {
+                        // If stage1 incorrectly stays on Refiner with no refiner configured,
+                        // the final-hook edit would anchor to this late latent.
+                        string postBaseLatent = g.CreateNode("UnitTest_PostBaseLatent", [], id: "2100", idMandatory: false);
+                        g.CurrentMedia = new WGNodeData([postBaseLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+                    }, 2)
+                ])
+                .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        Assert.DoesNotContain(
+            WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"),
+            n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray("2100", 0))
+        );
     }
 
     [Fact]
@@ -477,6 +550,8 @@ public class MultiStageMergeTests
         // stage0 and stage1 both "after refiner" -> same anchor. Primary (stage0) continues pipeline;
         // branch (stage1) reads same refiner output, saves its image, and does not feed the pipeline
         T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(Base2EditExtension.EditSteps, 11);
         input.Set(Base2EditExtension.EditSampler, "euler");
         input.Set(Base2EditExtension.EditScheduler, "normal");
@@ -529,6 +604,8 @@ public class MultiStageMergeTests
         // Two stages (primary + branch, both after refiner) with KeepPreEditImage: both would save the same
         // pre-edit image (same VAEDecode output). Base2Edit must attach at most one SwarmSaveImageWS per decode
         T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(Base2EditExtension.KeepPreEditImage, true);
         input.Set(Base2EditExtension.EditSteps, 11);
 

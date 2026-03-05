@@ -688,6 +688,8 @@ public class ModelLoraTests
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         input.Set(T2IParamTypes.Prompt, "global <edit>apply extra <lora:UnitTest_EditLora:0.5>");
         input.Set(Base2EditExtension.ApplyEditAfter, "Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(T2IParamTypes.Seed, 1L);
         input.Set(T2IParamTypes.Width, 512);
         input.Set(T2IParamTypes.Height, 512);
