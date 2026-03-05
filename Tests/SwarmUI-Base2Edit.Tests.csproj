@@ -20,7 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\SwarmUI.csproj">
-      <Properties>_EnableMacOSCodeSign=false</Properties>
+      <Properties>_EnableMacOSCodeSign=false;StaticWebAssetsEnabled=false</Properties>
     </ProjectReference>
     <ProjectReference Include="..\SwarmUI-Base2Edit.csproj" />
   </ItemGroup>

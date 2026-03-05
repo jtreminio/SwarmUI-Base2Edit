@@ -11,7 +11,7 @@
     <Reference Remove="SwarmUI" />
     <ProjectReference Include="../../SwarmUI.csproj">
       <Private>false</Private>
-      <Properties>_EnableMacOSCodeSign=false</Properties>
+      <Properties>_EnableMacOSCodeSign=false;StaticWebAssetsEnabled=false</Properties>
       <GlobalPropertiesToRemove>BaseIntermediateOutputPath;TargetName</GlobalPropertiesToRemove>
     </ProjectReference>
   </ItemGroup>
