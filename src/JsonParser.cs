@@ -80,7 +80,7 @@ public class JsonParser(WorkflowGenerator g)
             Upscale: g.UserInput.TryGet(Base2EditExtension.EditUpscale, out double stage0Upscale) ? stage0Upscale : null,
             UpscaleMethod: g.UserInput.TryGet(Base2EditExtension.EditUpscaleMethod, out string stage0UpscaleMethod) ? stage0UpscaleMethod : null,
             Steps: g.UserInput.TryGet(Base2EditExtension.EditSteps, out int stage0Steps) ? stage0Steps : null,
-            CfgScale: g.UserInput.TryGet(Base2EditExtension.EditCFGScale, out double stage0Cfg) ? stage0Cfg : null,
+            CfgScale: g.UserInput.TryGet(Base2EditExtension.EditCFGScale, out double stage0CfgScale) ? stage0CfgScale : null,
             Sampler: g.UserInput.TryGet(Base2EditExtension.EditSampler, out string stage0Sampler) ? stage0Sampler : null,
             Scheduler: g.UserInput.TryGet(Base2EditExtension.EditScheduler, out string stage0Scheduler) ? stage0Scheduler : null
         ));

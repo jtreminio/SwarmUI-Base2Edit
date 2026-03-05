@@ -17,7 +17,7 @@ internal record Parameters(
     int Width,
     int Height,
     int Steps,
-    double Cfg,
+    double CfgScale,
     double Control,
     bool RefineOnly,
     double Guidance,
@@ -380,9 +380,9 @@ public class EditStage
         );
 
     /// <summary>
-    /// Writes the stage's per-stage parameter overrides (model, VAE, steps, CFG, sampler, etc.)
+    /// Writes the stage's per-stage parameter overrides (model, VAE, steps, CFG scale, sampler, etc.)
     /// into the generator's UserInput so downstream node builders pick them up. Optional
-    /// overrides (VAE, CFG, sampler, scheduler) are removed from UserInput when not specified
+    /// overrides (VAE, CFG scale, sampler, scheduler) are removed from UserInput when not specified
     /// by the stage, allowing fallback to global defaults.
     /// </summary>
     private void ApplyStageOverrides(JsonParser.StageSpec stage)
