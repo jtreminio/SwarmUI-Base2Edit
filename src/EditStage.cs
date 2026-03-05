@@ -196,9 +196,15 @@ public class EditStage
         }
 
         List<JsonParser.StageSpec> primaryChain = [];
-        CollectStageChain(roots[0], primaryChain);
+        List<JsonParser.StageSpec> branches = [];
+        CollectStageChain(roots[0], primaryChain, branches);
+        branches.AddRange(roots.Skip(1));
 
-        List<JsonParser.StageSpec> branches = roots.Count > 1 ? roots[1..] : [];
+        // Keep deterministic execution order and avoid duplicates when branch subtrees overlap.
+        HashSet<int> seen = [];
+        branches = [.. branches
+            .OrderBy(stage => stage.Id)
+            .Where(stage => seen.Add(stage.Id))];
 
         return (primaryChain, branches);
     }
@@ -225,7 +231,10 @@ public class EditStage
     /// Adds a stage and then its first child (depth-first) to the result list.
     /// Each stage can have at most one child.
     /// </summary>
-    private static void CollectStageChain(JsonParser.StageSpec stage, List<JsonParser.StageSpec> result)
+    private static void CollectStageChain(
+        JsonParser.StageSpec stage,
+        List<JsonParser.StageSpec> result,
+        List<JsonParser.StageSpec> branches)
     {
         result.Add(stage);
 
@@ -234,8 +243,16 @@ public class EditStage
             return;
         }
 
-        JsonParser.StageSpec child = stage.Children.OrderBy(c => c.Id).First();
-        CollectStageChain(child, result);
+        List<JsonParser.StageSpec> orderedChildren = [.. stage.Children.OrderBy(c => c.Id)];
+        JsonParser.StageSpec child = orderedChildren[0];
+        CollectStageChain(child, result, branches);
+
+        foreach (JsonParser.StageSpec siblingBranch in orderedChildren.Skip(1))
+        {
+            // Branch stages are intentionally single-stage leaves.
+            // Any child stages attached to a branch are ignored.
+            branches.Add(siblingBranch);
+        }
     }
 
     /// <summary>
@@ -256,6 +273,9 @@ public class EditStage
         {
             return;
         }
+        (int resolvedWidth, int resolvedHeight) = ResolveImageDimensionsForAnchor(currentImageOut);
+        int anchorWidth = Math.Max(resolvedWidth, 16);
+        int anchorHeight = Math.Max(resolvedHeight, 16);
 
         // Prefer resolving from the current image tail first. This avoids anchoring to a stale
         // sampler when latent media still points at refiner output but current image media has drifted
@@ -269,6 +289,7 @@ public class EditStage
                 out JArray imagePathVae))
         {
             ApplyAnchorState(imagePathSamples, imagePathImageOut, imagePathVae);
+            ApplyAnchorDimensions(anchorWidth, anchorHeight);
             return;
         }
 
@@ -285,6 +306,7 @@ public class EditStage
                 out JArray anchorVae))
         {
             ApplyAnchorState(anchorSamples, anchorImageOut, anchorVae);
+            ApplyAnchorDimensions(anchorWidth, anchorHeight);
         }
     }
 
@@ -340,6 +362,50 @@ public class EditStage
         {
             g.CurrentVae = WrapVae(vae);
         }
+    }
+
+    private void ApplyAnchorDimensions(int width, int height)
+    {
+        if (g.CurrentMedia is null)
+        {
+            return;
+        }
+
+        g.CurrentMedia.Width ??= width;
+        g.CurrentMedia.Height ??= height;
+    }
+
+    private (int Width, int Height) ResolveImageDimensionsForAnchor(WGNodeData imageOut)
+    {
+        int fallbackWidth = g.UserInput.GetImageWidth();
+        int fallbackHeight = g.UserInput.GetImageHeight();
+        if (imageOut is null)
+        {
+            return (fallbackWidth, fallbackHeight);
+        }
+
+        if ((imageOut.Width ?? 0) > 0 && (imageOut.Height ?? 0) > 0)
+        {
+            return (imageOut.Width!.Value, imageOut.Height!.Value);
+        }
+
+        if (imageOut.Path?.Count == 2
+            && g.Workflow.TryGetValue($"{imageOut.Path[0]}", out JToken nodeTok)
+            && nodeTok is JObject node
+            && node["inputs"] is JObject inputs)
+        {
+            if (inputs.TryGetValue("width", out JToken widthTok)
+                && inputs.TryGetValue("height", out JToken heightTok)
+                && int.TryParse($"{widthTok}", out int widthFromNode)
+                && int.TryParse($"{heightTok}", out int heightFromNode)
+                && widthFromNode > 0
+                && heightFromNode > 0)
+            {
+                return (widthFromNode, heightFromNode);
+            }
+        }
+
+        return (fallbackWidth, fallbackHeight);
     }
 
     /// <summary>

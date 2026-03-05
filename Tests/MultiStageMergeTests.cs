@@ -688,4 +688,180 @@ public class MultiStageMergeTests
         Assert.Equal("VAEDecode", $"{savedImageNode.Node["class_type"]}");
     }
 
+    [Fact]
+    public void Two_children_after_same_edit_parent_are_both_emitted()
+    {
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(Base2EditExtension.EditUpscale, 1.25);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            },
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+            input,
+            WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps())
+        );
+
+        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        Assert.Equal(3, samplers.Count);
+
+        IReadOnlyList<WorkflowNode> scales = WorkflowUtils.NodesOfType(workflow, "ImageScale");
+        Assert.True(scales.Count >= 3, "Expected one ImageScale per edit stage.");
+    }
+
+    [Fact]
+    public void Branch_stage_children_are_ignored()
+    {
+        // stage0 is primary. stage1 is branch sibling of stage0 child-chain.
+        // stage2 hangs off stage1 and must be ignored because branch stages are leaf-only.
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(Base2EditExtension.EditUpscale, 1.25);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            },
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            },
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 2",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+            input,
+            WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps())
+        );
+
+        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        Assert.Equal(3, samplers.Count);
+    }
+
+    [Fact]
+    public void Primary_child_can_chain_while_sibling_branch_stays_leaf()
+    {
+        // stage0 after refiner
+        // stage1 + stage2 both after stage0
+        // stage3 after stage1
+        // Expected: stage3 continues only from stage1, not stage2.
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(Base2EditExtension.EditUpscale, 1.25);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+
+        var stages = new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            },
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            },
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 1",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+            input,
+            WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps())
+        );
+
+        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        Assert.Equal(4, samplers.Count);
+
+        // stage2 is the non-primary sibling branch and should be saved as a branch output.
+        // stage3 continues from stage1 (primary chain), so it should not be treated as a branch.
+        Assert.True(workflow.ContainsKey("51302"), "Expected branch save node for stage2.");
+        Assert.False(workflow.ContainsKey("51303"), "Did not expect branch save node for stage3.");
+    }
+
 }

@@ -73,7 +73,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             && currentSamples is not null
             && g.CurrentMedia?.IsLatentData != true)
         {
+            int? mediaWidth = g.CurrentMedia?.Width;
+            int? mediaHeight = g.CurrentMedia?.Height;
             g.CurrentMedia = WrapLatent(currentSamples.Path);
+            g.CurrentMedia.Width = mediaWidth;
+            g.CurrentMedia.Height = mediaHeight;
         }
 
         ReencodeIfNeeded(modelState, new ReencodeOptions(
@@ -105,6 +109,15 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         if (isFinalStep && options.RewireFinalConsumers)
         {
             RewireDownstreamConsumers(preEditConsumerSourceRef, preEditImageTailRef, preEditSaveNodeId);
+        }
+
+        // Final-step stages can switch CurrentMedia back to image outputs that don't carry
+        // explicit dimensions. Preserve this stage's effective size so child stages chained
+        // via ApplyAfter can continue scaling from the parent result.
+        if (g.CurrentMedia is not null)
+        {
+            g.CurrentMedia.Width ??= stageWidth;
+            g.CurrentMedia.Height ??= stageHeight;
         }
     }
 
@@ -571,11 +584,15 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae, out JArray imageTailSamples))
             {
                 g.CurrentMedia = WrapLatent(imageTailSamples);
+                g.CurrentMedia.Width = currentImageOut.Width;
+                g.CurrentMedia.Height = currentImageOut.Height;
             }
             else
             {
                 string forcedEncodeNode = g.CreateVAEEncode(modelState.Vae, currentImageOut.Path);
                 g.CurrentMedia = WrapLatent([forcedEncodeNode, 0]);
+                g.CurrentMedia.Width = currentImageOut.Width;
+                g.CurrentMedia.Height = currentImageOut.Height;
             }
             return;
         }
@@ -587,6 +604,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae, out JArray reusedSamples))
         {
             g.CurrentMedia = WrapLatent(reusedSamples);
+            g.CurrentMedia.Width = currentImageOut.Width;
+            g.CurrentMedia.Height = currentImageOut.Height;
             return;
         }
 
@@ -602,6 +621,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         string encodeNode = g.CreateVAEEncode(modelState.Vae, currentImageOut.Path);
         g.CurrentMedia = WrapLatent([encodeNode, 0]);
+        g.CurrentMedia.Width = currentImageOut.Width;
+        g.CurrentMedia.Height = currentImageOut.Height;
     }
 
     /// <summary>
@@ -761,6 +782,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             );
 
             g.CurrentMedia = WrapLatent([samplerNode, 0]);
+            g.CurrentMedia.Width = editParams.Width;
+            g.CurrentMedia.Height = editParams.Height;
         }
         finally
         {

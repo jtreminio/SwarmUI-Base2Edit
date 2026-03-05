@@ -1079,6 +1079,136 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void Chained_edit_stages_apply_upscale_from_parent_stage_resolution()
+    {
+        T2IParamInput input = BuildEditInput("Base");
+        input.Set(T2IParamTypes.Width, 1152);
+        input.Set(T2IParamTypes.Height, 896);
+        input.Set(Base2EditExtension.EditUpscale, 1.25);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+        input.Set(Base2EditExtension.EditStages, new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["vae"] = "None",
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 20,
+                ["cfgScale"] = 7.0,
+                ["sampler"] = "euler",
+                ["scheduler"] = "normal"
+            }
+        ).ToString());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        IReadOnlyList<WorkflowNode> scales = WorkflowUtils.NodesOfType(workflow, "ImageScale");
+        Assert.Equal(2, scales.Count);
+
+        var widthsHeights = scales
+            .Select(s =>
+            {
+                JObject inputs = (JObject)s.Node["inputs"];
+                return (
+                    Width: (int)inputs["width"],
+                    Height: (int)inputs["height"]
+                );
+            })
+            .OrderBy(v => v.Width)
+            .ToList();
+
+        Assert.Contains((1440, 1120), widthsHeights);
+        Assert.Contains((1792, 1392), widthsHeights);
+    }
+
+    [Fact]
+    public void Chained_final_step_edit_stages_apply_upscale_from_parent_stage_resolution()
+    {
+        T2IParamInput input = BuildEditInput("Refiner");
+        input.Set(T2IParamTypes.Width, 1152);
+        input.Set(T2IParamTypes.Height, 896);
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(Base2EditExtension.EditUpscale, 1.25);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+        input.Set(Base2EditExtension.EditStages, new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            },
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 1",
+                ["keepPreEditImage"] = false,
+                ["refineOnly"] = true,
+                ["control"] = 0.5,
+                ["model"] = ModelPrep.UseBase,
+                ["upscale"] = 1.25,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["steps"] = 10,
+                ["cfgScale"] = 1.0
+            }
+        ).ToString());
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    // Simulate refiner output image whose dimensions are present on the producing node,
+                    // but not materialized on WGNodeData yet.
+                    string decode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
+                    }, id: "1801", idMandatory: false);
+                    string scaled = g.CreateNode("ImageScale", new JObject()
+                    {
+                        ["image"] = new JArray(decode, 0),
+                        ["width"] = 1728,
+                        ["height"] = 1344,
+                        ["upscale_method"] = "lanczos",
+                        ["crop"] = "disabled"
+                    }, id: "1802", idMandatory: false);
+                    g.CurrentMedia = new WGNodeData([scaled, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+                }, 5.8)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        IReadOnlyList<WorkflowNode> scales = WorkflowUtils.NodesOfType(workflow, "ImageScale");
+
+        var widthsHeights = scales
+            .Select(s =>
+            {
+                JObject inputs = (JObject)s.Node["inputs"];
+                return (
+                    Width: (int)inputs["width"],
+                    Height: (int)inputs["height"]
+                );
+            })
+            .Where(v => v.Width >= 1728 && v.Height >= 1344 && !(v.Width == 1728 && v.Height == 1344))
+            .OrderBy(v => v.Width)
+            .ToList();
+
+        Assert.Contains((2160, 1680), widthsHeights);
+        Assert.Contains((2688, 2096), widthsHeights);
+        Assert.Contains((3360, 2608), widthsHeights);
+    }
+
+    [Fact]
     public void Edit_upscale_latent_adds_latentupscaleby()
     {
         T2IParamInput input = BuildEditInput("Base");

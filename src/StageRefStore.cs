@@ -40,7 +40,9 @@ public class StageRefStore(WorkflowGenerator g)
     {
         if (data?.Path is JArray arr && arr.Count == 2)
         {
-            g.NodeHelpers[key] = $"{arr[0]}|{arr[1]}|{data.DataType}";
+            int width = data.Width ?? g.UserInput.GetImageWidth();
+            int height = data.Height ?? g.UserInput.GetImageHeight();
+            g.NodeHelpers[key] = $"{arr[0]}|{arr[1]}|{data.DataType}|{width}|{height}";
         }
     }
 
@@ -51,15 +53,30 @@ public class StageRefStore(WorkflowGenerator g)
             return null;
         }
 
-        string[] parts = encoded.Split('|', 3);
-        if (parts.Length < 2)
+        string[] parts = encoded.Split('|');
+        if (parts.Length < 5)
         {
             return null;
         }
 
         JArray path = new(parts[0], int.Parse(parts[1]));
         string dataType = parts.Length > 2 && !string.IsNullOrEmpty(parts[2]) ? parts[2] : fallbackDataType;
-        return new WGNodeData(path, g, dataType, g.CurrentCompat());
+        if (!int.TryParse(parts[3], out int width))
+        {
+            return null;
+        }
+        if (!int.TryParse(parts[4], out int height))
+        {
+            return null;
+        }
+
+        WGNodeData nodeData = new(path, g, dataType, g.CurrentCompat())
+        {
+            Width = width,
+            Height = height
+        };
+
+        return nodeData;
     }
 
     private bool HasCaptured(StageKind kind, int? index = null) =>
