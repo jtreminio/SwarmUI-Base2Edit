@@ -1058,4 +1058,54 @@ public class WorkflowTests
         WorkflowNode sampler = RequireSingleSampler(workflow);
         WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
     }
+
+    [Fact]
+    public void Edit_upscale_pixel_adds_imagescale_before_vaeencode()
+    {
+        T2IParamInput input = BuildEditInput("Base");
+        input.Set(Base2EditExtension.EditUpscale, 2.0);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        WorkflowNode imageScale = WorkflowAssertions.RequireNodeOfType(workflow, "ImageScale");
+        WorkflowNode vaeEncode = WorkflowAssertions.RequireNodeOfType(workflow, "VAEEncode");
+        Assert.Equal(new JArray(imageScale.Id, 0), RequireConnectionInput(vaeEncode.Node, "pixels", "image"));
+
+        WorkflowNode sampler = RequireSingleSampler(workflow);
+        Assert.Equal(new JArray(vaeEncode.Id, 0), RequireConnectionInput(sampler.Node, "latent_image", "latent"));
+    }
+
+    [Fact]
+    public void Edit_upscale_latent_adds_latentupscaleby()
+    {
+        T2IParamInput input = BuildEditInput("Base");
+        input.Set(Base2EditExtension.EditUpscale, 2.0);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "latent-bilinear");
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        WorkflowNode latentUpscale = WorkflowAssertions.RequireNodeOfType(workflow, "LatentUpscaleBy");
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput(latentUpscale.Node, "samples"));
+
+        WorkflowNode sampler = RequireSingleSampler(workflow);
+        Assert.Equal(new JArray(latentUpscale.Id, 0), RequireConnectionInput(sampler.Node, "latent_image", "latent"));
+    }
+
+    [Fact]
+    public void Edit_upscale_model_adds_model_loader_and_model_upscale_nodes()
+    {
+        T2IParamInput input = BuildEditInput("Base");
+        input.Set(Base2EditExtension.EditUpscale, 2.0);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "model-UnitTestUpscaler.safetensors");
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+
+        WorkflowNode loader = WorkflowAssertions.RequireNodeOfType(workflow, "UpscaleModelLoader");
+        WorkflowNode modelUpscale = WorkflowAssertions.RequireNodeOfType(workflow, "ImageUpscaleWithModel");
+        WorkflowNode imageScale = WorkflowAssertions.RequireNodeOfType(workflow, "ImageScale");
+
+        Assert.Equal(new JArray(loader.Id, 0), RequireConnectionInput(modelUpscale.Node, "upscale_model"));
+        Assert.Equal(new JArray(modelUpscale.Id, 0), RequireConnectionInput(imageScale.Node, "image"));
+    }
 }

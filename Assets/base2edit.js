@@ -43,14 +43,16 @@ class StageEditor {
     }
     getRootStage() {
         return {
-            model: Utils.getSelectElement("input_editmodel"),
-            vae: Utils.getSelectElement("input_editvae"),
-            sampler: Utils.getSelectElement("input_editsampler"),
-            scheduler: Utils.getSelectElement("input_editscheduler"),
             refineOnly: Utils.getInputElement("input_refineonly"),
             control: Utils.getInputElement("input_editcontrol"),
+            upscale: Utils.getInputElement("input_editupscale"),
+            upscaleMethod: Utils.getSelectElement("input_editupscalemethod"),
+            model: Utils.getSelectElement("input_editmodel"),
+            vae: Utils.getSelectElement("input_editvae"),
             steps: Utils.getInputElement("input_editsteps"),
             cfg: Utils.getInputElement("input_editcfgscale"),
+            sampler: Utils.getSelectElement("input_editsampler"),
+            scheduler: Utils.getSelectElement("input_editscheduler"),
         };
     }
     createStage(applyAfter) {
@@ -66,13 +68,15 @@ class StageEditor {
             return el.value;
         };
         return {
-            applyAfter: applyAfter,
             keepPreEditImage: Utils.getInputElement("input_keeppreeditimage").checked,
             refineOnly: Utils.getInputElement("input_refineonly").checked,
+            applyAfter: applyAfter,
             control: parseFloat(Utils.getInputElement("input_editcontrol").value),
+            upscale: parseFloat(Utils.getInputElement("input_editupscale").value),
+            upscaleMethod: Utils.getInputElement("input_editupscalemethod").value,
             model: Utils.getInputElement("input_editmodel").value,
-            steps: parseInt(Utils.getInputElement("input_editsteps").value),
             vae: readToggleableRoot("editvae"),
+            steps: parseInt(Utils.getInputElement("input_editsteps").value),
             cfgScale: parseFloat(readToggleableRoot("editcfgscale")),
             sampler: readToggleableRoot("editsampler"),
             scheduler: readToggleableRoot("editscheduler")
@@ -353,22 +357,22 @@ class StageEditor {
             feature_flag: null,
         }, prefix));
         parts.push(getHtmlForParam({
+            id: "editrefineonly",
+            name: "Refine Only",
+            description: "When enabled, this stage skips ReferenceLatent and runs as a plain refinement pass.",
+            type: "boolean",
+            default: `${stage.refineOnly ?? rootStage.refineOnly.checked}`,
+            toggleable: false,
+            view_type: "normal",
+            feature_flag: null,
+        }, prefix));
+        parts.push(getHtmlForParam({
             id: "applyafter",
             name: "Apply After",
             description: "",
             type: "dropdown",
             values: applyValues,
             default: applyValues.includes(stage.applyAfter) ? stage.applyAfter : applyValues[0],
-            toggleable: false,
-            view_type: "normal",
-            feature_flag: null,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editrefineonly",
-            name: "Refine Only",
-            description: "When enabled, this stage skips ReferenceLatent and runs as a plain refinement pass.",
-            type: "boolean",
-            default: `${stage.refineOnly ?? rootStage.refineOnly.checked}`,
             toggleable: false,
             view_type: "normal",
             feature_flag: null,
@@ -388,6 +392,30 @@ class StageEditor {
             toggleable: false,
         }, prefix));
         parts.push(getHtmlForParam({
+            id: "editupscale",
+            name: "Edit Upscale",
+            description: "Optional upscale of the image before this edit stage. 1 disables upscaling.",
+            type: "decimal",
+            default: `${stage.upscale ?? parseFloat(rootStage.upscale.value || "1")}`,
+            min: rootStage.upscale.min,
+            max: rootStage.upscale.max,
+            step: rootStage.upscale.step,
+            view_min: rootStage.upscale.min,
+            view_max: rootStage.upscale.max,
+            view_type: "slider",
+            toggleable: false,
+        }, prefix));
+        parts.push(getHtmlForParam({
+            id: "editupscalemethod",
+            name: "Edit Upscale Method",
+            description: "How to upscale this edit stage image when Edit Upscale is enabled.",
+            type: "dropdown",
+            values: Array.from(rootStage.upscaleMethod.options).map((o) => o.value),
+            value_names: Array.from(rootStage.upscaleMethod.options).map((o) => o.label),
+            default: stage.upscaleMethod ?? rootStage.upscaleMethod.value,
+            toggleable: false,
+        }, prefix));
+        parts.push(getHtmlForParam({
             id: "editmodel",
             name: "Edit Model",
             description: "The model to use for this edit stage.",
@@ -396,6 +424,17 @@ class StageEditor {
             values: Array.from(rootStage.model.options).map((o) => o.value),
             default: stage.model,
             toggleable: false,
+        }, prefix));
+        parts.push(getHtmlForParam({
+            id: "editvae",
+            name: "Edit VAE",
+            description: "VAE to use for this edit stage.",
+            type: "model",
+            subtype: "VAE",
+            values: Array.from(rootStage.vae.options).map((o) => o.value),
+            value_names: Array.from(rootStage.vae.options).map((o) => o.label),
+            default: stage.vae ?? rootStage.vae.value,
+            toggleable: true,
         }, prefix));
         parts.push(getHtmlForParam({
             id: "editsteps",
@@ -445,17 +484,6 @@ class StageEditor {
             default: stage.scheduler ?? rootStage.scheduler.value,
             toggleable: true,
         }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editvae",
-            name: "Edit VAE",
-            description: "VAE to use for this edit stage.",
-            type: "model",
-            subtype: "VAE",
-            values: Array.from(rootStage.vae.options).map((o) => o.value),
-            value_names: Array.from(rootStage.vae.options).map((o) => o.label),
-            default: stage.vae ?? rootStage.vae.value,
-            toggleable: true,
-        }, prefix));
         return parts;
     }
     validateApplyAfter(prefix, stageIds, stageId) {
@@ -494,13 +522,15 @@ class StageEditor {
             const t = Utils.getInputElement(`${prefix}${id}_toggle`);
             return !t || !!t.checked;
         };
-        stage.applyAfter = `${val("applyafter") || stage.applyAfter}`;
         stage.keepPreEditImage = !!val("keeppreeditimage", true);
         stage.refineOnly = !!val("editrefineonly", true);
+        stage.applyAfter = `${val("applyafter") || stage.applyAfter}`;
         stage.control = parseFloat(String(val("editcontrol") ?? stage.control));
+        stage.upscale = parseFloat(String(val("editupscale") ?? stage.upscale));
+        stage.upscaleMethod = `${val("editupscalemethod") || stage.upscaleMethod}`;
         stage.model = `${val("editmodel") || stage.model}`;
-        stage.steps = parseInt(String(val("editsteps") || stage.steps), 10);
         stage.vae = isEnabled("editvae") ? `${val("editvae") || stage.vae}` : null;
+        stage.steps = parseInt(String(val("editsteps") || stage.steps), 10);
         stage.cfgScale = isEnabled("editcfgscale") ? parseFloat(String(val("editcfgscale") ?? stage.cfgScale)) : null;
         stage.sampler = isEnabled("editsampler") ? `${val("editsampler") || stage.sampler}` : null;
         stage.scheduler = isEnabled("editscheduler") ? `${val("editscheduler") || stage.scheduler}` : null;

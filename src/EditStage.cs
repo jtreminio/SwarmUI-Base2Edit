@@ -371,6 +371,8 @@ public class EditStage
             Base2EditExtension.EditControl.Type,
             Base2EditExtension.EditModel.Type,
             Base2EditExtension.EditVAE.Type,
+            Base2EditExtension.EditUpscale.Type,
+            Base2EditExtension.EditUpscaleMethod.Type,
             Base2EditExtension.EditSteps.Type,
             Base2EditExtension.EditCFGScale.Type,
             Base2EditExtension.EditSampler.Type,
@@ -390,6 +392,8 @@ public class EditStage
         g.UserInput.Set(Base2EditExtension.ApplyEditAfter.Type, stage.ApplyAfter);
         g.UserInput.Set(Base2EditExtension.EditControl.Type, $"{stage.Control}");
         g.UserInput.Set(Base2EditExtension.EditModel.Type, stage.Model);
+        g.UserInput.Set(Base2EditExtension.EditUpscale.Type, $"{stage.Upscale}");
+        g.UserInput.Set(Base2EditExtension.EditUpscaleMethod.Type, stage.UpscaleMethod);
         g.UserInput.Set(Base2EditExtension.EditSteps.Type, $"{stage.Steps}");
 
         if (stage.HasVaeOverride)

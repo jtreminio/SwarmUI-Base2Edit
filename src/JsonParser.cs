@@ -15,6 +15,8 @@ public class JsonParser(WorkflowGenerator g)
         double Control,
         string Model,
         string Vae,
+        double? Upscale,
+        string UpscaleMethod,
         int? Steps,
         double? CfgScale,
         string Sampler,
@@ -24,6 +26,8 @@ public class JsonParser(WorkflowGenerator g)
     private sealed record StageDefaults(
         string Model,
         string Vae,
+        double Upscale,
+        string UpscaleMethod,
         int Steps,
         double CfgScale,
         string Sampler,
@@ -38,6 +42,8 @@ public class JsonParser(WorkflowGenerator g)
         double Control,
         string Model,
         string Vae,
+        double Upscale,
+        string UpscaleMethod,
         int Steps,
         double CfgScale,
         string Sampler,
@@ -71,6 +77,8 @@ public class JsonParser(WorkflowGenerator g)
             Control: g.UserInput.Get(Base2EditExtension.EditControl),
             Model: stage0Model,
             Vae: stage0VaeModel?.Name,
+            Upscale: g.UserInput.TryGet(Base2EditExtension.EditUpscale, out double stage0Upscale) ? stage0Upscale : null,
+            UpscaleMethod: g.UserInput.TryGet(Base2EditExtension.EditUpscaleMethod, out string stage0UpscaleMethod) ? stage0UpscaleMethod : null,
             Steps: g.UserInput.TryGet(Base2EditExtension.EditSteps, out int stage0Steps) ? stage0Steps : null,
             CfgScale: g.UserInput.TryGet(Base2EditExtension.EditCFGScale, out double stage0Cfg) ? stage0Cfg : null,
             Sampler: g.UserInput.TryGet(Base2EditExtension.EditSampler, out string stage0Sampler) ? stage0Sampler : null,
@@ -94,6 +102,8 @@ public class JsonParser(WorkflowGenerator g)
                 Control: GetDouble("Control", obj) ?? previousStage.Control,
                 Model: GetStr("Model", obj),
                 Vae: GetStr("Vae", obj),
+                Upscale: GetDouble("Upscale", obj),
+                UpscaleMethod: GetStr("UpscaleMethod", obj),
                 Steps: GetInt("Steps", obj),
                 CfgScale: GetDouble("CfgScale", obj),
                 Sampler: GetStr("Sampler", obj),
@@ -163,6 +173,8 @@ public class JsonParser(WorkflowGenerator g)
                 Control: stage.Control,
                 Model: resolvedModel,
                 Vae: PickStringOrDefault(stage.Vae, inherited.Vae),
+                Upscale: stage.Upscale ?? inherited.Upscale,
+                UpscaleMethod: PickStringOrDefault(stage.UpscaleMethod, inherited.UpscaleMethod),
                 Steps: stage.Steps ?? inherited.Steps,
                 CfgScale: stage.CfgScale ?? paramDefaults.CfgScale,
                 Sampler: PickStringOrDefault(stage.Sampler, paramDefaults.Sampler),
@@ -180,6 +192,8 @@ public class JsonParser(WorkflowGenerator g)
             resolvedDefaultsById[stage.Id] = new StageDefaults(
                 Model: resolved.Model,
                 Vae: resolved.Vae,
+                Upscale: resolved.Upscale,
+                UpscaleMethod: resolved.UpscaleMethod,
                 Steps: resolved.Steps,
                 CfgScale: resolved.CfgScale,
                 Sampler: resolved.Sampler,
@@ -230,12 +244,14 @@ public class JsonParser(WorkflowGenerator g)
     {
         string model = g.UserInput.Get(T2IParamTypes.Model, null)?.Name ?? ModelPrep.UseBase;
         string vae = g.UserInput.Get(T2IParamTypes.VAE, null)?.Name ?? "None";
+        double upscale = g.UserInput.Get(Base2EditExtension.EditUpscale, 1.0);
+        string upscaleMethod = g.UserInput.Get(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
         int steps = g.UserInput.Get(T2IParamTypes.Steps, 20);
         double cfgScale = g.UserInput.Get(T2IParamTypes.CFGScale, 7);
         string sampler = g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, "euler");
         string scheduler = g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, "normal");
 
-        return new StageDefaults(model, vae, steps, cfgScale, sampler, scheduler);
+        return new StageDefaults(model, vae, upscale, upscaleMethod, steps, cfgScale, sampler, scheduler);
     }
 
     private StageDefaults ResolveRefinerDefaults(StageDefaults baseDefaults)
@@ -243,6 +259,10 @@ public class JsonParser(WorkflowGenerator g)
         int refinerSectionId = T2IParamInput.SectionID_Refiner;
         string model = g.UserInput.Get(T2IParamTypes.RefinerModel, null)?.Name ?? baseDefaults.Model;
         string vae = g.UserInput.Get(T2IParamTypes.RefinerVAE, null)?.Name ?? baseDefaults.Vae;
+        double upscale = g.UserInput.Get(T2IParamTypes.RefinerUpscale, baseDefaults.Upscale);
+        string upscaleMethod = ComfyUIBackendExtension.RefinerUpscaleMethod is null
+            ? baseDefaults.UpscaleMethod
+            : g.UserInput.Get(ComfyUIBackendExtension.RefinerUpscaleMethod, baseDefaults.UpscaleMethod);
         int steps = g.UserInput.Get(T2IParamTypes.RefinerSteps, baseDefaults.Steps, sectionId: refinerSectionId);
         double cfgScale = g.UserInput.Get(
             T2IParamTypes.RefinerCFGScale,
@@ -256,7 +276,7 @@ public class JsonParser(WorkflowGenerator g)
             ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSchedulerParam, null)
             ?? baseDefaults.Scheduler;
 
-        return new StageDefaults(model, vae, steps, cfgScale, sampler, scheduler);
+        return new StageDefaults(model, vae, upscale, upscaleMethod, steps, cfgScale, sampler, scheduler);
     }
 
     private static string PickStringOrDefault(string value, string fallback)

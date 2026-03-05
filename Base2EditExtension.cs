@@ -27,6 +27,8 @@ public class Base2EditExtension : Extension
     public static T2IRegisteredParam<double> EditCFGScale;
     public static T2IRegisteredParam<string> EditSampler;
     public static T2IRegisteredParam<string> EditScheduler;
+    public static T2IRegisteredParam<double> EditUpscale;
+    public static T2IRegisteredParam<string> EditUpscaleMethod;
     public static T2IRegisteredParam<double> EditControl;
     private static bool _postGenerateHookRegistered;
 
@@ -138,6 +140,35 @@ public class Base2EditExtension : Extension
             FeatureFlag: "comfyui"
         ));
 
+        EditUpscale = T2IParamTypes.Register<double>(new T2IParamType(
+            Name: "Edit Upscale",
+            Description: "Optional upscale of the image before the edit stage.\n"
+                + "Setting to '1' disables the upscale.",
+            Default: "1",
+            IgnoreIf: "1",
+            Min: 0.25,
+            Max: 8,
+            ViewMax: 4,
+            Step: 0.25,
+            ViewType: ParamViewType.SLIDER,
+            Group: Base2EditGroup,
+            OrderPriority: 4,
+            FeatureFlag: "comfyui",
+            DoNotPreview: true
+        ));
+
+        EditUpscaleMethod = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Edit Upscale Method",
+            Description: "How to upscale the image, if edit upscaling is used.",
+            Default: "pixel-lanczos",
+            Group: Base2EditGroup,
+            OrderPriority: 5,
+            FeatureFlag: "comfyui",
+            ChangeWeight: 1,
+            GetValues: (_) => ComfyUIBackendExtension.UpscalerModels,
+            DependNonDefault: EditUpscale.Type.ID
+        ));
+
         EditModel = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "Edit Model",
             Description: "The model to use for the edit stage.\n"
@@ -151,10 +182,96 @@ public class Base2EditExtension : Extension
                 return [ModelPrep.UseBase, ModelPrep.UseRefiner, .. bases];
             },
             Group: Base2EditGroup,
-            OrderPriority: 4,
+            OrderPriority: 6,
             FeatureFlag: "comfyui",
             ChangeWeight: 9,
             DoNotPreview: true
+        ));
+
+        EditVAE = T2IParamTypes.Register<T2IModel>(new T2IParamType(
+            Name: "Edit VAE",
+            Description: "VAE to use for the edit stage.\n"
+                + "'Automatic' uses the current VAE.\n"
+                + "'None' disables VAE override.",
+            Default: "None",
+            IgnoreIf: "None",
+            GetValues: (Session s) =>
+            {
+                var vaeNames = Program.T2IModelSets["VAE"].ListModelsFor(s).Select(m => m.Name);
+                return ["Automatic", "None", .. T2IParamTypes.CleanModelList(vaeNames)];
+            },
+            Subtype: "VAE",
+            Group: Base2EditGroup,
+            OrderPriority: 7,
+            FeatureFlag: "comfyui",
+            ChangeWeight: 7,
+            DoNotPreview: true,
+            Toggleable: true,
+            IsAdvanced: true
+        ));
+
+        EditSteps = T2IParamTypes.Register<int>(new T2IParamType(
+            Name: "Edit Steps",
+            Description: "Number of steps for the edit stage.",
+            Default: "20",
+            Min: 1,
+            Max: 200,
+            ViewMax: 100,
+            Step: 1,
+            ViewType: ParamViewType.SLIDER,
+            Group: Base2EditGroup,
+            OrderPriority: 8,
+            FeatureFlag: "comfyui"
+        ));
+
+        EditCFGScale = T2IParamTypes.Register<double>(new T2IParamType(
+            Name: "Edit CFG Scale",
+            Description: "CFG Scale for the edit stage.",
+            Default: "7",
+            Min: 0,
+            Max: 100,
+            ViewMax: 20,
+            Step: 0.5,
+            ViewType: ParamViewType.SLIDER,
+            Group: Base2EditGroup,
+            OrderPriority: 9,
+            FeatureFlag: "comfyui",
+            ChangeWeight: -3,
+            Toggleable: true
+        ));
+
+        EditSampler = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Edit Sampler",
+            Description: "Sampler to use for the edit stage.",
+            Default: "euler",
+            GetValues: (_) => ComfyUIBackendExtension.Samplers,
+            Group: Base2EditGroup,
+            OrderPriority: 10,
+            FeatureFlag: "comfyui",
+            Toggleable: true
+        ));
+
+        EditScheduler = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Edit Scheduler",
+            Description: "Scheduler to use for the edit stage.",
+            Default: "normal",
+            GetValues: (_) => ComfyUIBackendExtension.Schedulers,
+            Group: Base2EditGroup,
+            OrderPriority: 11,
+            FeatureFlag: "comfyui",
+            Toggleable: true
+        ));
+
+        EditStages = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Edit Stages",
+            Description: "Additional edit stages",
+            Default: "[]",
+            VisibleNormally: false,
+            IsAdvanced: true,
+            HideFromMetadata: true,
+            DoNotPreview: true,
+            Group: Base2EditGroup,
+            FeatureFlag: "comfyui"
         ));
 
         EditModelResolvedForMetadata = T2IParamTypes.Register<T2IModel>(new T2IParamType(
@@ -172,91 +289,6 @@ public class Base2EditExtension : Extension
             DoNotPreview: true,
             IntentionalUnused: true,
             Nonreusable: true
-        ));
-
-        EditSteps = T2IParamTypes.Register<int>(new T2IParamType(
-            Name: "Edit Steps",
-            Description: "Number of steps for the edit stage.",
-            Default: "20",
-            Min: 1,
-            Max: 200,
-            ViewMax: 100,
-            Step: 1,
-            ViewType: ParamViewType.SLIDER,
-            Group: Base2EditGroup,
-            OrderPriority: 5,
-            FeatureFlag: "comfyui"
-        ));
-
-        EditCFGScale = T2IParamTypes.Register<double>(new T2IParamType(
-            Name: "Edit CFG Scale",
-            Description: "CFG Scale for the edit stage.",
-            Default: "7",
-            Min: 0,
-            Max: 100,
-            ViewMax: 20,
-            Step: 0.5,
-            ViewType: ParamViewType.SLIDER,
-            Group: Base2EditGroup,
-            OrderPriority: 6,
-            FeatureFlag: "comfyui",
-            ChangeWeight: -3,
-            Toggleable: true
-        ));
-
-        EditSampler = T2IParamTypes.Register<string>(new T2IParamType(
-            Name: "Edit Sampler",
-            Description: "Sampler to use for the edit stage.",
-            Default: "euler",
-            GetValues: (_) => ComfyUIBackendExtension.Samplers,
-            Group: Base2EditGroup,
-            OrderPriority: 7,
-            FeatureFlag: "comfyui",
-            Toggleable: true
-        ));
-
-        EditScheduler = T2IParamTypes.Register<string>(new T2IParamType(
-            Name: "Edit Scheduler",
-            Description: "Scheduler to use for the edit stage.",
-            Default: "normal",
-            GetValues: (_) => ComfyUIBackendExtension.Schedulers,
-            Group: Base2EditGroup,
-            OrderPriority: 8,
-            FeatureFlag: "comfyui",
-            Toggleable: true
-        ));
-
-        EditVAE = T2IParamTypes.Register<T2IModel>(new T2IParamType(
-            Name: "Edit VAE",
-            Description: "VAE to use for the edit stage.\n"
-                + "'Automatic' uses the current VAE.\n"
-                + "'None' disables VAE override.",
-            Default: "None",
-            IgnoreIf: "None",
-            GetValues: (Session s) =>
-            {
-                var vaeNames = Program.T2IModelSets["VAE"].ListModelsFor(s).Select(m => m.Name);
-                return ["Automatic", "None", .. T2IParamTypes.CleanModelList(vaeNames)];
-            },
-            Subtype: "VAE",
-            Group: Base2EditGroup,
-            OrderPriority: 9,
-            FeatureFlag: "comfyui",
-            ChangeWeight: 7,
-            DoNotPreview: true,
-            Toggleable: true
-        ));
-
-        EditStages = T2IParamTypes.Register<string>(new T2IParamType(
-            Name: "Edit Stages",
-            Description: "Additional edit stages",
-            Default: "[]",
-            VisibleNormally: false,
-            IsAdvanced: true,
-            HideFromMetadata: true,
-            DoNotPreview: true,
-            Group: Base2EditGroup,
-            FeatureFlag: "comfyui"
         ));
     }
 }

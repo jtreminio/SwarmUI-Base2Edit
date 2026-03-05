@@ -79,9 +79,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         ReencodeIfNeeded(modelState, new ReencodeOptions(
             ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
         ));
+        (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(modelState.Vae);
         var editParams = new Parameters(
-            Width: g.UserInput.GetImageWidth(),
-            Height: g.UserInput.GetImageHeight(),
+            Width: stageWidth,
+            Height: stageHeight,
             Steps: g.UserInput.Get(Base2EditExtension.EditSteps, 20),
             Cfg: g.UserInput.Get(Base2EditExtension.EditCFGScale, 7.0),
             Control: g.UserInput.Get(Base2EditExtension.EditControl, 1.0),
@@ -808,5 +809,130 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             g.CurrentMedia = WrapLatent(currentSamples.Path).DecodeLatents(WrapVae(vae), false);
         }
+    }
+
+    /// <summary>
+    /// Applies edit-stage upscaling prior to sampling, mirroring refiner-upscale behavior:
+    /// pixel upscaling uses ImageScale (or model upscaler for model-* methods), latent
+    /// upscaling uses LatentUpscaleBy. Returns the effective stage resolution.
+    /// </summary>
+    private (int Width, int Height) ApplyEditUpscaleIfNeeded(JArray stageVae)
+    {
+        int baseWidth = Math.Max(g.CurrentMedia?.Width ?? g.UserInput.GetImageWidth(), 16);
+        int baseHeight = Math.Max(g.CurrentMedia?.Height ?? g.UserInput.GetImageHeight(), 16);
+        double upscale = g.UserInput.Get(Base2EditExtension.EditUpscale, 1.0);
+        string upscaleMethod = g.UserInput.Get(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+        bool doUpscale = upscale != 1 && !string.IsNullOrWhiteSpace(upscaleMethod);
+        if (!doUpscale)
+        {
+            return (baseWidth, baseHeight);
+        }
+
+        int width = (int)Math.Round(baseWidth * upscale);
+        int height = (int)Math.Round(baseHeight * upscale);
+        width = Math.Max(16, (width / 16) * 16);
+        height = Math.Max(16, (height / 16) * 16);
+
+        if (upscaleMethod.StartsWith("pixel-", StringComparison.OrdinalIgnoreCase)
+            || upscaleMethod.StartsWith("model-", StringComparison.OrdinalIgnoreCase))
+        {
+            EnsureImageAvailable(stageVae);
+            WGNodeData decoded = WGNodeDataUtil.TryGetCurrentImage(g);
+            if (decoded is null)
+            {
+                return (baseWidth, baseHeight);
+            }
+
+            JArray upscaledImageRef;
+            if (upscaleMethod.StartsWith("pixel-", StringComparison.OrdinalIgnoreCase))
+            {
+                string pixelMethod = upscaleMethod["pixel-".Length..];
+                string scaleNode = g.CreateNode(NodeTypes.ImageScale, new JObject()
+                {
+                    ["image"] = decoded.Path,
+                    ["width"] = width,
+                    ["height"] = height,
+                    ["upscale_method"] = pixelMethod,
+                    ["crop"] = "disabled"
+                });
+                upscaledImageRef = [scaleNode, 0];
+            }
+            else
+            {
+                string modelName = upscaleMethod["model-".Length..];
+                string loader = g.CreateNode(NodeTypes.UpscaleModelLoader, new JObject()
+                {
+                    ["model_name"] = modelName
+                });
+                string modelUpscale = g.CreateNode(NodeTypes.ImageUpscaleWithModel, new JObject()
+                {
+                    ["upscale_model"] = new JArray(loader, 0),
+                    ["image"] = decoded.Path
+                });
+                string fitScale = g.CreateNode(NodeTypes.ImageScale, new JObject()
+                {
+                    ["image"] = new JArray(modelUpscale, 0),
+                    ["width"] = width,
+                    ["height"] = height,
+                    ["upscale_method"] = "lanczos",
+                    ["crop"] = "disabled"
+                });
+                upscaledImageRef = [fitScale, 0];
+            }
+
+            g.CurrentMedia = WrapImage(upscaledImageRef);
+            g.CurrentMedia.Width = width;
+            g.CurrentMedia.Height = height;
+
+            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, upscaledImageRef, stageVae, out JArray reusedSamples))
+            {
+                g.CurrentMedia = WrapLatent(reusedSamples);
+            }
+            else
+            {
+                g.CurrentMedia = g.CurrentMedia.EncodeToLatent(WrapVae(stageVae));
+            }
+            g.CurrentMedia.Width = width;
+            g.CurrentMedia.Height = height;
+            return (width, height);
+        }
+
+        if (upscaleMethod.StartsWith("latent-", StringComparison.OrdinalIgnoreCase))
+        {
+            WGNodeData latentMedia = WGNodeDataUtil.TryGetCurrentLatent(g);
+            if (latentMedia is null)
+            {
+                WGNodeData imageMedia = WGNodeDataUtil.TryGetCurrentImage(g);
+                if (imageMedia is null || stageVae is null)
+                {
+                    return (baseWidth, baseHeight);
+                }
+
+                if (VaeNodeReuse.ReuseVaeEncodeForImage(g, imageMedia.Path, stageVae, out JArray reusedLatent))
+                {
+                    latentMedia = WrapLatent(reusedLatent);
+                }
+                else
+                {
+                    string encodeNode = g.CreateVAEEncode(stageVae, imageMedia.Path);
+                    latentMedia = WrapLatent([encodeNode, 0]);
+                }
+            }
+
+            g.CurrentMedia = WrapLatent(latentMedia.Path);
+            string latentMethod = upscaleMethod["latent-".Length..];
+            string latentUpscale = g.CreateNode(NodeTypes.LatentUpscaleBy, new JObject()
+            {
+                ["samples"] = g.CurrentMedia.Path,
+                ["upscale_method"] = latentMethod,
+                ["scale_by"] = upscale
+            });
+            g.CurrentMedia = g.CurrentMedia.WithPath([latentUpscale, 0]);
+            g.CurrentMedia.Width = width;
+            g.CurrentMedia.Height = height;
+            return (width, height);
+        }
+
+        return (baseWidth, baseHeight);
     }
 }
