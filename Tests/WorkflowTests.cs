@@ -555,6 +555,50 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void EditStage_segment_after_base_edit_stages_applied_after_segment()
+    {
+        T2IParamInput input = BuildEditInput(
+            "Refiner",
+            enableBase2EditGroup: true,
+            prompt: "global <edit>do edit <segment:face,0.2,0.2>"
+        );
+        input.Set(T2IParamTypes.SegmentApplyAfter, "Refiner");
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            new[]
+            {
+                WorkflowTestHarness.MinimalGraphSeedStep(),
+                new WorkflowGenerator.WorkflowGenStep(g =>
+                {
+                    string preSegmentDecode = g.CreateNode("VAEDecode", new JObject()
+                    {
+                        ["samples"] = g.CurrentMedia.Path,
+                        ["vae"] = g.CurrentVae.Path
+                    }, id: "1801", idMandatory: false);
+                    string segmentTail = g.CreateNode("UnitTest_SegmentAfterBase", new JObject()
+                    {
+                        ["image"] = new JArray(preSegmentDecode, 0)
+                    }, id: "1802", idMandatory: false);
+                    g.CurrentMedia = new WGNodeData([segmentTail, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+                }, 5.8)
+            }
+            .Concat(WorkflowTestHarness.Base2EditSteps());
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+
+        WorkflowNode sampler = RequireSingleSampler(workflow);
+        JArray latentRef = RequireConnectionInput(sampler.Node, "latent_image", "latent");
+        Assert.Equal("VAEEncode", RequireClassType(workflow, $"{latentRef[0]}"));
+
+        WorkflowNode encode = WorkflowAssertions.RequireNodeById(workflow, $"{latentRef[0]}");
+        Assert.Equal(new JArray("1802", 0), RequireConnectionInput(encode.Node, "pixels", "image"));
+
+        // Segment chain should remain upstream of edit (ie not rewired to post-edit decode).
+        WorkflowNode segmentTailNode = WorkflowAssertions.RequireNodeById(workflow, "1802");
+        Assert.Equal(new JArray("1801", 0), RequireConnectionInput(segmentTailNode.Node, "image"));
+    }
+
+    [Fact]
     public void EditStage_defaults_to_refiner_when_apply_after_missing()
     {
         // If ApplyEditAfter isn't present, Base2Edit should still run on the final step

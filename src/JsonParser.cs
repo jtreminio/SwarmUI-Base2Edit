@@ -58,6 +58,7 @@ public class JsonParser(WorkflowGenerator g)
         List<RawStageSpec> rawStages = [];
         int nextId = 1;
         bool hasRefinerStageConfigured = HasRefinerStageConfigured();
+        bool hasRefinerPhaseWork = hasRefinerStageConfigured || HasSegmentApplyAfterRefiner();
         string stage0ApplyAfter = g.UserInput.Get(Base2EditExtension.ApplyEditAfter);
         if (!string.Equals(stage0ApplyAfter, "Base", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(stage0ApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
@@ -125,7 +126,7 @@ public class JsonParser(WorkflowGenerator g)
             {
                 continue;
             }
-            if (!hasRefinerStageConfigured && string.Equals(normalizedApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
+            if (!hasRefinerPhaseWork && string.Equals(normalizedApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
             {
                 normalizedApplyAfter = "Base";
             }
@@ -334,6 +335,18 @@ public class JsonParser(WorkflowGenerator g)
 
         return g.UserInput.TryGetRaw(T2IParamTypes.RefinerMethod.Type, out object _)
             && g.UserInput.TryGetRaw(T2IParamTypes.RefinerControl.Type, out object _);
+    }
+
+    private bool HasSegmentApplyAfterRefiner()
+    {
+        string segmentApplyAfter = g.UserInput.Get(T2IParamTypes.SegmentApplyAfter, "Refiner");
+        if (!string.Equals(segmentApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        PromptRegion prompt = new(g.UserInput.Get(T2IParamTypes.Prompt, ""));
+        return prompt.Parts.Any(p => p.Type == PromptRegion.PartType.Segment);
     }
 
     private static string GetStr(string key, JObject obj)
