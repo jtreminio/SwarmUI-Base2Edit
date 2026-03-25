@@ -43,6 +43,20 @@ class StageEditor
         this.installStageChangeListener();
     }
 
+    private applyFullWidthLayout(elem: HTMLElement): void
+    {
+        elem.style.width = "100%";
+        elem.style.maxWidth = "100%";
+        elem.style.minWidth = "0";
+    }
+
+    private applyEditorLayout(editor: HTMLElement): void
+    {
+        this.applyFullWidthLayout(editor);
+        editor.style.flex = "1 1 100%";
+        editor.style.overflow = "visible";
+    }
+
     public startGenerateWrapRetry(intervalMs = 250): void
     {
         if (this.genWrapInterval) {
@@ -78,6 +92,7 @@ class StageEditor
             document.getElementById("input_group_content_baseedit")!.appendChild(editor);
         }
 
+        this.applyEditorLayout(editor);
         this.editor = editor;
     }
 
@@ -311,6 +326,8 @@ class StageEditor
         const stages = this.getStages();
         const stageIds = [0, ...stages.map((_, idx) => idx + 1)];
         const list = document.createElement("div");
+        list.className = "base2edit-stage-list";
+        this.applyFullWidthLayout(list);
 
         this.editor.innerHTML = "";
         this.editor.appendChild(list);
@@ -319,10 +336,11 @@ class StageEditor
         stages.forEach((stage, idx) => {
             const stageId = idx + 1;
             const wrap = document.createElement("div");
-            wrap.className = "input-group input-group-open";
+            wrap.className = "input-group input-group-open base2edit-stage-wrap";
             wrap.classList.add("border", "rounded", "p-2", "mb-2");
             wrap.id = `base2edit_stage_${stageId}`;
             wrap.dataset.base2editStageId = `${stageId}`;
+            this.applyFullWidthLayout(wrap);
 
             const header = document.createElement("span");
             header.className = "input-group-header input-group-noshrink";
@@ -335,7 +353,8 @@ class StageEditor
             wrap.appendChild(header);
 
             const content = document.createElement("div");
-            content.className = "input-group-content";
+            content.className = "input-group-content base2edit-stage-content";
+            this.applyFullWidthLayout(content);
             wrap.appendChild(content);
 
             list.appendChild(wrap);

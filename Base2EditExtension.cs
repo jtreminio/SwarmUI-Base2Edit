@@ -50,6 +50,7 @@ public class Base2EditExtension : Extension
         };
         T2IPromptHandling.PromptTagLengthEstimators["edit"] = (data, context) => "<break>";
 
+        StyleSheetFiles.Add("Assets/base2edit.css");
         ScriptFiles.Add("Assets/base2edit.js");
     }
 
