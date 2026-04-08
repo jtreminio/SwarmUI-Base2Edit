@@ -19,6 +19,17 @@ declare var buttonsForImage: ((fullsrc: string, src: string, metadata: unknown) 
 
 declare let postParamBuildSteps: (() => void)[] | undefined;
 
+interface Base2EditStageSnapshot {
+    enabled: boolean;
+    stageCount: number;
+    refs: string[];
+}
+
+interface Base2EditStageRegistry {
+    getSnapshot: () => Base2EditStageSnapshot;
+}
+
 interface Window {
     base2editRunEditOnlyFromImage?: (src: string) => void;
+    base2editStageRegistry?: Base2EditStageRegistry;
 }

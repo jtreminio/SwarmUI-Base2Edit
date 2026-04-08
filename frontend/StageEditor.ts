@@ -34,6 +34,9 @@ class StageEditor
     private genWrapInterval: ReturnType<typeof setInterval> | null = null;
     private changeListenerElem: HTMLElement | null = null;
     private stageSyncTimers = new Map<number, ReturnType<typeof setTimeout>>();
+    private stagesInputSyncInterval: ReturnType<typeof setInterval> | null = null;
+    private lastKnownStagesJson = "";
+    private lastKnownBase2EditEnabled = false;
 
     public init(): void
     {
@@ -41,6 +44,8 @@ class StageEditor
         this.wrapGenerateWithValidation();
         this.showStages();
         this.installStageChangeListener();
+        this.startPublishedStageSync();
+        this.publishStageAvailability();
     }
 
     private applyFullWidthLayout(elem: HTMLElement): void
@@ -159,9 +164,79 @@ class StageEditor
     {
         const stages = Utils.getInputElement("input_editstages");
         stages.value = JSON.stringify(newStages);
+        this.lastKnownStagesJson = stages.value;
+        this.lastKnownBase2EditEnabled = this.isBase2EditGroupEnabled();
         if (this.isBase2EditGroupEnabled()) {
             triggerChangeFor(stages);
         }
+        this.publishStageAvailability();
+    }
+
+    private buildStageSnapshot(): Base2EditStageSnapshot
+    {
+        const enabled = this.isBase2EditGroupEnabled();
+        const stageCount = enabled ? this.getStages().length + 1 : 0;
+        const refs: string[] = [];
+        for (let i = 0; i < stageCount; i++) {
+            refs.push(`edit${i}`);
+        }
+        return {
+            enabled,
+            stageCount,
+            refs,
+        };
+    }
+
+    private cloneStageSnapshot(snapshot: Base2EditStageSnapshot): Base2EditStageSnapshot
+    {
+        return {
+            enabled: snapshot.enabled,
+            stageCount: snapshot.stageCount,
+            refs: [...snapshot.refs],
+        };
+    }
+
+    private ensureStageRegistry(): void
+    {
+        const getSnapshot = () => this.cloneStageSnapshot(this.buildStageSnapshot());
+        if (!window.base2editStageRegistry) {
+            window.base2editStageRegistry = { getSnapshot };
+            return;
+        }
+
+        window.base2editStageRegistry.getSnapshot = getSnapshot;
+    }
+
+    private publishStageAvailability(): void
+    {
+        this.ensureStageRegistry();
+        const snapshot = this.cloneStageSnapshot(this.buildStageSnapshot());
+        document.dispatchEvent(new CustomEvent("base2edit:stages-changed", {
+            detail: snapshot
+        }));
+    }
+
+    private startPublishedStageSync(): void
+    {
+        if (this.stagesInputSyncInterval) {
+            return;
+        }
+
+        this.lastKnownStagesJson = Utils.getInputElement("input_editstages")?.value ?? "";
+        this.lastKnownBase2EditEnabled = this.isBase2EditGroupEnabled();
+        this.stagesInputSyncInterval = setInterval(() => {
+            const currentStagesJson = Utils.getInputElement("input_editstages")?.value ?? "";
+            const base2EditEnabled = this.isBase2EditGroupEnabled();
+            if (currentStagesJson == this.lastKnownStagesJson
+                && base2EditEnabled == this.lastKnownBase2EditEnabled
+            ) {
+                return;
+            }
+
+            this.lastKnownStagesJson = currentStagesJson;
+            this.lastKnownBase2EditEnabled = base2EditEnabled;
+            this.publishStageAvailability();
+        }, 150);
     }
 
     private isMissingStageRef(applyAfter: string, stageIds: number[]): boolean

@@ -1,3 +1,4 @@
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 
@@ -6,6 +7,7 @@ namespace Base2Edit;
 public class StageRefStore(WorkflowGenerator g)
 {
     private const string Prefix = "b2e.";
+    private const string PublishedEditPrefix = "b2e.published.edit.";
     private const string EditStagePrefix = "Edit Stage ";
     private const string EditAliasPrefix = "edit";
 
@@ -98,6 +100,7 @@ public class StageRefStore(WorkflowGenerator g)
         StoreNodeData(NodeKey(stage, index, "clip"), g.CurrentTextEnc);
         StoreNodeData(NodeKey(stage, index, "media"), g.CurrentMedia);
         StoreNodeData(NodeKey(stage, index, "vae"), g.CurrentVae);
+        PublishEditStageRef(stage, index, g.CurrentMedia, g.CurrentVae);
     }
 
     public bool TryGetEditRef(int index, out StageRef stageRef)
@@ -165,6 +168,70 @@ public class StageRefStore(WorkflowGenerator g)
         }
 
         return int.TryParse(value, out stageIndex) && stageIndex >= 0;
+    }
+
+    private static string PublishedEditNodeKey(int index) => $"{PublishedEditPrefix}{index}";
+
+    private void PublishEditStageRef(StageKind stage, int? index, WGNodeData media, WGNodeData vae)
+    {
+        if (stage != StageKind.Edit || index is null)
+        {
+            return;
+        }
+
+        string key = PublishedEditNodeKey(index.Value);
+        JObject mediaObj = SerializeNodeData(media);
+        if (mediaObj is null)
+        {
+            g.NodeHelpers.Remove(key);
+            return;
+        }
+
+        JObject payload = new()
+        {
+            ["media"] = mediaObj
+        };
+        JObject vaeObj = SerializeNodeData(vae);
+        if (vaeObj is not null)
+        {
+            payload["vae"] = vaeObj;
+        }
+        g.NodeHelpers[key] = payload.ToString(Formatting.None);
+    }
+
+    private static JObject SerializeNodeData(WGNodeData data)
+    {
+        if (data?.Path is not JArray path || path.Count != 2)
+        {
+            return null;
+        }
+
+        JObject result = new()
+        {
+            ["path"] = new JArray(path[0], path[1]),
+            ["dataType"] = data.DataType
+        };
+        if (!string.IsNullOrWhiteSpace(data.Compat?.ID))
+        {
+            result["compatId"] = data.Compat.ID;
+        }
+        if (data.Width.HasValue)
+        {
+            result["width"] = data.Width.Value;
+        }
+        if (data.Height.HasValue)
+        {
+            result["height"] = data.Height.Value;
+        }
+        if (data.Frames.HasValue)
+        {
+            result["frames"] = data.Frames.Value;
+        }
+        if (data.FPS.HasValue)
+        {
+            result["fps"] = data.FPS.Value;
+        }
+        return result;
     }
 
     public static string FormatStageLabel(int stageIndex) => $"{EditStagePrefix}{stageIndex}";

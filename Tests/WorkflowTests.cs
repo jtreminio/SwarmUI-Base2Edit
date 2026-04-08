@@ -887,6 +887,44 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void Published_edit_stage_refs_are_written_as_json_payloads()
+    {
+        T2IParamInput input = BuildEditInput(
+            "Base",
+            enableBase2EditGroup: true,
+            prompt: "global <edit[0]>stage0 text <edit[1]>stage1 text"
+        );
+        input.Set(Base2EditExtension.EditStages, new JArray(
+            new JObject
+            {
+                ["applyAfter"] = "Edit Stage 0",
+                ["keepPreEditImage"] = false,
+                ["control"] = 1.0,
+                ["model"] = ModelPrep.UseRefiner,
+                ["vae"] = "None",
+                ["steps"] = 20,
+                ["cfgScale"] = 7.0,
+                ["sampler"] = "euler",
+                ["scheduler"] = "normal"
+            }
+        ).ToString());
+
+        (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, BaseSteps());
+
+        Assert.NotNull(workflow);
+        Assert.True(generator.NodeHelpers.TryGetValue("b2e.published.edit.0", out string stage0Payload));
+        Assert.True(generator.NodeHelpers.TryGetValue("b2e.published.edit.1", out string stage1Payload));
+
+        JObject stage0 = JObject.Parse(stage0Payload);
+        JObject stage1 = JObject.Parse(stage1Payload);
+        Assert.Equal(WGNodeData.DT_VAE, $"{stage0["vae"]?["dataType"]}");
+        Assert.Equal(WGNodeData.DT_VAE, $"{stage1["vae"]?["dataType"]}");
+        Assert.True(stage0["media"]?["path"] is JArray stage0Path && stage0Path.Count == 2);
+        Assert.True(stage1["media"]?["path"] is JArray stage1Path && stage1Path.Count == 2);
+        Assert.False(JToken.DeepEquals(stage0["media"]?["path"], stage1["media"]?["path"]));
+    }
+
+    [Fact]
     public void Stage_fallback_prompt_from_setvar_false_does_not_include_leading_lt()
     {
         const string portrait = "a portrait of a character in a scenic environment by Tom Everhart";
