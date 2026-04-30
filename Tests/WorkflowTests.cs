@@ -1,6 +1,7 @@
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
+using SwarmUI.Utils;
 using Xunit;
 
 namespace Base2Edit.Tests;
@@ -648,6 +649,49 @@ public class WorkflowTests
 
         Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
         Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
+    }
+
+    [Fact]
+    public void Edit_prompt_stops_at_registered_custom_prompt_sections()
+    {
+        _ = WorkflowTestHarness.Base2EditSteps();
+        HashSet<string> customPartPrefixes = [.. PromptRegion.CustomPartPrefixes];
+        List<string> partPrefixes = [.. PromptRegion.PartPrefixes];
+        Dictionary<string, Func<string, T2IPromptHandling.PromptTagContext, string>> promptBasic = new(T2IPromptHandling.PromptTagBasicProcessors);
+        Dictionary<string, Func<string, T2IPromptHandling.PromptTagContext, string>> promptLength = new(T2IPromptHandling.PromptTagLengthEstimators);
+
+        try
+        {
+            if (!PromptRegion.CustomPartPrefixes.Contains("videoclip"))
+            {
+                PromptRegion.RegisterCustomPrefix("videoclip");
+            }
+            T2IPromptHandling.PromptTagBasicProcessors["videoclip"] = (_, context) =>
+            {
+                context.SectionID = 58823;
+                return $"<videoclip//cid={context.SectionID}>";
+            };
+            T2IPromptHandling.PromptTagLengthEstimators["videoclip"] = (_, _) => "<break>";
+
+            T2IParamInput input = BuildEditInput(
+                "Base",
+                enableBase2EditGroup: true,
+                prompt: "sonic the hedgehog\n<edit>Castlevania\n<videoclip>He is annihilate"
+            );
+            JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+            List<string> prompts = CollectEncoderPrompts(workflow);
+
+            Assert.Contains(prompts, prompt => prompt.Trim() == "Castlevania");
+            Assert.DoesNotContain(prompts, prompt => prompt.Contains("He is annihilate", StringComparison.Ordinal));
+            Assert.DoesNotContain(prompts, prompt => prompt.Contains("<videoclip", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            PromptRegion.CustomPartPrefixes = customPartPrefixes;
+            PromptRegion.PartPrefixes = partPrefixes;
+            T2IPromptHandling.PromptTagBasicProcessors = promptBasic;
+            T2IPromptHandling.PromptTagLengthEstimators = promptLength;
+        }
     }
 
     [Fact]

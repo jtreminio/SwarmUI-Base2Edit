@@ -5,6 +5,18 @@ namespace Base2Edit;
 
 class PromptParser
 {
+    private static readonly HashSet<string> SectionEndingTags = [
+        "base",
+        "refiner",
+        "video",
+        "videoswap",
+        "region",
+        "segment",
+        "object",
+        "clear",
+        "extend"
+    ];
+
     public record EditPrompts(string Positive, string Negative);
 
     public sealed record ImagePromptParseResult(
@@ -58,6 +70,22 @@ class PromptParser
         }
 
         return !string.IsNullOrWhiteSpace(prefixName);
+    }
+
+    private static bool IsSectionEndingTag(string tagPrefixLower)
+    {
+        if (SectionEndingTags.Contains(tagPrefixLower))
+        {
+            return true;
+        }
+        foreach (string prefix in PromptRegion.CustomPartPrefixes)
+        {
+            if (string.Equals(prefix, tagPrefixLower, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static string StripImageTagsFromPrompt(
@@ -363,7 +391,6 @@ class PromptParser
             return prompt.Trim();
         }
 
-        HashSet<string> sectionEndingTags = ["base", "refiner", "video", "videoswap", "region", "segment", "object"];
         int globalCid = Base2EditExtension.SectionID_Edit;
         int stageCid = Base2EditExtension.EditSectionIdForStage(stageIndex);
 
@@ -382,7 +409,7 @@ class PromptParser
             dest += add;
         }
 
-        string RemoveAllEditSections(string fullPrompt, HashSet<string> sectionEndingTagsLocal)
+        string RemoveAllEditSections(string fullPrompt)
         {
             if (string.IsNullOrWhiteSpace(fullPrompt) || !fullPrompt.Contains("<edit", StringComparison.OrdinalIgnoreCase))
             {
@@ -443,7 +470,7 @@ class PromptParser
 
                 if (inAnyEditSection)
                 {
-                    if (sectionEndingTagsLocal.Contains(tagPrefixLower))
+                    if (IsSectionEndingTag(tagPrefixLower))
                     {
                         inAnyEditSection = false;
                     }
@@ -526,7 +553,7 @@ class PromptParser
             }
             else if (inWantedSection)
             {
-                if (sectionEndingTags.Contains(tagPrefixLower))
+                if (IsSectionEndingTag(tagPrefixLower))
                 {
                     inWantedSection = false;
                 }
@@ -539,7 +566,7 @@ class PromptParser
 
         if (!sawRelevantEditTag)
         {
-            return RemoveAllEditSections(prompt, sectionEndingTags);
+            return RemoveAllEditSections(prompt);
         }
 
         return result.Trim();
