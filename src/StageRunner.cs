@@ -1,3 +1,6 @@
+using ComfyTyped.Core;
+using ComfyTyped.Generated;
+using ComfyTyped.SwarmUI;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
@@ -686,67 +689,70 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         JArray currentStageVae = ctx.ModelState.Vae;
         PromptParser.ImagePromptParseResult imageRefs = PromptParser.ParseImageTags(prompts, stageIndex);
         PromptParser.EditPrompts cleanedPrompts = imageRefs.Prompts;
-        string posCondNode = CreateConditioningNode(clip, cleanedPrompts.Positive, editParams);
-        JArray positiveConditioning = [posCondNode, 0];
         StageResolver resolver = new(g, store);
+
+        // Resolve all upstream paths first via g.CreateNode so the bridge sees them when we
+        // construct it below. WorkflowBridge.Create snapshots the workflow at construction time;
+        // nodes added later via g.CreateNode are invisible to bridge.ResolvePath.
+        List<JArray> referencedLatents = !editParams.RefineOnly
+            ? resolver.ResolveImageLatents(imageRefs.References, currentStageVae, stageIndex)
+            : [];
+        JArray currentStageSamples = !editParams.RefineOnly
+            ? EnsureCurrentSamplesForEdit(currentStageVae)
+            : null;
+
+        WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        JArray positiveConditioning = [BuildPromptEncoder(bridge, clip, cleanedPrompts.Positive, editParams), 0];
 
         if (!editParams.RefineOnly)
         {
-            List<JArray> referencedLatents = resolver.ResolveImageLatents(
-                imageRefs.References,
-                currentStageVae,
-                stageIndex
-            );
-
             foreach (JArray referencedLatent in referencedLatents)
             {
-                string referenceNode = g.CreateNode(NodeTypes.ReferenceLatent, new JObject()
-                {
-                    ["conditioning"] = positiveConditioning,
-                    ["latent"] = referencedLatent
-                });
-                positiveConditioning = [referenceNode, 0];
+                positiveConditioning = [AddReferenceLatent(bridge, positiveConditioning, referencedLatent), 0];
             }
 
-            JArray currentStageSamples = EnsureCurrentSamplesForEdit(currentStageVae);
             if (currentStageSamples is null)
             {
                 Logs.Warning($"Base2Edit: Stage {stageIndex} has no latent anchor; skipping implicit current-stage ReferenceLatent.");
-                return new Conditioning(positiveConditioning, [CreateConditioningNode(clip, cleanedPrompts.Negative, editParams), 0]);
+                return new Conditioning(positiveConditioning, [BuildPromptEncoder(bridge, clip, cleanedPrompts.Negative, editParams), 0]);
             }
 
-            string currentStageReferenceNode = g.CreateNode(NodeTypes.ReferenceLatent, new JObject()
-            {
-                ["conditioning"] = positiveConditioning,
-                ["latent"] = currentStageSamples
-            });
-            positiveConditioning = [currentStageReferenceNode, 0];
+            positiveConditioning = [AddReferenceLatent(bridge, positiveConditioning, currentStageSamples), 0];
         }
         else if (imageRefs.References.Count > 0)
         {
             Logs.Warning($"Base2Edit: Ignoring <b2eimage[...]> in stage {stageIndex}: Refine Only is enabled.");
         }
-        string negCondNode = CreateConditioningNode(clip, cleanedPrompts.Negative, editParams);
 
-        return new Conditioning(positiveConditioning, [negCondNode, 0]);
+        return new Conditioning(positiveConditioning, [BuildPromptEncoder(bridge, clip, cleanedPrompts.Negative, editParams), 0]);
     }
 
-    private string CreateConditioningNode(
+    private string BuildPromptEncoder(
+        WorkflowBridge bridge,
         JArray clip,
         string prompt,
         Parameters editParams)
     {
-        return g.CreateNode(NodeTypes.SwarmClipTextEncodeAdvanced, new JObject()
-        {
-            ["clip"] = clip,
-            ["steps"] = editParams.Steps,
-            ["prompt"] = prompt,
-            ["width"] = editParams.Width,
-            ["height"] = editParams.Height,
-            ["target_width"] = editParams.Width,
-            ["target_height"] = editParams.Height,
-            ["guidance"] = editParams.Guidance
-        });
+        SwarmClipTextEncodeAdvancedNode node = bridge.AddNode(
+            new SwarmClipTextEncodeAdvancedNode().With(
+                Steps: editParams.Steps,
+                Prompt: prompt,
+                Width: editParams.Width,
+                Height: editParams.Height,
+                TargetWidth: editParams.Width,
+                TargetHeight: editParams.Height,
+                Guidance: editParams.Guidance),
+            id: $"{g.LastID++}");
+        node.Clip.ConnectFromPath(bridge, clip);
+        return node.Id;
+    }
+
+    private string AddReferenceLatent(WorkflowBridge bridge, JArray conditioning, JArray latent)
+    {
+        ReferenceLatentNode node = bridge.AddNode(new ReferenceLatentNode(), id: $"{g.LastID++}");
+        node.Conditioning.ConnectFromPath(bridge, conditioning);
+        node.Latent.ConnectFromPath(bridge, latent);
+        return node.Id;
     }
 
     /// <summary>
