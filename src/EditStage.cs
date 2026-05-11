@@ -91,7 +91,7 @@ public class EditStage
                 ApplyStageOverrides(stage);
                 runner.RunStage(
                     isFinalStep: isFinalStep,
-                    stageIndex: stage.Id,
+                    stage: stage,
                     options: new RunEditStageOptions(
                         TrackResolvedModelForMetadata: true,
                         AllowFinalDecodeRetarget: branches.Count == 0,
@@ -114,7 +114,7 @@ public class EditStage
                     ApplyStageOverrides(branch);
                     runner.RunStage(
                         isFinalStep: isFinalStep,
-                        stageIndex: branch.Id,
+                        stage: branch,
                         options: new RunEditStageOptions(
                             TrackResolvedModelForMetadata: false,
                             AllowFinalDecodeRetarget: false,

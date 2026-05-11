@@ -28,9 +28,15 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     /// </summary>
     public void RunStage(
         bool isFinalStep,
-        int stageIndex,
+        StageSpec stage,
         RunEditStageOptions options)
     {
+        int stageIndex = stage.Id;
+        EditStageContext ctx = new(
+            stage,
+            Base2EditExtension.EditSectionIdForStage(stageIndex),
+            g.CurrentMedia,
+            g.CurrentVae);
         string positivePrompt = g.UserInput.Get(T2IParamTypes.Prompt, "");
         string negativePrompt = g.UserInput.Get(T2IParamTypes.NegativePrompt, "");
         string originalPositivePrompt = PromptParser.GetOriginalPrompt(g.UserInput, T2IParamTypes.Prompt.Type.ID, positivePrompt);
@@ -41,6 +47,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             PromptParser.ExtractPrompt(negativePrompt, originalNegativePrompt, stageIndex)
         );
         var modelState = PrepareModelAndVae(isFinalStep, stageIndex, options.TrackResolvedModelForMetadata);
+        ctx.ModelState = modelState;
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
         string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
@@ -96,8 +103,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             Sampler: g.UserInput.Get(Base2EditExtension.EditSampler, "euler"),
             Scheduler: g.UserInput.Get(Base2EditExtension.EditScheduler, "normal")
         );
-        var conditioning = CreateConditioning(modelState.Clip, prompts, editParams, stageIndex, modelState.Vae);
-        ExecuteSampler(modelState.Model, conditioning, editParams, stageIndex);
+        ctx.Parameters = editParams;
+        var conditioning = CreateConditioning(ctx, prompts);
+        ctx.Conditioning = conditioning;
+        ExecuteSampler(ctx);
 
         if (modelState.Vae is not null && g.CurrentCompat() is not null)
         {
@@ -664,12 +673,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     /// reference latents and just does a straight denoise).
     /// </summary>
     private Conditioning CreateConditioning(
-        JArray clip,
-        PromptParser.EditPrompts prompts,
-        Parameters editParams,
-        int stageIndex,
-        JArray currentStageVae)
+        EditStageContext ctx,
+        PromptParser.EditPrompts prompts)
     {
+        JArray clip = ctx.ModelState.Clip;
+        Parameters editParams = ctx.Parameters;
+        int stageIndex = ctx.Stage.Id;
+        JArray currentStageVae = ctx.ModelState.Vae;
         PromptParser.ImagePromptParseResult imageRefs = PromptParser.ParseImageTags(prompts, stageIndex);
         PromptParser.EditPrompts cleanedPrompts = imageRefs.Prompts;
         string posCondNode = CreateConditioningNode(clip, cleanedPrompts.Positive, editParams);
@@ -741,12 +751,12 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     /// stays untouched). The start step is derived from the control parameter — higher control
     /// means more of the original image is preserved.
     /// </summary>
-    private void ExecuteSampler(
-        JArray model,
-        Conditioning conditioning,
-        Parameters editParams,
-        int stageIndex)
+    private void ExecuteSampler(EditStageContext ctx)
     {
+        JArray model = ctx.ModelState.Model;
+        Conditioning conditioning = ctx.Conditioning;
+        Parameters editParams = ctx.Parameters;
+        int stageIndex = ctx.Stage.Id;
         bool hadPromptImages = g.UserInput.TryGet(T2IParamTypes.PromptImages, out List<Image> promptImages);
         if (hadPromptImages)
         {
