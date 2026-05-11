@@ -218,7 +218,7 @@ public class EditStage
         if (_parsedStages is null || _parsedStages.Count == 0)
         {
             _parsedStages = [];
-            foreach (StageSpec stage in Base2EditSpecParser.ParseEditStages(g))
+            foreach (StageSpec stage in Base2EditSpecParser.Parse(g))
             {
                 _parsedStages[stage.Id] = stage;
             }
