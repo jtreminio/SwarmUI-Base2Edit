@@ -1,3 +1,4 @@
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
@@ -5,7 +6,7 @@ using SwarmUI.Utils;
 
 namespace Base2Edit;
 
-public class Base2EditSpecParser(WorkflowGenerator g)
+internal static class Base2EditSpecParser
 {
     private sealed record RawStageSpec(
         int Id,
@@ -15,6 +16,7 @@ public class Base2EditSpecParser(WorkflowGenerator g)
         double Control,
         string Model,
         string Vae,
+        bool VaeKeyPresent,
         double? Upscale,
         string UpscaleMethod,
         int? Steps,
@@ -34,16 +36,16 @@ public class Base2EditSpecParser(WorkflowGenerator g)
         string Scheduler
     );
 
-    public List<StageSpec> ParseEditStages()
+    public static List<StageSpec> ParseEditStages(WorkflowGenerator g)
     {
-        List<object> jsonStages = GetJsonStagesArray();
+        List<JObject> jsonStages = GetJsonStagesArray(g);
         List<RawStageSpec> rawStages = [];
         int nextId = 1;
-        bool hasRefinerStageConfigured = HasRefinerStageConfigured();
-        bool hasRefinerPhaseWork = hasRefinerStageConfigured || HasSegmentApplyAfterRefiner();
+        bool hasRefinerStageConfigured = HasRefinerStageConfigured(g);
+        bool hasRefinerPhaseWork = hasRefinerStageConfigured || HasSegmentApplyAfterRefiner(g);
         string stage0ApplyAfter = g.UserInput.Get(Base2EditExtension.ApplyEditAfter);
-        if (!string.Equals(stage0ApplyAfter, "Base", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(stage0ApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
+        if (!StringUtils.Equals(stage0ApplyAfter, "Base")
+            && !StringUtils.Equals(stage0ApplyAfter, "Refiner"))
         {
             stage0ApplyAfter = "Refiner";
         }
@@ -59,6 +61,7 @@ public class Base2EditSpecParser(WorkflowGenerator g)
             Control: g.UserInput.Get(Base2EditExtension.EditControl),
             Model: stage0Model,
             Vae: stage0VaeModel?.Name,
+            VaeKeyPresent: stage0VaeModel is not null,
             Upscale: g.UserInput.TryGet(Base2EditExtension.EditUpscale, out double stage0Upscale) ? stage0Upscale : null,
             UpscaleMethod: g.UserInput.TryGet(Base2EditExtension.EditUpscaleMethod, out string stage0UpscaleMethod) ? stage0UpscaleMethod : null,
             Steps: g.UserInput.TryGet(Base2EditExtension.EditSteps, out int stage0Steps) ? stage0Steps : null,
@@ -69,27 +72,25 @@ public class Base2EditSpecParser(WorkflowGenerator g)
 
         RawStageSpec previousStage = rawStages[0];
 
-        foreach (object raw in jsonStages ?? [])
+        foreach (JObject obj in jsonStages)
         {
-            if (raw is not JObject obj)
-            {
-                continue;
-            }
-
+            int stageId = nextId++;
+            string locationPrefix = $"Edit Stage {stageId}";
             RawStageSpec stage = new(
-                Id: nextId++,
-                ApplyAfter: GetStr("ApplyAfter", obj) ?? $"Edit Stage {previousStage.Id}",
-                KeepPreEditImage: GetBool("KeepPreEditImage", obj) ?? previousStage.KeepPreEditImage,
-                RefineOnly: GetBool("RefineOnly", obj) ?? previousStage.RefineOnly,
-                Control: GetDouble("Control", obj) ?? previousStage.Control,
-                Model: GetStr("Model", obj),
-                Vae: GetStr("Vae", obj),
-                Upscale: GetDouble("Upscale", obj),
-                UpscaleMethod: GetStr("UpscaleMethod", obj),
-                Steps: GetInt("Steps", obj),
-                CfgScale: GetDouble("CfgScale", obj),
-                Sampler: GetStr("Sampler", obj),
-                Scheduler: GetStr("Scheduler", obj)
+                Id: stageId,
+                ApplyAfter: GetNullableString(obj, "ApplyAfter") ?? $"Edit Stage {previousStage.Id}",
+                KeepPreEditImage: GetOptionalNullableBool(obj, "KeepPreEditImage", locationPrefix) ?? previousStage.KeepPreEditImage,
+                RefineOnly: GetOptionalNullableBool(obj, "RefineOnly", locationPrefix) ?? previousStage.RefineOnly,
+                Control: GetOptionalNullableDouble(obj, "Control", locationPrefix) ?? previousStage.Control,
+                Model: GetNullableString(obj, "Model"),
+                Vae: GetNullableString(obj, "Vae"),
+                VaeKeyPresent: JsonHasOwnProperty(obj, "Vae"),
+                Upscale: GetOptionalNullableDouble(obj, "Upscale", locationPrefix),
+                UpscaleMethod: GetNullableString(obj, "UpscaleMethod"),
+                Steps: GetOptionalNullableInt(obj, "Steps", locationPrefix),
+                CfgScale: GetOptionalNullableDouble(obj, "CfgScale", locationPrefix),
+                Sampler: GetNullableString(obj, "Sampler"),
+                Scheduler: GetNullableString(obj, "Scheduler")
             );
             rawStages.Add(stage);
             previousStage = stage;
@@ -98,8 +99,8 @@ public class Base2EditSpecParser(WorkflowGenerator g)
         Dictionary<int, StageSpec> stagesById = [];
         Dictionary<int, StageDefaults> resolvedDefaultsById = [];
         List<int> validOrderedIds = [];
-        StageDefaults baseDefaults = ResolveBaseDefaults();
-        StageDefaults refinerDefaults = ResolveRefinerDefaults(baseDefaults);
+        StageDefaults baseDefaults = ResolveBaseDefaults(g);
+        StageDefaults refinerDefaults = ResolveRefinerDefaults(g, baseDefaults);
 
         foreach (RawStageSpec stage in rawStages.OrderBy(s => s.Id))
         {
@@ -108,7 +109,7 @@ public class Base2EditSpecParser(WorkflowGenerator g)
             {
                 continue;
             }
-            if (!hasRefinerPhaseWork && string.Equals(normalizedApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
+            if (!hasRefinerPhaseWork && StringUtils.Equals(normalizedApplyAfter, "Refiner"))
             {
                 normalizedApplyAfter = "Base";
             }
@@ -131,7 +132,7 @@ public class Base2EditSpecParser(WorkflowGenerator g)
             }
 
             StageDefaults inherited = baseDefaults;
-            if (string.Equals(normalizedApplyAfter, "Refiner"))
+            if (StringUtils.Equals(normalizedApplyAfter, "Refiner"))
             {
                 inherited = refinerDefaults;
             }
@@ -145,27 +146,25 @@ public class Base2EditSpecParser(WorkflowGenerator g)
 
             // For CFG/Sampler/Scheduler, always resolve from global base/refiner defaults based
             // on the model, not from the parent stage.
-            StageDefaults paramDefaults;
-            if (string.Equals(resolvedModel, ModelPrep.UseRefiner, StringComparison.OrdinalIgnoreCase))
-                paramDefaults = refinerDefaults;
-            else
-                paramDefaults = baseDefaults;
+            StageDefaults paramDefaults = StringUtils.Equals(resolvedModel, ModelPrep.UseRefiner)
+                ? refinerDefaults
+                : baseDefaults;
 
             StageSpec resolved = new(
                 Id: stage.Id,
                 ApplyAfter: normalizedApplyAfter,
                 KeepPreEditImage: stage.KeepPreEditImage,
                 RefineOnly: stage.RefineOnly,
-                Control: stage.Control,
+                Control: NormalizeControl(stage.Control),
                 Model: resolvedModel,
                 Vae: PickStringOrDefault(stage.Vae, inherited.Vae),
-                Upscale: stage.Upscale ?? inherited.Upscale,
+                Upscale: NormalizeUpscale(stage.Upscale ?? inherited.Upscale),
                 UpscaleMethod: PickStringOrDefault(stage.UpscaleMethod, inherited.UpscaleMethod),
                 Steps: stage.Steps ?? inherited.Steps,
-                CfgScale: stage.CfgScale ?? paramDefaults.CfgScale,
+                CfgScale: NormalizeCfgScale(stage.CfgScale ?? paramDefaults.CfgScale),
                 Sampler: PickStringOrDefault(stage.Sampler, paramDefaults.Sampler),
                 Scheduler: PickStringOrDefault(stage.Scheduler, paramDefaults.Scheduler),
-                HasVaeOverride: stage.Vae is not null,
+                HasVaeOverride: stage.VaeKeyPresent && !string.IsNullOrWhiteSpace(stage.Vae),
                 Children: []
             );
 
@@ -202,7 +201,7 @@ public class Base2EditSpecParser(WorkflowGenerator g)
         return [.. validOrderedIds.Select(id => stagesById[id])];
     }
 
-    private List<object> GetJsonStagesArray()
+    private static List<JObject> GetJsonStagesArray(WorkflowGenerator g)
     {
         if (!g.UserInput.TryGet(Base2EditExtension.EditStages, out string json)
             || string.IsNullOrWhiteSpace(json))
@@ -218,15 +217,16 @@ public class Base2EditSpecParser(WorkflowGenerator g)
                 return [];
             }
 
-            return [.. arr.Select(item => item.ToObject<object>())];
+            return [.. arr.OfType<JObject>()];
         }
-        catch (Exception)
+        catch (JsonException ex)
         {
-            return [];
+            throw new SwarmUserErrorException(
+                $"Base2Edit: Could not parse Edit Stages JSON. {ex.Message}");
         }
     }
 
-    private StageDefaults ResolveBaseDefaults()
+    private static StageDefaults ResolveBaseDefaults(WorkflowGenerator g)
     {
         string model = g.UserInput.Get(T2IParamTypes.Model, null)?.Name ?? ModelPrep.UseBase;
         string vae = g.UserInput.Get(T2IParamTypes.VAE, null)?.Name ?? "None";
@@ -240,7 +240,7 @@ public class Base2EditSpecParser(WorkflowGenerator g)
         return new StageDefaults(model, vae, upscale, upscaleMethod, steps, cfgScale, sampler, scheduler);
     }
 
-    private StageDefaults ResolveRefinerDefaults(StageDefaults baseDefaults)
+    private static StageDefaults ResolveRefinerDefaults(WorkflowGenerator g, StageDefaults baseDefaults)
     {
         int refinerSectionId = T2IParamInput.SectionID_Refiner;
         string model = g.UserInput.Get(T2IParamTypes.RefinerModel, null)?.Name ?? baseDefaults.Model;
@@ -273,12 +273,12 @@ public class Base2EditSpecParser(WorkflowGenerator g)
     private static string NormalizeApplyAfter(string applyAfterRaw, int stageId)
     {
         string applyAfter = string.IsNullOrWhiteSpace(applyAfterRaw) ? "Refiner" : applyAfterRaw.Trim();
-        if (string.Equals(applyAfter, "Base", StringComparison.OrdinalIgnoreCase))
+        if (StringUtils.Equals(applyAfter, "Base"))
         {
             return "Base";
         }
 
-        if (string.Equals(applyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
+        if (StringUtils.Equals(applyAfter, "Refiner"))
         {
             return "Refiner";
         }
@@ -308,7 +308,7 @@ public class Base2EditSpecParser(WorkflowGenerator g)
         return StageRefStore.TryParseStageIndexKey(applyAfter, out parentId);
     }
 
-    private bool HasRefinerStageConfigured()
+    private static bool HasRefinerStageConfigured(WorkflowGenerator g)
     {
         if (T2IParamTypes.RefinerMethod?.Type is null || T2IParamTypes.RefinerControl?.Type is null)
         {
@@ -319,10 +319,10 @@ public class Base2EditSpecParser(WorkflowGenerator g)
             && g.UserInput.TryGetRaw(T2IParamTypes.RefinerControl.Type, out object _);
     }
 
-    private bool HasSegmentApplyAfterRefiner()
+    private static bool HasSegmentApplyAfterRefiner(WorkflowGenerator g)
     {
         string segmentApplyAfter = g.UserInput.Get(T2IParamTypes.SegmentApplyAfter, "Refiner");
-        if (!string.Equals(segmentApplyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
+        if (!StringUtils.Equals(segmentApplyAfter, "Refiner"))
         {
             return false;
         }
@@ -331,11 +331,26 @@ public class Base2EditSpecParser(WorkflowGenerator g)
         return prompt.Parts.Any(p => p.Type == PromptRegion.PartType.Segment);
     }
 
-    private static string GetStr(string key, JObject obj)
+    private static double TruncateToDecimals(double value, int decimals)
+    {
+        double factor = Math.Pow(10, decimals);
+        return Math.Truncate(value * factor) / factor;
+    }
+
+    private static double NormalizeControl(double control) =>
+        TruncateToDecimals(Math.Clamp(control, 0, 1), 2);
+
+    private static double NormalizeUpscale(double upscale) =>
+        TruncateToDecimals(upscale, 2);
+
+    private static double NormalizeCfgScale(double cfgScale) =>
+        TruncateToDecimals(cfgScale, 1);
+
+    private static string GetNullableString(JObject obj, string key)
     {
         foreach (JProperty p in obj.Properties())
         {
-            if (string.Equals(p.Name, key, StringComparison.OrdinalIgnoreCase))
+            if (StringUtils.Equals(p.Name, key))
             {
                 return p.Value?.Type == JTokenType.Null ? null : $"{p.Value}";
             }
@@ -343,45 +358,57 @@ public class Base2EditSpecParser(WorkflowGenerator g)
         return null;
     }
 
-    private static bool? GetBool(string key, JObject obj)
+    private static bool? GetOptionalNullableBool(JObject obj, string key, string locationPrefix)
     {
-        string s = GetStr(key, obj);
-        if (string.IsNullOrWhiteSpace(s))
+        string raw = GetNullableString(obj, key);
+        if (string.IsNullOrWhiteSpace(raw))
         {
             return null;
         }
-        if (bool.TryParse(s, out bool b))
+        if (bool.TryParse(raw.Trim(), out bool value))
         {
-            return b;
+            return value;
         }
+        Logs.Warning(
+            $"Base2Edit: {locationPrefix} has invalid boolean field '{key}' value '{raw}'. "
+            + "Ignoring and falling back to inherited value.");
         return null;
     }
 
-    private static int? GetInt(string key, JObject obj)
+    private static int? GetOptionalNullableInt(JObject obj, string key, string locationPrefix)
     {
-        string s = GetStr(key, obj);
-        if (string.IsNullOrWhiteSpace(s))
+        string raw = GetNullableString(obj, key);
+        if (string.IsNullOrWhiteSpace(raw))
         {
             return null;
         }
-        if (int.TryParse(s, out int i))
+        if (int.TryParse(raw.Trim(), out int value))
         {
-            return i;
+            return value;
         }
+        Logs.Warning(
+            $"Base2Edit: {locationPrefix} has invalid integer field '{key}' value '{raw}'. "
+            + "Ignoring and falling back to inherited value.");
         return null;
     }
 
-    private static double? GetDouble(string key, JObject obj)
+    private static double? GetOptionalNullableDouble(JObject obj, string key, string locationPrefix)
     {
-        string s = GetStr(key, obj);
-        if (string.IsNullOrWhiteSpace(s))
+        string raw = GetNullableString(obj, key);
+        if (string.IsNullOrWhiteSpace(raw))
         {
             return null;
         }
-        if (double.TryParse(s, out double d))
+        if (double.TryParse(raw.Trim(), out double value))
         {
-            return d;
+            return value;
         }
+        Logs.Warning(
+            $"Base2Edit: {locationPrefix} has invalid numeric field '{key}' value '{raw}'. "
+            + "Ignoring and falling back to inherited value.");
         return null;
     }
+
+    private static bool JsonHasOwnProperty(JObject obj, string key) =>
+        obj.Properties().Any(p => StringUtils.Equals(p.Name, key));
 }
