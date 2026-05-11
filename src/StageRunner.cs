@@ -49,14 +49,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             PromptParser.ExtractPrompt(positivePrompt, originalPositivePrompt, stageIndex),
             PromptParser.ExtractPrompt(negativePrompt, originalNegativePrompt, stageIndex)
         );
-        var modelState = PrepareModelAndVae(ctx, isFinalStep, options);
-        ctx.ModelState = modelState;
+        ctx.ModelState = PrepareModelAndVae(ctx, isFinalStep, options);
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || ctx.Stage.KeepPreEditImage;
         string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
-        bool needsPreEditImage = shouldSavePreEdit || modelState.MustReencode || currentSamples is null;
+        bool needsPreEditImage = shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
         var preEditImageTailRef = currentImageOut?.Path;
         JArray preEditConsumerSourceRef = preEditImageTailRef;
         if (isFinalStep && currentSamples is not null)
@@ -71,7 +70,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         if (needsPreEditImage)
         {
-            EnsureImageAvailable(modelState.PreEditVae);
+            EnsureImageAvailable(ctx.ModelState.PreEditVae);
         }
 
         if (shouldSavePreEdit)
@@ -79,7 +78,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             SavePreEditImageIfNeeded(ctx);
         }
 
-        if (!modelState.MustReencode && !options.ForceReencodeFromCurrentImage
+        if (!ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
             && currentSamples is not null
             && g.CurrentMedia?.IsLatentData != true)
         {
@@ -94,7 +93,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
         ));
         (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx);
-        var editParams = new Parameters(
+        ctx.Parameters = new Parameters(
             Width: stageWidth,
             Height: stageHeight,
             Steps: ctx.Stage.Steps,
@@ -106,14 +105,12 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             Sampler: ctx.Stage.Sampler,
             Scheduler: ctx.Stage.Scheduler
         );
-        ctx.Parameters = editParams;
-        var conditioning = CreateConditioning(ctx, prompts);
-        ctx.Conditioning = conditioning;
+        ctx.Conditioning = CreateConditioning(ctx, prompts);
         ExecuteSampler(ctx);
 
-        if (modelState.Vae is not null && g.CurrentCompat() is not null)
+        if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
         {
-            g.CurrentVae = WrapVae(modelState.Vae);
+            g.CurrentVae = WrapVae(ctx.ModelState.Vae);
         }
 
         FinalizeOutput(ctx, isFinalStep, options);
@@ -331,7 +328,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         string selection = ctx.Stage.Model ?? ModelPrep.UseRefiner;
-        int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
+        int stageSectionId = ctx.SectionId;
 
         (model, clip, vae) = ResolveModelStack(selection, editModel, isFinalStep, stageSectionId, model, clip, vae);
         (vae, mustReencode) = ResolveVae(selection, isFinalStep, vae, mustReencode);
@@ -766,7 +763,6 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         JArray model = ctx.ModelState.Model;
         Conditioning conditioning = ctx.Conditioning;
         Parameters editParams = ctx.Parameters;
-        int stageIndex = ctx.Stage.Id;
         bool hadPromptImages = g.UserInput.TryGet(T2IParamTypes.PromptImages, out List<Image> promptImages);
         if (hadPromptImages)
         {
@@ -778,7 +774,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         try
         {
             int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
-            int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
+            int stageSectionId = ctx.SectionId;
             JArray currentStageSamples = EnsureCurrentSamplesForEdit(preferredVae: null);
             if (currentStageSamples is null)
             {
