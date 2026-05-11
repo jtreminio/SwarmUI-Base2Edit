@@ -5,7 +5,7 @@ using SwarmUI.Utils;
 
 namespace Base2Edit;
 
-public class JsonParser(WorkflowGenerator g)
+public class Base2EditSpecParser(WorkflowGenerator g)
 {
     private sealed record RawStageSpec(
         int Id,
@@ -32,24 +32,6 @@ public class JsonParser(WorkflowGenerator g)
         double CfgScale,
         string Sampler,
         string Scheduler
-    );
-
-    public sealed record StageSpec(
-        int Id,
-        string ApplyAfter,
-        bool KeepPreEditImage,
-        bool RefineOnly,
-        double Control,
-        string Model,
-        string Vae,
-        double Upscale,
-        string UpscaleMethod,
-        int Steps,
-        double CfgScale,
-        string Sampler,
-        string Scheduler,
-        bool HasVaeOverride,
-        List<StageSpec> Children = default!
     );
 
     public List<StageSpec> ParseEditStages()

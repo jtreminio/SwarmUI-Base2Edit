@@ -46,7 +46,7 @@ public class EditStage
     public readonly WorkflowGenerator g;
     public readonly StageRefStore store;
     private readonly StageRunner runner;
-    private Dictionary<int, JsonParser.StageSpec> _parsedStages;
+    private Dictionary<int, StageSpec> _parsedStages;
 
     public EditStage(WorkflowGenerator g, StageRefStore store)
     {
@@ -82,10 +82,10 @@ public class EditStage
                 store.Capture(StageRefStore.StageKind.Refiner);
             }
 
-            (List<JsonParser.StageSpec> primaryChain, List<JsonParser.StageSpec> branches) =
+            (List<StageSpec> primaryChain, List<StageSpec> branches) =
                 GetPrimaryChainAndBranches(isFinalStep);
 
-            foreach (JsonParser.StageSpec stage in primaryChain)
+            foreach (StageSpec stage in primaryChain)
             {
                 RestoreParentPipelineState(stage.ApplyAfter);
                 ApplyStageOverrides(stage);
@@ -108,7 +108,7 @@ public class EditStage
                 WGNodeData primaryVae = g.CurrentVae;
                 WGNodeData primaryImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
 
-                foreach (JsonParser.StageSpec branch in branches)
+                foreach (StageSpec branch in branches)
                 {
                     RestoreParentPipelineState(branch.ApplyAfter);
                     ApplyStageOverrides(branch);
@@ -178,15 +178,15 @@ public class EditStage
     /// the primary — it and its children form a chain that continues the main pipeline. All
     /// remaining roots are branches that dead-end into their own save node.
     /// </summary>
-    private (List<JsonParser.StageSpec> PrimaryChain, List<JsonParser.StageSpec> Branches) GetPrimaryChainAndBranches(bool isFinalStep)
+    private (List<StageSpec> PrimaryChain, List<StageSpec> Branches) GetPrimaryChainAndBranches(bool isFinalStep)
     {
-        IReadOnlyList<JsonParser.StageSpec> stages = GetCachedParsedStages();
+        IReadOnlyList<StageSpec> stages = GetCachedParsedStages();
         if (stages.Count == 0)
         {
             return ([], []);
         }
 
-        List<JsonParser.StageSpec> roots = [.. stages
+        List<StageSpec> roots = [.. stages
             .Where(stage => string.Equals(stage.ApplyAfter, isFinalStep ? "Refiner" : "Base", StringComparison.OrdinalIgnoreCase))
             .OrderBy(stage => stage.Id)];
 
@@ -195,8 +195,8 @@ public class EditStage
             return ([], []);
         }
 
-        List<JsonParser.StageSpec> primaryChain = [];
-        List<JsonParser.StageSpec> branches = [];
+        List<StageSpec> primaryChain = [];
+        List<StageSpec> branches = [];
         CollectStageChain(roots[0], primaryChain, branches);
         branches.AddRange(roots.Skip(1));
 
@@ -213,12 +213,12 @@ public class EditStage
     /// Lazily parses the edit stage JSON and caches the result for this run.
     /// Returns all parsed stages ordered by ID.
     /// </summary>
-    private IReadOnlyList<JsonParser.StageSpec> GetCachedParsedStages()
+    private IReadOnlyList<StageSpec> GetCachedParsedStages()
     {
         if (_parsedStages is null || _parsedStages.Count == 0)
         {
             _parsedStages = [];
-            foreach (JsonParser.StageSpec stage in new JsonParser(g).ParseEditStages())
+            foreach (StageSpec stage in new Base2EditSpecParser(g).ParseEditStages())
             {
                 _parsedStages[stage.Id] = stage;
             }
@@ -232,9 +232,9 @@ public class EditStage
     /// Each stage can have at most one child.
     /// </summary>
     private static void CollectStageChain(
-        JsonParser.StageSpec stage,
-        List<JsonParser.StageSpec> result,
-        List<JsonParser.StageSpec> branches)
+        StageSpec stage,
+        List<StageSpec> result,
+        List<StageSpec> branches)
     {
         result.Add(stage);
 
@@ -243,11 +243,11 @@ public class EditStage
             return;
         }
 
-        List<JsonParser.StageSpec> orderedChildren = [.. stage.Children.OrderBy(c => c.Id)];
-        JsonParser.StageSpec child = orderedChildren[0];
+        List<StageSpec> orderedChildren = [.. stage.Children.OrderBy(c => c.Id)];
+        StageSpec child = orderedChildren[0];
         CollectStageChain(child, result, branches);
 
-        foreach (JsonParser.StageSpec siblingBranch in orderedChildren.Skip(1))
+        foreach (StageSpec siblingBranch in orderedChildren.Skip(1))
         {
             // Branch stages are intentionally single-stage leaves.
             // Any child stages attached to a branch are ignored.
@@ -451,7 +451,7 @@ public class EditStage
     /// overrides (VAE, CFG scale, sampler, scheduler) are removed from UserInput when not specified
     /// by the stage, allowing fallback to global defaults.
     /// </summary>
-    private void ApplyStageOverrides(JsonParser.StageSpec stage)
+    private void ApplyStageOverrides(StageSpec stage)
     {
         g.UserInput.Set(Base2EditExtension.KeepPreEditImage.Type, stage.KeepPreEditImage ? "true" : "false");
         g.UserInput.Set(Base2EditExtension.EditRefineOnly.Type, stage.RefineOnly ? "true" : "false");
