@@ -890,41 +890,19 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 return (baseWidth, baseHeight);
             }
 
+            WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
             JArray upscaledImageRef;
             if (upscaleMethod.StartsWith("pixel-", StringComparison.OrdinalIgnoreCase))
             {
                 string pixelMethod = upscaleMethod["pixel-".Length..];
-                string scaleNode = g.CreateNode(NodeTypes.ImageScale, new JObject()
-                {
-                    ["image"] = decoded.Path,
-                    ["width"] = width,
-                    ["height"] = height,
-                    ["upscale_method"] = pixelMethod,
-                    ["crop"] = "disabled"
-                });
-                upscaledImageRef = [scaleNode, 0];
+                upscaledImageRef = [AddImageScale(bridge, decoded.Path, width, height, pixelMethod, "disabled"), 0];
             }
             else
             {
                 string modelName = upscaleMethod["model-".Length..];
-                string loader = g.CreateNode(NodeTypes.UpscaleModelLoader, new JObject()
-                {
-                    ["model_name"] = modelName
-                });
-                string modelUpscale = g.CreateNode(NodeTypes.ImageUpscaleWithModel, new JObject()
-                {
-                    ["upscale_model"] = new JArray(loader, 0),
-                    ["image"] = decoded.Path
-                });
-                string fitScale = g.CreateNode(NodeTypes.ImageScale, new JObject()
-                {
-                    ["image"] = new JArray(modelUpscale, 0),
-                    ["width"] = width,
-                    ["height"] = height,
-                    ["upscale_method"] = "lanczos",
-                    ["crop"] = "disabled"
-                });
-                upscaledImageRef = [fitScale, 0];
+                string loader = AddUpscaleModelLoader(bridge, modelName);
+                string modelUpscale = AddImageUpscaleWithModel(bridge, new JArray(loader, 0), decoded.Path);
+                upscaledImageRef = [AddImageScale(bridge, new JArray(modelUpscale, 0), width, height, "lanczos", "disabled"), 0];
             }
 
             g.CurrentMedia = WrapImage(upscaledImageRef);
@@ -968,12 +946,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
             g.CurrentMedia = WrapLatent(latentMedia.Path);
             string latentMethod = upscaleMethod["latent-".Length..];
-            string latentUpscale = g.CreateNode(NodeTypes.LatentUpscaleBy, new JObject()
-            {
-                ["samples"] = g.CurrentMedia.Path,
-                ["upscale_method"] = latentMethod,
-                ["scale_by"] = upscale
-            });
+            WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+            string latentUpscale = AddLatentUpscaleBy(bridge, g.CurrentMedia.Path, latentMethod, upscale);
             g.CurrentMedia = g.CurrentMedia.WithPath([latentUpscale, 0]);
             g.CurrentMedia.Width = width;
             g.CurrentMedia.Height = height;
@@ -981,5 +955,47 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         return (baseWidth, baseHeight);
+    }
+
+    private string AddImageScale(WorkflowBridge bridge, JArray imagePath, int width, int height, string method, string crop)
+    {
+        ImageScaleNode node = bridge.AddNode(
+            new ImageScaleNode().With(
+                Width: width,
+                Height: height,
+                UpscaleMethod: method,
+                Crop: crop),
+            id: $"{g.LastID++}");
+        node.Image.ConnectFromPath(bridge, imagePath);
+        return node.Id;
+    }
+
+    private string AddUpscaleModelLoader(WorkflowBridge bridge, string modelName)
+    {
+        UpscaleModelLoaderNode node = bridge.AddNode(
+            new UpscaleModelLoaderNode().With(ModelName: modelName),
+            id: $"{g.LastID++}");
+        return node.Id;
+    }
+
+    private string AddImageUpscaleWithModel(WorkflowBridge bridge, JArray modelPath, JArray imagePath)
+    {
+        ImageUpscaleWithModelNode node = bridge.AddNode(
+            new ImageUpscaleWithModelNode(),
+            id: $"{g.LastID++}");
+        node.UpscaleModel.ConnectFromPath(bridge, modelPath);
+        node.Image.ConnectFromPath(bridge, imagePath);
+        return node.Id;
+    }
+
+    private string AddLatentUpscaleBy(WorkflowBridge bridge, JArray samplesPath, string method, double scaleBy)
+    {
+        LatentUpscaleByNode node = bridge.AddNode(
+            new LatentUpscaleByNode().With(
+                UpscaleMethod: method,
+                ScaleBy: scaleBy),
+            id: $"{g.LastID++}");
+        node.Samples.ConnectFromPath(bridge, samplesPath);
+        return node.Id;
     }
 }
