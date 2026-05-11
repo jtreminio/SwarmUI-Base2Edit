@@ -30,6 +30,15 @@ internal static class Base2EditSpecParser
         string Scheduler
     );
 
+    private sealed record SectionParams(
+        T2IRegisteredParam<T2IModel> Model,
+        T2IRegisteredParam<T2IModel> Vae,
+        T2IRegisteredParam<double> Upscale,
+        T2IRegisteredParam<string> UpscaleMethod,
+        T2IRegisteredParam<int> Steps,
+        int StepsSectionId = 0
+    );
+
     public static List<StageSpec> Parse(WorkflowGenerator g)
     {
         bool hasRefinerPhaseWork = HasRefinerStageConfigured(g) || HasSegmentApplyAfterRefiner(g);
@@ -287,43 +296,76 @@ internal static class Base2EditSpecParser
         return entries;
     }
 
+    private static StageDefaults BuildSectionDefaults(
+        WorkflowGenerator g,
+        SectionParams spec,
+        StageDefaults fallback)
+    {
+        return new StageDefaults(
+            Model: g.UserInput.Get(spec.Model, null)?.Name ?? fallback.Model,
+            Vae: g.UserInput.Get(spec.Vae, null)?.Name ?? fallback.Vae,
+            Upscale: g.UserInput.Get(spec.Upscale, fallback.Upscale),
+            UpscaleMethod: spec.UpscaleMethod is null
+                ? fallback.UpscaleMethod
+                : g.UserInput.Get(spec.UpscaleMethod, fallback.UpscaleMethod),
+            Steps: g.UserInput.Get(spec.Steps, fallback.Steps, sectionId: spec.StepsSectionId),
+            CfgScale: fallback.CfgScale,
+            Sampler: fallback.Sampler,
+            Scheduler: fallback.Scheduler
+        );
+    }
+
     private static StageDefaults ResolveBaseDefaults(WorkflowGenerator g)
     {
-        string model = g.UserInput.Get(T2IParamTypes.Model, null)?.Name ?? ModelPrep.UseBase;
-        string vae = g.UserInput.Get(T2IParamTypes.VAE, null)?.Name ?? DefaultVae;
-        double upscale = g.UserInput.Get(Base2EditExtension.EditUpscale, DefaultUpscale);
-        string upscaleMethod = g.UserInput.Get(Base2EditExtension.EditUpscaleMethod, DefaultUpscaleMethod);
-        int steps = g.UserInput.Get(T2IParamTypes.Steps, DefaultSteps);
-        double cfgScale = g.UserInput.Get(T2IParamTypes.CFGScale, DefaultCfgScale);
-        string sampler = g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, DefaultSampler);
-        string scheduler = g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, DefaultScheduler);
-
-        return new StageDefaults(model, vae, upscale, upscaleMethod, steps, cfgScale, sampler, scheduler);
+        SectionParams spec = new(
+            Model: T2IParamTypes.Model,
+            Vae: T2IParamTypes.VAE,
+            Upscale: Base2EditExtension.EditUpscale,
+            UpscaleMethod: Base2EditExtension.EditUpscaleMethod,
+            Steps: T2IParamTypes.Steps
+        );
+        StageDefaults hardcoded = new(
+            Model: ModelPrep.UseBase,
+            Vae: DefaultVae,
+            Upscale: DefaultUpscale,
+            UpscaleMethod: DefaultUpscaleMethod,
+            Steps: DefaultSteps,
+            CfgScale: DefaultCfgScale,
+            Sampler: DefaultSampler,
+            Scheduler: DefaultScheduler
+        );
+        return BuildSectionDefaults(g, spec, hardcoded) with
+        {
+            CfgScale = g.UserInput.Get(T2IParamTypes.CFGScale, DefaultCfgScale),
+            Sampler = g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, DefaultSampler),
+            Scheduler = g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, DefaultScheduler),
+        };
     }
 
     private static StageDefaults ResolveRefinerDefaults(WorkflowGenerator g, StageDefaults baseDefaults)
     {
         int refinerSectionId = T2IParamInput.SectionID_Refiner;
-        string model = g.UserInput.Get(T2IParamTypes.RefinerModel, null)?.Name ?? baseDefaults.Model;
-        string vae = g.UserInput.Get(T2IParamTypes.RefinerVAE, null)?.Name ?? baseDefaults.Vae;
-        double upscale = g.UserInput.Get(T2IParamTypes.RefinerUpscale, baseDefaults.Upscale);
-        string upscaleMethod = ComfyUIBackendExtension.RefinerUpscaleMethod is null
-            ? baseDefaults.UpscaleMethod
-            : g.UserInput.Get(ComfyUIBackendExtension.RefinerUpscaleMethod, baseDefaults.UpscaleMethod);
-        int steps = g.UserInput.Get(T2IParamTypes.RefinerSteps, baseDefaults.Steps, sectionId: refinerSectionId);
-        double cfgScale = g.UserInput.Get(
-            T2IParamTypes.RefinerCFGScale,
-            g.UserInput.Get(T2IParamTypes.CFGScale, baseDefaults.CfgScale, sectionId: refinerSectionId),
-            sectionId: T2IParamInput.SectionID_Refiner
+        SectionParams spec = new(
+            Model: T2IParamTypes.RefinerModel,
+            Vae: T2IParamTypes.RefinerVAE,
+            Upscale: T2IParamTypes.RefinerUpscale,
+            UpscaleMethod: ComfyUIBackendExtension.RefinerUpscaleMethod,
+            Steps: T2IParamTypes.RefinerSteps,
+            StepsSectionId: refinerSectionId
         );
-        string sampler = g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, null, sectionId: refinerSectionId, includeBase: false)
-            ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSamplerParam, null)
-            ?? baseDefaults.Sampler;
-        string scheduler = g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, null, sectionId: refinerSectionId, includeBase: false)
-            ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSchedulerParam, null)
-            ?? baseDefaults.Scheduler;
-
-        return new StageDefaults(model, vae, upscale, upscaleMethod, steps, cfgScale, sampler, scheduler);
+        return BuildSectionDefaults(g, spec, baseDefaults) with
+        {
+            CfgScale = g.UserInput.Get(
+                T2IParamTypes.RefinerCFGScale,
+                g.UserInput.Get(T2IParamTypes.CFGScale, baseDefaults.CfgScale, sectionId: refinerSectionId),
+                sectionId: refinerSectionId),
+            Sampler = g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, null, sectionId: refinerSectionId, includeBase: false)
+                ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSamplerParam, null)
+                ?? baseDefaults.Sampler,
+            Scheduler = g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, null, sectionId: refinerSectionId, includeBase: false)
+                ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSchedulerParam, null)
+                ?? baseDefaults.Scheduler,
+        };
     }
 
     private static string NormalizeApplyAfter(string applyAfterRaw, int stageId)
