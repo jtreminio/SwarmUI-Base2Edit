@@ -430,38 +430,15 @@ public class EditStage
     }
 
     private static ParamSnapshot SnapshotStageParams(WorkflowGenerator g) =>
-        ParamSnapshot.Of(g.UserInput,
-            Base2EditExtension.KeepPreEditImage.Type,
-            Base2EditExtension.EditRefineOnly.Type,
-            Base2EditExtension.ApplyEditAfter.Type,
-            Base2EditExtension.EditControl.Type,
-            Base2EditExtension.EditModel.Type,
-            Base2EditExtension.EditVAE.Type,
-            Base2EditExtension.EditUpscale.Type,
-            Base2EditExtension.EditUpscaleMethod.Type,
-            Base2EditExtension.EditSteps.Type,
-            Base2EditExtension.EditCFGScale.Type,
-            Base2EditExtension.EditSampler.Type,
-            Base2EditExtension.EditScheduler.Type
-        );
+        ParamSnapshot.Of(g.UserInput, Base2EditExtension.EditVAE.Type);
 
     /// <summary>
-    /// Writes the stage's per-stage parameter overrides (model, VAE, steps, CFG scale, sampler, etc.)
-    /// into the generator's UserInput so downstream node builders pick them up. Optional
-    /// overrides (VAE, CFG scale, sampler, scheduler) are removed from UserInput when not specified
-    /// by the stage, allowing fallback to global defaults.
+    /// Writes the stage's VAE override (or removes it) into UserInput so downstream node builders
+    /// pick it up. All other stage params (steps, CFG, sampler, etc.) are now read directly off
+    /// the StageSpec carried in EditStageContext — no UserInput round-trip needed.
     /// </summary>
     private void ApplyStageOverrides(StageSpec stage)
     {
-        g.UserInput.Set(Base2EditExtension.KeepPreEditImage.Type, stage.KeepPreEditImage ? "true" : "false");
-        g.UserInput.Set(Base2EditExtension.EditRefineOnly.Type, stage.RefineOnly ? "true" : "false");
-        g.UserInput.Set(Base2EditExtension.ApplyEditAfter.Type, stage.ApplyAfter);
-        g.UserInput.Set(Base2EditExtension.EditControl.Type, $"{stage.Control}");
-        g.UserInput.Set(Base2EditExtension.EditModel.Type, stage.Model);
-        g.UserInput.Set(Base2EditExtension.EditUpscale.Type, $"{stage.Upscale}");
-        g.UserInput.Set(Base2EditExtension.EditUpscaleMethod.Type, stage.UpscaleMethod);
-        g.UserInput.Set(Base2EditExtension.EditSteps.Type, $"{stage.Steps}");
-
         if (stage.HasVaeOverride)
         {
             g.UserInput.Set(Base2EditExtension.EditVAE.Type, stage.Vae);
@@ -470,9 +447,5 @@ public class EditStage
         {
             g.UserInput.Remove(Base2EditExtension.EditVAE);
         }
-
-        g.UserInput.Set(Base2EditExtension.EditCFGScale.Type, $"{stage.CfgScale}");
-        g.UserInput.Set(Base2EditExtension.EditSampler.Type, stage.Sampler);
-        g.UserInput.Set(Base2EditExtension.EditScheduler.Type, stage.Scheduler);
     }
 }

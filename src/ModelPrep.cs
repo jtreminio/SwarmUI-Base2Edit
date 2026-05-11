@@ -26,11 +26,10 @@ public static class ModelPrep
     /// </summary>
     public static T2IModel TryResolveEditModel(
         WorkflowGenerator g,
-        T2IRegisteredParam<string> editModelParam,
+        string selection,
         out bool mustReencode)
     {
         mustReencode = false;
-        string selection = g.UserInput.Get(Base2EditExtension.EditModel, UseRefiner);
         T2IModel baseModel = g.UserInput.Get(T2IParamTypes.Model, null);
         T2IModel refinerModel = g.UserInput.Get(T2IParamTypes.RefinerModel, baseModel);
         T2IModel editModel = ResolveEditModel(selection, baseModel, refinerModel);

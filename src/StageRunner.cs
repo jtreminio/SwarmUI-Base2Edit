@@ -46,10 +46,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             PromptParser.ExtractPrompt(positivePrompt, originalPositivePrompt, stageIndex),
             PromptParser.ExtractPrompt(negativePrompt, originalNegativePrompt, stageIndex)
         );
-        var modelState = PrepareModelAndVae(isFinalStep, stageIndex, options.TrackResolvedModelForMetadata);
+        var modelState = PrepareModelAndVae(ctx, isFinalStep, options);
         ctx.ModelState = modelState;
         bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
-            || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
+            || ctx.Stage.KeepPreEditImage;
         string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
@@ -73,7 +73,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         if (shouldSavePreEdit)
         {
-            SavePreEditImageIfNeeded(stageIndex);
+            SavePreEditImageIfNeeded(ctx);
         }
 
         if (!modelState.MustReencode && !options.ForceReencodeFromCurrentImage
@@ -87,21 +87,21 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             g.CurrentMedia.Height = mediaHeight;
         }
 
-        ReencodeIfNeeded(modelState, new ReencodeOptions(
+        ReencodeIfNeeded(ctx, new ReencodeOptions(
             ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
         ));
-        (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(modelState.Vae);
+        (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx);
         var editParams = new Parameters(
             Width: stageWidth,
             Height: stageHeight,
-            Steps: g.UserInput.Get(Base2EditExtension.EditSteps, 20),
-            CfgScale: g.UserInput.Get(Base2EditExtension.EditCFGScale, 7.0),
-            Control: g.UserInput.Get(Base2EditExtension.EditControl, 1.0),
-            RefineOnly: g.UserInput.Get(Base2EditExtension.EditRefineOnly, false),
+            Steps: ctx.Stage.Steps,
+            CfgScale: ctx.Stage.CfgScale,
+            Control: ctx.Stage.Control,
+            RefineOnly: ctx.Stage.RefineOnly,
             Guidance: g.UserInput.Get(T2IParamTypes.FluxGuidanceScale, -1),
             Seed: g.UserInput.Get(T2IParamTypes.Seed) + EditSeedOffset + stageIndex,
-            Sampler: g.UserInput.Get(Base2EditExtension.EditSampler, "euler"),
-            Scheduler: g.UserInput.Get(Base2EditExtension.EditScheduler, "normal")
+            Sampler: ctx.Stage.Sampler,
+            Scheduler: ctx.Stage.Scheduler
         );
         ctx.Parameters = editParams;
         var conditioning = CreateConditioning(ctx, prompts);
@@ -113,7 +113,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             g.CurrentVae = WrapVae(modelState.Vae);
         }
 
-        FinalizeOutput(modelState.Vae, isFinalStep, options.AllowFinalDecodeRetarget);
+        FinalizeOutput(ctx, isFinalStep, options);
 
         if (isFinalStep && options.RewireFinalConsumers)
         {
@@ -305,15 +305,17 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     /// current latent, so the caller knows to decode-then-reencode before sampling.
     /// </summary>
     private ModelState PrepareModelAndVae(
+        EditStageContext ctx,
         bool isFinalStep,
-        int stageIndex,
-        bool trackResolvedModelForMetadata)
+        RunEditStageOptions options)
     {
+        int stageIndex = ctx.Stage.Id;
+        bool trackResolvedModelForMetadata = options.TrackResolvedModelForMetadata;
         JArray preEditVae = g.CurrentVae.Path;
         JArray model = g.CurrentModel.Path;
         JArray clip = g.CurrentTextEnc.Path;
         JArray vae = g.CurrentVae.Path;
-        T2IModel editModel = ModelPrep.TryResolveEditModel(g, Base2EditExtension.EditModel, out var mustReencode);
+        T2IModel editModel = ModelPrep.TryResolveEditModel(g, ctx.Stage.Model ?? ModelPrep.UseRefiner, out var mustReencode);
 
         if (editModel is null)
         {
@@ -325,7 +327,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             g.UserInput.Set(Base2EditExtension.EditModelResolvedForMetadata, editModel);
         }
 
-        string selection = g.UserInput.Get(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
+        string selection = ctx.Stage.Model ?? ModelPrep.UseRefiner;
         int stageSectionId = Base2EditExtension.EditSectionIdForStage(stageIndex);
 
         (model, clip, vae) = ResolveModelStack(selection, editModel, isFinalStep, stageSectionId, model, clip, vae);
@@ -563,10 +565,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             .DecodeLatents(WrapVae(preEditVae), false);
     }
 
-    private void SavePreEditImageIfNeeded(int stageIndex)
+    private void SavePreEditImageIfNeeded(EditStageContext ctx)
     {
+        int stageIndex = ctx.Stage.Id;
         bool shouldSave = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
-            || g.UserInput.Get(Base2EditExtension.KeepPreEditImage, false);
+            || ctx.Stage.KeepPreEditImage;
 
         WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
         if (shouldSave && currentImageOut is not null)
@@ -585,8 +588,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     /// the current latent. Also covers the forced-from-current-image case (e.g. segment-after-
     /// refiner workflows). Tries to reuse existing VAEEncode nodes before creating new ones.
     /// </summary>
-    private void ReencodeIfNeeded(ModelState modelState, ReencodeOptions options = default)
+    private void ReencodeIfNeeded(EditStageContext ctx, ReencodeOptions options = default)
     {
+        ModelState modelState = ctx.ModelState;
         WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : WGNodeDataUtil.TryGetCurrentImage(g);
         if (options.ForceFromCurrentImage && currentImageOut is not null)
         {
@@ -810,12 +814,15 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     /// new latent, (2) reuse a decode node that already matches the samples+VAE pair, (3) emit
     /// a fresh VAEDecode. Skipped for non-final steps since later stages will handle decoding.
     /// </summary>
-    private void FinalizeOutput(JArray vae, bool isFinalStep, bool allowFinalDecodeRetarget)
+    private void FinalizeOutput(EditStageContext ctx, bool isFinalStep, RunEditStageOptions options)
     {
         if (!isFinalStep)
         {
             return;
         }
+
+        JArray vae = ctx.ModelState.Vae;
+        bool allowFinalDecodeRetarget = options.AllowFinalDecodeRetarget;
 
         // Common case: a pre-edit decode was already emitted by upstream steps but is still unused.
         // Retarget it to the post-edit latent to avoid leaving a dangling decode node.
@@ -849,12 +856,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     /// pixel upscaling uses ImageScale (or model upscaler for model-* methods), latent
     /// upscaling uses LatentUpscaleBy. Returns the effective stage resolution.
     /// </summary>
-    private (int Width, int Height) ApplyEditUpscaleIfNeeded(JArray stageVae)
+    private (int Width, int Height) ApplyEditUpscaleIfNeeded(EditStageContext ctx)
     {
+        JArray stageVae = ctx.ModelState.Vae;
         int baseWidth = Math.Max(g.CurrentMedia?.Width ?? g.UserInput.GetImageWidth(), 16);
         int baseHeight = Math.Max(g.CurrentMedia?.Height ?? g.UserInput.GetImageHeight(), 16);
-        double upscale = g.UserInput.Get(Base2EditExtension.EditUpscale, 1.0);
-        string upscaleMethod = g.UserInput.Get(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+        double upscale = ctx.Stage.Upscale;
+        string upscaleMethod = ctx.Stage.UpscaleMethod ?? "pixel-lanczos";
         bool doUpscale = upscale != 1 && !string.IsNullOrWhiteSpace(upscaleMethod);
         if (!doUpscale)
         {
