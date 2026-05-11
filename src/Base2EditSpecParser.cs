@@ -19,23 +19,6 @@ internal static class Base2EditSpecParser
     private const string DefaultScheduler = "normal";
     private const string DefaultVae = "None";
 
-    private sealed record RawStageSpec(
-        int Id,
-        string ApplyAfter,
-        bool KeepPreEditImage,
-        bool RefineOnly,
-        double Control,
-        string Model,
-        string Vae,
-        bool VaeKeyPresent,
-        double? Upscale,
-        string UpscaleMethod,
-        int? Steps,
-        double? CfgScale,
-        string Sampler,
-        string Scheduler
-    );
-
     private sealed record StageDefaults(
         string Model,
         string Vae,
@@ -53,185 +36,218 @@ internal static class Base2EditSpecParser
         StageDefaults baseDefaults = ResolveBaseDefaults(g);
         StageDefaults refinerDefaults = ResolveRefinerDefaults(g, baseDefaults);
 
-        List<RawStageSpec> rawStages = [BuildStage0Raw(g)];
-        rawStages.AddRange(BuildJsonStagesRaw(GetJsonStagesArray(g), rawStages[0]));
+        Dictionary<int, StageSpec> stagesById = [];
+        Dictionary<int, StageDefaults> defaultsById = [];
+        List<int> orderedIds = [];
 
-        return ResolveStages(rawStages, baseDefaults, refinerDefaults, hasRefinerPhaseWork);
+        StageSpec stage0 = ParseStage0(g, baseDefaults, refinerDefaults, hasRefinerPhaseWork);
+        stagesById[0] = stage0;
+        defaultsById[0] = ToStageDefaults(stage0);
+        orderedIds.Add(0);
+
+        StageSpec previousStage = stage0;
+        int nextId = 1;
+        foreach (JObject obj in GetJsonStagesArray(g))
+        {
+            int stageId = nextId++;
+            if (GetOptionalBool(obj, "Skipped", defaultValue: false))
+            {
+                continue;
+            }
+
+            StageSpec parsed = ParseJsonStage(
+                obj,
+                stageId,
+                previousStage,
+                baseDefaults,
+                refinerDefaults,
+                hasRefinerPhaseWork,
+                stagesById,
+                defaultsById);
+            if (parsed is null)
+            {
+                continue;
+            }
+
+            stagesById[stageId] = parsed;
+            defaultsById[stageId] = ToStageDefaults(parsed);
+            orderedIds.Add(stageId);
+            previousStage = parsed;
+        }
+
+        foreach (int id in orderedIds)
+        {
+            StageSpec stage = stagesById[id];
+            if (TryParseEditStageParent(stage.ApplyAfter, out int parentId))
+            {
+                stagesById[parentId].Children.Add(stage);
+            }
+        }
+
+        return [.. orderedIds.Select(id => stagesById[id])];
     }
 
-    private static RawStageSpec BuildStage0Raw(WorkflowGenerator g)
+    private static StageSpec ParseStage0(
+        WorkflowGenerator g,
+        StageDefaults baseDefaults,
+        StageDefaults refinerDefaults,
+        bool hasRefinerPhaseWork)
     {
         string applyAfterRaw = g.UserInput.Get(Base2EditExtension.ApplyEditAfter);
         string applyAfter = StringUtils.Equals(applyAfterRaw, ApplyAfterBase)
                 || StringUtils.Equals(applyAfterRaw, ApplyAfterRefiner)
             ? applyAfterRaw
             : DefaultApplyAfter;
+        if (!hasRefinerPhaseWork && StringUtils.Equals(applyAfter, ApplyAfterRefiner))
+        {
+            applyAfter = ApplyAfterBase;
+        }
 
-        g.UserInput.TryGet(Base2EditExtension.EditModel, out string model);
+        StageDefaults inherited = StringUtils.Equals(applyAfter, ApplyAfterRefiner)
+            ? refinerDefaults
+            : baseDefaults;
+
+        g.UserInput.TryGet(Base2EditExtension.EditModel, out string editModel);
+        string resolvedModel = editModel ?? inherited.Model;
+
         g.UserInput.TryGet(Base2EditExtension.EditVAE, out T2IModel vaeModel);
+        string resolvedVae = vaeModel?.Name ?? inherited.Vae;
+        bool hasVaeOverride = vaeModel is not null && !string.IsNullOrWhiteSpace(vaeModel.Name);
 
-        return new RawStageSpec(
+        double upscale = g.UserInput.TryGet(Base2EditExtension.EditUpscale, out double upscaleRaw)
+            ? upscaleRaw
+            : inherited.Upscale;
+        string upscaleMethod = g.UserInput.TryGet(Base2EditExtension.EditUpscaleMethod, out string upscaleMethodRaw)
+            ? upscaleMethodRaw
+            : inherited.UpscaleMethod;
+        int steps = g.UserInput.TryGet(Base2EditExtension.EditSteps, out int stepsRaw)
+            ? stepsRaw
+            : inherited.Steps;
+
+        StageDefaults paramDefaults = StringUtils.Equals(resolvedModel, ModelPrep.UseRefiner)
+            ? refinerDefaults
+            : baseDefaults;
+        double cfgScale = g.UserInput.TryGet(Base2EditExtension.EditCFGScale, out double cfgRaw)
+            ? cfgRaw
+            : paramDefaults.CfgScale;
+        string sampler = g.UserInput.TryGet(Base2EditExtension.EditSampler, out string samplerRaw)
+            ? samplerRaw
+            : paramDefaults.Sampler;
+        string scheduler = g.UserInput.TryGet(Base2EditExtension.EditScheduler, out string schedulerRaw)
+            ? schedulerRaw
+            : paramDefaults.Scheduler;
+
+        return new StageSpec(
             Id: 0,
             ApplyAfter: applyAfter,
             KeepPreEditImage: g.UserInput.Get(Base2EditExtension.KeepPreEditImage),
             RefineOnly: g.UserInput.Get(Base2EditExtension.EditRefineOnly),
-            Control: g.UserInput.Get(Base2EditExtension.EditControl),
-            Model: model,
-            Vae: vaeModel?.Name,
-            VaeKeyPresent: vaeModel is not null,
-            Upscale: g.UserInput.TryGet(Base2EditExtension.EditUpscale, out double upscale) ? upscale : null,
-            UpscaleMethod: g.UserInput.TryGet(Base2EditExtension.EditUpscaleMethod, out string upscaleMethod) ? upscaleMethod : null,
-            Steps: g.UserInput.TryGet(Base2EditExtension.EditSteps, out int steps) ? steps : null,
-            CfgScale: g.UserInput.TryGet(Base2EditExtension.EditCFGScale, out double cfgScale) ? cfgScale : null,
-            Sampler: g.UserInput.TryGet(Base2EditExtension.EditSampler, out string sampler) ? sampler : null,
-            Scheduler: g.UserInput.TryGet(Base2EditExtension.EditScheduler, out string scheduler) ? scheduler : null
+            Control: NormalizeControl(g.UserInput.Get(Base2EditExtension.EditControl)),
+            Model: resolvedModel,
+            Vae: resolvedVae,
+            Upscale: NormalizeUpscale(upscale),
+            UpscaleMethod: upscaleMethod,
+            Steps: steps,
+            CfgScale: NormalizeCfgScale(cfgScale),
+            Sampler: sampler,
+            Scheduler: scheduler,
+            HasVaeOverride: hasVaeOverride,
+            Children: []
         );
     }
 
-    private static IEnumerable<RawStageSpec> BuildJsonStagesRaw(List<JObject> jsonStages, RawStageSpec stage0)
-    {
-        List<RawStageSpec> result = [];
-        int nextId = 1;
-        RawStageSpec previousStage = stage0;
-
-        foreach (JObject obj in jsonStages)
-        {
-            int stageId = nextId++;
-            if (GetOptionalBool(obj, "Skipped", false))
-            {
-                continue;
-            }
-            RawStageSpec stage = new(
-                Id: stageId,
-                ApplyAfter: GetOptionalNullableString(obj, "ApplyAfter") ?? StageRefStore.FormatStageLabel(previousStage.Id),
-                KeepPreEditImage: GetOptionalNullableBool(obj, "KeepPreEditImage") ?? previousStage.KeepPreEditImage,
-                RefineOnly: GetOptionalNullableBool(obj, "RefineOnly") ?? previousStage.RefineOnly,
-                Control: GetOptionalNullableDouble(obj, "Control") ?? previousStage.Control,
-                Model: GetOptionalNullableString(obj, "Model"),
-                Vae: GetOptionalNullableString(obj, "Vae"),
-                VaeKeyPresent: JsonHasOwnProperty(obj, "Vae"),
-                Upscale: GetOptionalNullableDouble(obj, "Upscale"),
-                UpscaleMethod: GetOptionalNullableString(obj, "UpscaleMethod"),
-                Steps: GetOptionalNullableInt(obj, "Steps"),
-                CfgScale: GetOptionalNullableDouble(obj, "CfgScale"),
-                Sampler: GetOptionalNullableString(obj, "Sampler"),
-                Scheduler: GetOptionalNullableString(obj, "Scheduler")
-            );
-            result.Add(stage);
-            previousStage = stage;
-        }
-
-        return result;
-    }
-
-    private static List<StageSpec> ResolveStages(
-        List<RawStageSpec> rawStages,
+    private static StageSpec ParseJsonStage(
+        JObject obj,
+        int stageId,
+        StageSpec previousStage,
         StageDefaults baseDefaults,
         StageDefaults refinerDefaults,
-        bool hasRefinerPhaseWork)
+        bool hasRefinerPhaseWork,
+        Dictionary<int, StageSpec> stagesById,
+        Dictionary<int, StageDefaults> defaultsById)
     {
-        Dictionary<int, StageSpec> stagesById = [];
-        Dictionary<int, StageDefaults> resolvedDefaultsById = [];
-        List<int> validOrderedIds = [];
+        string locationPrefix = $"Edit Stage {stageId}";
 
-        foreach (RawStageSpec stage in rawStages.OrderBy(s => s.Id))
+        string defaultApplyAfter = StageRefStore.FormatStageLabel(previousStage.Id);
+        string applyAfterRaw = GetOptionalString(obj, "ApplyAfter", defaultApplyAfter, locationPrefix, allowEmpty: false);
+        string normalizedApplyAfter = NormalizeApplyAfter(applyAfterRaw, stageId);
+        if (normalizedApplyAfter is null)
         {
-            string normalizedApplyAfter = NormalizeApplyAfter(stage.ApplyAfter, stage.Id);
-            if (normalizedApplyAfter is null)
-            {
-                continue;
-            }
-            if (!hasRefinerPhaseWork && StringUtils.Equals(normalizedApplyAfter, ApplyAfterRefiner))
-            {
-                normalizedApplyAfter = ApplyAfterBase;
-            }
-
-            if (TryParseEditStageParent(normalizedApplyAfter, out int parentId))
-            {
-                if (parentId >= stage.Id)
-                {
-                    Logs.Warning($"Base2Edit: Edit Stage {stage.Id} cannot Apply After "
-                        + $"'{StageRefStore.FormatStageLabel(parentId)}' (must reference an earlier stage).");
-                    continue;
-                }
-
-                if (!stagesById.ContainsKey(parentId))
-                {
-                    Logs.Warning($"Base2Edit: Edit Stage {stage.Id} cannot Apply After "
-                        + $"'{StageRefStore.FormatStageLabel(parentId)}' because that stage is missing or invalid.");
-                    continue;
-                }
-            }
-
-            StageDefaults inherited = baseDefaults;
-            if (StringUtils.Equals(normalizedApplyAfter, ApplyAfterRefiner))
-            {
-                inherited = refinerDefaults;
-            }
-            else if (TryParseEditStageParent(normalizedApplyAfter, out int depId))
-            {
-                inherited = resolvedDefaultsById[depId];
-            }
-
-            // Resolve the model first so we know which defaults to use for CFG/Sampler/Scheduler
-            string resolvedModel = stage.Model ?? inherited.Model;
-
-            // For CFG/Sampler/Scheduler, always resolve from global base/refiner defaults based
-            // on the model, not from the parent stage.
-            StageDefaults paramDefaults = StringUtils.Equals(resolvedModel, ModelPrep.UseRefiner)
-                ? refinerDefaults
-                : baseDefaults;
-
-            StageSpec resolved = new(
-                Id: stage.Id,
-                ApplyAfter: normalizedApplyAfter,
-                KeepPreEditImage: stage.KeepPreEditImage,
-                RefineOnly: stage.RefineOnly,
-                Control: NormalizeControl(stage.Control),
-                Model: resolvedModel,
-                Vae: stage.Vae ?? inherited.Vae,
-                Upscale: NormalizeUpscale(stage.Upscale ?? inherited.Upscale),
-                UpscaleMethod: stage.UpscaleMethod ?? inherited.UpscaleMethod,
-                Steps: stage.Steps ?? inherited.Steps,
-                CfgScale: NormalizeCfgScale(stage.CfgScale ?? paramDefaults.CfgScale),
-                Sampler: stage.Sampler ?? paramDefaults.Sampler,
-                Scheduler: stage.Scheduler ?? paramDefaults.Scheduler,
-                HasVaeOverride: stage.VaeKeyPresent && !string.IsNullOrWhiteSpace(stage.Vae),
-                Children: []
-            );
-
-            if (!stagesById.TryAdd(stage.Id, resolved))
-            {
-                Logs.Warning($"Base2Edit: duplicate stage id '{stage.Id}'.");
-                continue;
-            }
-
-            resolvedDefaultsById[stage.Id] = new StageDefaults(
-                Model: resolved.Model,
-                Vae: resolved.Vae,
-                Upscale: resolved.Upscale,
-                UpscaleMethod: resolved.UpscaleMethod,
-                Steps: resolved.Steps,
-                CfgScale: resolved.CfgScale,
-                Sampler: resolved.Sampler,
-                Scheduler: resolved.Scheduler
-            );
-            validOrderedIds.Add(stage.Id);
+            return null;
+        }
+        if (!hasRefinerPhaseWork && StringUtils.Equals(normalizedApplyAfter, ApplyAfterRefiner))
+        {
+            normalizedApplyAfter = ApplyAfterBase;
         }
 
-        foreach (int stageId in validOrderedIds)
+        if (TryParseEditStageParent(normalizedApplyAfter, out int parentId))
         {
-            StageSpec stage = stagesById[stageId];
-            if (!TryParseEditStageParent(stage.ApplyAfter, out int parentId))
+            if (parentId >= stageId)
             {
-                continue;
+                Logs.Warning($"Base2Edit: Edit Stage {stageId} cannot Apply After "
+                    + $"'{StageRefStore.FormatStageLabel(parentId)}' (must reference an earlier stage).");
+                return null;
             }
-
-            stagesById[parentId].Children.Add(stage);
+            if (!stagesById.ContainsKey(parentId))
+            {
+                Logs.Warning($"Base2Edit: Edit Stage {stageId} cannot Apply After "
+                    + $"'{StageRefStore.FormatStageLabel(parentId)}' because that stage is missing or invalid.");
+                return null;
+            }
         }
 
-        return [.. validOrderedIds.Select(id => stagesById[id])];
+        StageDefaults inherited = baseDefaults;
+        if (StringUtils.Equals(normalizedApplyAfter, ApplyAfterRefiner))
+        {
+            inherited = refinerDefaults;
+        }
+        else if (TryParseEditStageParent(normalizedApplyAfter, out int depId))
+        {
+            inherited = defaultsById[depId];
+        }
+
+        string resolvedModel = GetOptionalString(obj, "Model", inherited.Model, locationPrefix, allowEmpty: false);
+
+        bool vaeKeyPresent = JsonHasOwnProperty(obj, "Vae");
+        string vaeRaw = GetString(obj, "Vae");
+        string vaeTrimmed = string.IsNullOrWhiteSpace(vaeRaw) ? null : vaeRaw.Trim();
+        string resolvedVae = vaeTrimmed ?? inherited.Vae;
+        bool hasVaeOverride = vaeKeyPresent && vaeTrimmed is not null;
+
+        StageDefaults paramDefaults = StringUtils.Equals(resolvedModel, ModelPrep.UseRefiner)
+            ? refinerDefaults
+            : baseDefaults;
+
+        return new StageSpec(
+            Id: stageId,
+            ApplyAfter: normalizedApplyAfter,
+            KeepPreEditImage: GetOptionalBool(obj, "KeepPreEditImage", previousStage.KeepPreEditImage),
+            RefineOnly: GetOptionalBool(obj, "RefineOnly", previousStage.RefineOnly),
+            Control: NormalizeControl(GetOptionalDouble(obj, "Control", previousStage.Control, locationPrefix)),
+            Model: resolvedModel,
+            Vae: resolvedVae,
+            Upscale: NormalizeUpscale(GetOptionalDouble(obj, "Upscale", inherited.Upscale, locationPrefix)),
+            UpscaleMethod: GetOptionalString(obj, "UpscaleMethod", inherited.UpscaleMethod, locationPrefix, allowEmpty: false),
+            Steps: GetOptionalInt(obj, "Steps", inherited.Steps, locationPrefix),
+            CfgScale: NormalizeCfgScale(GetOptionalDouble(obj, "CfgScale", paramDefaults.CfgScale, locationPrefix)),
+            Sampler: GetOptionalString(obj, "Sampler", paramDefaults.Sampler, locationPrefix, allowEmpty: false),
+            Scheduler: GetOptionalString(obj, "Scheduler", paramDefaults.Scheduler, locationPrefix, allowEmpty: false),
+            HasVaeOverride: hasVaeOverride,
+            Children: []
+        );
     }
+
+    private static StageDefaults ToStageDefaults(StageSpec stage) =>
+        new(
+            Model: stage.Model,
+            Vae: stage.Vae,
+            Upscale: stage.Upscale,
+            UpscaleMethod: stage.UpscaleMethod,
+            Steps: stage.Steps,
+            CfgScale: stage.CfgScale,
+            Sampler: stage.Sampler,
+            Scheduler: stage.Scheduler
+        );
 
     private static List<JObject> GetJsonStagesArray(WorkflowGenerator g)
     {
@@ -382,14 +398,59 @@ internal static class Base2EditSpecParser
         return null;
     }
 
-    private static string GetOptionalNullableString(JObject obj, string key)
+    private static string GetOptionalString(
+        JObject obj,
+        string key,
+        string defaultValue,
+        string locationPrefix,
+        bool allowEmpty)
     {
         string value = GetString(obj, key);
-        if (string.IsNullOrWhiteSpace(value))
+        if (value is null)
         {
-            return null;
+            return defaultValue;
         }
-        return value.Trim();
+        value = value.Trim();
+        if (!allowEmpty && string.IsNullOrWhiteSpace(value))
+        {
+            Logs.Warning($"Base2Edit: {locationPrefix} has empty field '{key}'. Using default '{defaultValue}'.");
+            return defaultValue;
+        }
+        return value;
+    }
+
+    private static int GetOptionalInt(JObject obj, string key, int defaultValue, string locationPrefix)
+    {
+        string raw = GetString(obj, key);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return defaultValue;
+        }
+        if (!int.TryParse(raw.Trim(), out int value))
+        {
+            Logs.Warning(
+                $"Base2Edit: {locationPrefix} has invalid integer field '{key}' value '{raw}'. "
+                + $"Using default '{defaultValue}'.");
+            return defaultValue;
+        }
+        return value;
+    }
+
+    private static double GetOptionalDouble(JObject obj, string key, double defaultValue, string locationPrefix)
+    {
+        string raw = GetString(obj, key);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return defaultValue;
+        }
+        if (!double.TryParse(raw.Trim(), out double value))
+        {
+            Logs.Warning(
+                $"Base2Edit: {locationPrefix} has invalid numeric field '{key}' value '{raw}'. "
+                + $"Using default '{defaultValue}'.");
+            return defaultValue;
+        }
+        return value;
     }
 
     private static bool GetOptionalBool(JObject obj, string key, bool defaultValue)
@@ -400,36 +461,6 @@ internal static class Base2EditSpecParser
             return defaultValue;
         }
         return bool.TryParse(raw.Trim(), out bool value) ? value : defaultValue;
-    }
-
-    private static bool? GetOptionalNullableBool(JObject obj, string key)
-    {
-        string raw = GetString(obj, key);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-        return bool.TryParse(raw.Trim(), out bool value) ? value : null;
-    }
-
-    private static int? GetOptionalNullableInt(JObject obj, string key)
-    {
-        string raw = GetString(obj, key);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-        return int.TryParse(raw.Trim(), out int value) ? value : null;
-    }
-
-    private static double? GetOptionalNullableDouble(JObject obj, string key)
-    {
-        string raw = GetString(obj, key);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-        return double.TryParse(raw.Trim(), out double value) ? value : null;
     }
 
     private static bool JsonHasOwnProperty(JObject obj, string key) =>
