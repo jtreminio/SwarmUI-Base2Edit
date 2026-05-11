@@ -79,16 +79,39 @@ internal static class Base2EditSpecParser
             previousStage = parsed;
         }
 
+        return AttachEditStageChildren(stagesById, orderedIds);
+    }
+
+    private static List<StageSpec> AttachEditStageChildren(
+        Dictionary<int, StageSpec> stagesById,
+        List<int> orderedIds)
+    {
+        Dictionary<int, List<int>> childIdsByParent = [];
         foreach (int id in orderedIds)
         {
-            StageSpec stage = stagesById[id];
-            if (TryParseEditStageParent(stage.ApplyAfter, out int parentId))
+            if (TryParseEditStageParent(stagesById[id].ApplyAfter, out int parentId))
             {
-                stagesById[parentId].Children.Add(stage);
+                if (!childIdsByParent.TryGetValue(parentId, out List<int> list))
+                {
+                    list = [];
+                    childIdsByParent[parentId] = list;
+                }
+                list.Add(id);
             }
         }
 
-        return [.. orderedIds.Select(id => stagesById[id])];
+        Dictionary<int, StageSpec> finalized = [];
+        foreach (int id in orderedIds.AsEnumerable().Reverse())
+        {
+            StageSpec stage = stagesById[id];
+            if (childIdsByParent.TryGetValue(id, out List<int> childIds))
+            {
+                stage = stage with { Children = [.. childIds.Select(cid => finalized[cid])] };
+            }
+            finalized[id] = stage;
+        }
+
+        return [.. orderedIds.Select(id => finalized[id])];
     }
 
     private static JObject BuildStage0Shim(WorkflowGenerator g)
@@ -198,12 +221,7 @@ internal static class Base2EditSpecParser
         }
 
         string resolvedModel = GetOptionalString(obj, "Model", inherited.Model, locationPrefix, allowEmpty: false);
-
-        bool vaeKeyPresent = JsonHasOwnProperty(obj, "Vae");
-        string vaeRaw = GetString(obj, "Vae");
-        string vaeTrimmed = string.IsNullOrWhiteSpace(vaeRaw) ? null : vaeRaw.Trim();
-        string resolvedVae = vaeTrimmed ?? inherited.Vae;
-        bool hasVaeOverride = vaeKeyPresent && vaeTrimmed is not null;
+        (string resolvedVae, bool hasVaeOverride) = ResolveVaeOverride(obj, inherited.Vae);
 
         StageDefaults paramDefaults = StringUtils.Equals(resolvedModel, ModelPrep.UseRefiner)
             ? refinerDefaults
@@ -226,6 +244,19 @@ internal static class Base2EditSpecParser
             HasVaeOverride: hasVaeOverride,
             Children: []
         );
+    }
+
+    private static (string Resolved, bool HasOverride) ResolveVaeOverride(JObject obj, string inheritedVae)
+    {
+        if (!JsonHasOwnProperty(obj, "Vae"))
+        {
+            return (inheritedVae, false);
+        }
+        string raw = GetString(obj, "Vae");
+        string trimmed = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+        return trimmed is null
+            ? (inheritedVae, false)
+            : (trimmed, true);
     }
 
     private static StageDefaults ToStageDefaults(StageSpec stage) =>
