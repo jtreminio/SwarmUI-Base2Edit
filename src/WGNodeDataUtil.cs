@@ -13,14 +13,4 @@ public static class WGNodeDataUtil
 
         return g.CurrentMedia?.AsLatentImage(g.CurrentVae) ?? null;
     }
-
-    public static WGNodeData TryGetCurrentImage(WorkflowGenerator g)
-    {
-        if (g.CurrentMedia?.IsRawMedia == true)
-        {
-            return g.CurrentMedia;
-        }
-
-        return g.CurrentMedia?.AsRawImage(g.CurrentVae) ?? null;
-    }
 }

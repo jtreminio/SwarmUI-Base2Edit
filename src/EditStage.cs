@@ -99,7 +99,7 @@ public class EditStage
         {
             WGNodeData primarySamples = WGNodeDataUtil.TryGetCurrentLatent(g);
             WGNodeData primaryVae = g.CurrentVae;
-            WGNodeData primaryImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+            WGNodeData primaryImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
 
             foreach (StageSpec branch in branches)
             {
@@ -141,7 +141,7 @@ public class EditStage
 
     private void SaveBranchOutput(int branchId)
     {
-        WGNodeData branchImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData branchImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
 
         if (branchImageOut is null)
         {
@@ -234,7 +234,7 @@ public class EditStage
             return;
         }
 
-        WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         if (currentImageOut is null)
         {
             return;

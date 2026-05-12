@@ -129,7 +129,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WGNodeData preEditImageTailRef,
         string preEditSaveNodeId)
     {
-        WGNodeData postEditImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData postEditImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         if (preEditConsumerSourceRef is null
             || postEditImageOut is null
             || JToken.DeepEquals(preEditConsumerSourceRef.Path, postEditImageOut.Path))
@@ -223,7 +223,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
     internal void CleanupDanglingVaeDecodeNodes()
     {
-        WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         string keepNodeId = currentImageOut is not null ? $"{currentImageOut.Path[0]}" : null;
 
         using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
@@ -563,7 +563,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         bool shouldSave = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
             || ctx.Stage.KeepPreEditImage;
 
-        WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         if (shouldSave && currentImageOut is not null)
         {
             string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
@@ -578,7 +578,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     private void ReencodeIfNeeded(EditStageContext ctx, ReencodeOptions options = default)
     {
         ModelState modelState = ctx.ModelState;
-        WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         if (options.ForceFromCurrentImage && currentImageOut is not null)
         {
             if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out INodeOutput imageTailSamples))
@@ -630,7 +630,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return currentSamples.Path;
         }
 
-        WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         JArray vae = (preferredVae ?? g.CurrentVae).Path;
         if (currentImageOut is null || vae is null)
         {
@@ -779,7 +779,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WGNodeData vae = ctx.ModelState.Vae;
         bool allowFinalDecodeRetarget = options.AllowFinalDecodeRetarget;
 
-        WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         if (allowFinalDecodeRetarget &&
             currentImageOut is not null &&
@@ -824,7 +824,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             || upscaleMethod.StartsWith("model-", StringComparison.OrdinalIgnoreCase))
         {
             EnsureImageAvailable(stageVae);
-            WGNodeData decoded = WGNodeDataUtil.TryGetCurrentImage(g);
+            WGNodeData decoded = g.CurrentMedia?.AsRawImage(g.CurrentVae);
             if (decoded is null)
             {
                 return (baseWidth, baseHeight);
@@ -867,7 +867,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             WGNodeData latentMedia = WGNodeDataUtil.TryGetCurrentLatent(g);
             if (latentMedia is null)
             {
-                WGNodeData imageMedia = WGNodeDataUtil.TryGetCurrentImage(g);
+                WGNodeData imageMedia = g.CurrentMedia?.AsRawImage(g.CurrentVae);
                 if (imageMedia is null || stageVae is null)
                 {
                     return (baseWidth, baseHeight);
