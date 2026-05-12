@@ -1,6 +1,10 @@
+using ComfyTyped.Core;
+using FreneticUtilities.FreneticExtensions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
+using SwarmUI.Text2Image;
+using SwarmUI.Utils;
 
 namespace Base2Edit;
 
@@ -40,56 +44,86 @@ public class StageRefStore(WorkflowGenerator g)
 
     private void StoreNodeData(string key, WGNodeData data)
     {
-        if (data?.Path is JArray arr && arr.Count == 2)
+        if (data?.Path is not JArray { Count: 2 } arr)
         {
-            int width = data.Width ?? g.UserInput.GetImageWidth();
-            int height = data.Height ?? g.UserInput.GetImageHeight();
-            g.NodeHelpers[key] = $"{arr[0]}|{arr[1]}|{data.DataType}|{width}|{height}";
+            g.NodeHelpers.Remove(key);
+            return;
         }
+        g.NodeHelpers[key] = string.Join("|",
+            $"{arr[0]}", $"{arr[1]}",
+            data.DataType ?? WGNodeData.DT_IMAGE,
+            data.Width.HasValue ? $"{data.Width.Value}" : "",
+            data.Height.HasValue ? $"{data.Height.Value}" : "",
+            data.Compat?.ID ?? "");
     }
 
-    private WGNodeData LoadNodeData(string key, string fallbackDataType)
+    private WGNodeData LoadNodeData(string key, string fallbackDataType, WGNodeData fallbackVae = null)
     {
-        if (!g.NodeHelpers.TryGetValue(key, out string encoded) || string.IsNullOrEmpty(encoded))
+        if (!g.NodeHelpers.TryGetValue(key, out string encoded) || string.IsNullOrWhiteSpace(encoded))
         {
             return null;
         }
-
         string[] parts = encoded.Split('|');
-        if (parts.Length < 5)
+        if (parts.Length < 5 || !int.TryParse(parts[1], out int slot))
         {
             return null;
         }
-
-        JArray path = new(parts[0], int.Parse(parts[1]));
-        string dataType = parts.Length > 2 && !string.IsNullOrEmpty(parts[2]) ? parts[2] : fallbackDataType;
-        if (!int.TryParse(parts[3], out int width))
+        string nodeId = parts[0];
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        ComfyNode node = bridge.Graph.GetNode(nodeId);
+        if (node is null)
         {
+            Logs.Warning($"Base2Edit: node '{nodeId}' not found in workflow; treating as not captured.");
             return null;
         }
-        if (!int.TryParse(parts[4], out int height))
+        INodeOutput output = node.FindOutput(slot)
+            ?? (node is UnknownNode u ? u.GetOutput(slot) : null);
+        if (output is null)
         {
+            Logs.Warning($"Base2Edit: slot {slot} on node '{nodeId}' not found; treating as not captured.");
             return null;
         }
-
-        WGNodeData nodeData = new(path, g, dataType, g.CurrentCompat())
+        string dataType = !string.IsNullOrEmpty(parts[2]) ? parts[2] : fallbackDataType;
+        string compatId = parts.Length >= 6 ? parts[5] : "";
+        T2IModelCompatClass compat = ResolveCompatFor(dataType, fallbackVae, compatId);
+        return new WGNodeData(WorkflowBridge.ToPath(output), g, dataType, compat)
         {
-            Width = width,
-            Height = height
+            Width = Nullable(parts[3]),
+            Height = Nullable(parts[4])
         };
-
-        return nodeData;
     }
 
     private bool HasCaptured(StageKind kind, int? index = null) =>
         g.NodeHelpers.ContainsKey(NodeKey(kind, index, "model"));
 
-    private StageRef LoadStageRef(StageKind kind, int? index = null) => new(
-        Model: LoadNodeData(NodeKey(kind, index, "model"), WGNodeData.DT_MODEL),
-        TextEnc: LoadNodeData(NodeKey(kind, index, "clip"), WGNodeData.DT_TEXTENC),
-        Media: LoadNodeData(NodeKey(kind, index, "media"), WGNodeData.DT_LATENT_IMAGE),
-        Vae: LoadNodeData(NodeKey(kind, index, "vae"), WGNodeData.DT_VAE)
-    );
+    private StageRef LoadStageRef(StageKind kind, int? index = null)
+    {
+        WGNodeData vae = LoadNodeData(NodeKey(kind, index, "vae"), WGNodeData.DT_VAE);
+        return new(
+            Model: LoadNodeData(NodeKey(kind, index, "model"), WGNodeData.DT_MODEL, vae),
+            TextEnc: LoadNodeData(NodeKey(kind, index, "clip"), WGNodeData.DT_TEXTENC, vae),
+            Media: LoadNodeData(NodeKey(kind, index, "media"), WGNodeData.DT_LATENT_IMAGE, vae),
+            Vae: vae
+        );
+    }
+
+    private T2IModelCompatClass ResolveCompatFor(string dataType, WGNodeData fallbackVae, string compatId)
+    {
+        if (!string.IsNullOrWhiteSpace(compatId)
+            && T2IModelClassSorter.CompatClasses.TryGetValue(compatId.ToLowerFast(), out T2IModelCompatClass c))
+        {
+            return c;
+        }
+        if (dataType == WGNodeData.DT_AUDIO || dataType == WGNodeData.DT_LATENT_AUDIO || dataType == WGNodeData.DT_AUDIOVAE)
+        {
+            return g.CurrentAudioVae?.Compat;
+        }
+        if (dataType == WGNodeData.DT_VAE && g.CurrentVae is not null)
+        {
+            return g.CurrentVae.Compat;
+        }
+        return fallbackVae?.Compat ?? g.CurrentVae?.Compat ?? g.CurrentCompat();
+    }
 
     public StageRef Base => HasCaptured(StageKind.Base) ? LoadStageRef(StageKind.Base) : null;
     public StageRef Refiner => HasCaptured(StageKind.Refiner) ? LoadStageRef(StageKind.Refiner) : null;
@@ -113,6 +147,16 @@ public class StageRefStore(WorkflowGenerator g)
 
         stageRef = LoadStageRef(StageKind.Edit, index);
         return true;
+    }
+
+    public bool DiscardEdit(int index)
+    {
+        bool removedModel = g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, "model"));
+        bool removedClip = g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, "clip"));
+        bool removedMedia = g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, "media"));
+        bool removedVae = g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, "vae"));
+        g.NodeHelpers.Remove(PublishedEditNodeKey(index));
+        return removedModel || removedClip || removedMedia || removedVae;
     }
 
     public bool TryGetCapturedModelState(
@@ -235,4 +279,7 @@ public class StageRefStore(WorkflowGenerator g)
     }
 
     public static string FormatStageLabel(int stageIndex) => $"{EditStagePrefix}{stageIndex}";
+
+    private static int? Nullable(string s) =>
+        !string.IsNullOrEmpty(s) && int.TryParse(s, out int v) ? v : null;
 }
