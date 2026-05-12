@@ -34,25 +34,14 @@ public class Base2EditSpecParserTests
         return stages.Single(s => s.Id == 0);
     }
 
-    [Fact]
-    public void Stage0_emptyEditModel_fallsBackToInheritedModel()
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Stage0_blankEditModel_fallsBackToInheritedModel(string editModel)
     {
         using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
-        input.Set(Base2EditExtension.EditModel, "");
-
-        StageSpec stage0 = ParseStage0(input);
-
-        Assert.Null(stage0.Model);
-        Assert.Equal(ModelSource.Base, stage0.ModelSource);
-    }
-
-    [Fact]
-    public void Stage0_whitespaceEditModel_fallsBackToInheritedModel()
-    {
-        using SwarmUiTestContext _ = new();
-        T2IParamInput input = BuildBaseInput();
-        input.Set(Base2EditExtension.EditModel, "   ");
+        input.Set(Base2EditExtension.EditModel, editModel);
 
         StageSpec stage0 = ParseStage0(input);
 
@@ -85,43 +74,39 @@ public class Base2EditSpecParserTests
     }
 
     [Fact]
-    public void Stage0_emptyEditSampler_fallsBackToInheritedSampler()
+    public void EditStage_emptyJsonSampler_fallsBackToParamDefaultSampler()
     {
         using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
-        input.Set(Base2EditExtension.EditSampler, "");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditStages,
+            "[{\"ApplyAfter\":\"Base\",\"Sampler\":\"\"}]");
 
-        StageSpec stage0 = ParseStage0(input);
+        List<StageSpec> stages = Base2EditSpecParser.Parse(MakeGenerator(input));
+        StageSpec stage1 = stages.Single(s => s.Id == 1);
 
-        Assert.Equal("euler", stage0.Sampler);
+        Assert.Equal("euler", stage1.Sampler);
     }
 
-    [Fact]
-    public void Stage0_emptyEditScheduler_fallsBackToInheritedScheduler()
+    [Theory]
+    [InlineData("\"\"")]
+    [InlineData("\"\\t  \"")]
+    public void EditStage_blankJsonScheduler_fallsBackToParamDefaultScheduler(string schedulerJson)
     {
         using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
-        input.Set(Base2EditExtension.EditScheduler, "");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditStages,
+            $"[{{\"ApplyAfter\":\"Base\",\"Scheduler\":{schedulerJson}}}]");
 
-        StageSpec stage0 = ParseStage0(input);
+        List<StageSpec> stages = Base2EditSpecParser.Parse(MakeGenerator(input));
+        StageSpec stage1 = stages.Single(s => s.Id == 1);
 
-        Assert.Equal("normal", stage0.Scheduler);
+        Assert.Equal("normal", stage1.Scheduler);
     }
 
     [Fact]
-    public void Stage0_whitespaceEditScheduler_fallsBackToInheritedScheduler()
-    {
-        using SwarmUiTestContext _ = new();
-        T2IParamInput input = BuildBaseInput();
-        input.Set(Base2EditExtension.EditScheduler, "\t  ");
-
-        StageSpec stage0 = ParseStage0(input);
-
-        Assert.Equal("normal", stage0.Scheduler);
-    }
-
-    [Fact]
-    public void Stage0_editVaeWithEmptyName_fallsBackToInherited()
+    public void EditStage_emptyJsonVae_fallsBackToInheritedVae()
     {
         using SwarmUiTestContext _ = new();
         T2IModelHandler vaeHandler = new() { ModelType = "VAE" };
@@ -129,15 +114,19 @@ public class Base2EditSpecParserTests
         {
             ["VAE"] = vaeHandler
         };
-        T2IModel emptyNameVae = new(vaeHandler, "/tmp", "/tmp/empty.safetensors", "");
-        vaeHandler.Models[emptyNameVae.Name] = emptyNameVae;
+        T2IModel inheritedVae = new(vaeHandler, "/tmp", "/tmp/Inherited_Vae.safetensors", "Inherited_Vae.safetensors");
+        vaeHandler.Models[inheritedVae.Name] = inheritedVae;
 
         T2IParamInput input = BuildBaseInput();
-        input.Set(Base2EditExtension.EditVAE, emptyNameVae);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(T2IParamTypes.VAE, inheritedVae);
+        input.Set(Base2EditExtension.EditStages,
+            "[{\"ApplyAfter\":\"Base\",\"Vae\":\"\"}]");
 
-        StageSpec stage0 = ParseStage0(input);
+        List<StageSpec> stages = Base2EditSpecParser.Parse(MakeGenerator(input));
+        StageSpec stage1 = stages.Single(s => s.Id == 1);
 
-        Assert.Null(stage0.Vae);
+        Assert.Equal(inheritedVae, stage1.Vae);
     }
 
     [Fact]
@@ -176,7 +165,7 @@ public class Base2EditSpecParserTests
     }
 
     [Fact]
-    public void ApplyAfterReferencingFutureStage_throws()
+    public void ApplyAfterReferencingNonEarlierStage_throws()
     {
         using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
