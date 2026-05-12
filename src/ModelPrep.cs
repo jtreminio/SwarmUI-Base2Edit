@@ -1,6 +1,7 @@
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Core;
 using SwarmUI.Text2Image;
+using SwarmUI.Utils;
 
 namespace Base2Edit;
 
@@ -15,28 +16,41 @@ public static class ModelPrep
         WGNodeData Vae
     );
 
-    public static T2IModel TryResolveEditModel(
+    public static (T2IModel Model, ModelSource Source) ResolveSelection(
         WorkflowGenerator g,
         string selection,
-        out bool mustReencode)
+        string locationPrefix)
     {
-        mustReencode = false;
         T2IModel baseModel = g.UserInput.Get(T2IParamTypes.Model, null);
         T2IModel refinerModel = g.UserInput.Get(T2IParamTypes.RefinerModel, baseModel);
-        T2IModel editModel = ResolveEditModel(selection, baseModel, refinerModel);
 
-        if (editModel is null)
+        if (StringUtils.Equals(selection, UseBase))
         {
-            return null;
+            return (baseModel, ModelSource.Base);
+        }
+        if (StringUtils.Equals(selection, UseRefiner))
+        {
+            return (refinerModel, ModelSource.Refiner);
         }
 
-        T2IModel current = g.FinalLoadedModel ?? (g.IsRefinerStage ? refinerModel : baseModel);
-        mustReencode = editModel.ModelClass?.CompatClass != current?.ModelClass?.CompatClass;
+        T2IModel direct = LookupSpecific(selection, baseModel, refinerModel);
+        if (direct is null)
+        {
+            throw new SwarmUserErrorException(
+                $"Base2Edit: {locationPrefix} references unknown Model '{selection}'.");
+        }
+        return (direct, ModelSource.Specific);
+    }
 
+    public static bool RegisterAsFinalLoaded(WorkflowGenerator g, T2IModel editModel)
+    {
+        T2IModel baseModel = g.UserInput.Get(T2IParamTypes.Model, null);
+        T2IModel refinerModel = g.UserInput.Get(T2IParamTypes.RefinerModel, baseModel);
+        T2IModel current = g.FinalLoadedModel ?? (g.IsRefinerStage ? refinerModel : baseModel);
+        bool mustReencode = editModel.ModelClass?.CompatClass != current?.ModelClass?.CompatClass;
         g.FinalLoadedModel = editModel;
         g.FinalLoadedModelList = [editModel];
-
-        return editModel;
+        return mustReencode;
     }
 
     public static ModelRef LoadEditModelWithoutLoras(
@@ -52,50 +66,24 @@ public static class ModelPrep
         return new ModelRef(modelNode, clipNode, vaeNode);
     }
 
-    private static T2IModel ResolveEditModel(string selection, T2IModel baseModel, T2IModel refinerModel)
+    private static T2IModel LookupSpecific(string selection, T2IModel baseModel, T2IModel refinerModel)
     {
-        static bool MatchesSelection(T2IModel model, string sel)
-        {
-            if (model is null || string.IsNullOrWhiteSpace(sel))
-            {
-                return false;
-            }
-
-            if (StringUtils.Equals(model.Name, sel))
-            {
-                return true;
-            }
-
-            return StringUtils.Equals(T2IParamTypes.CleanModelName(model.Name), sel);
-        }
-
-        if (StringUtils.Equals(selection, UseBase))
-        {
-            return baseModel;
-        }
-
-        if (StringUtils.Equals(selection, UseRefiner))
-        {
-            return refinerModel;
-        }
-
         if (MatchesSelection(baseModel, selection))
         {
             return baseModel;
         }
-
         if (MatchesSelection(refinerModel, selection))
         {
             return refinerModel;
         }
-
-        Program.T2IModelSets.TryGetValue("Stable-Diffusion", out T2IModelHandler handler);
-
+        if (!Program.T2IModelSets.TryGetValue("Stable-Diffusion", out T2IModelHandler handler))
+        {
+            return null;
+        }
         if (handler.Models.TryGetValue(selection, out T2IModel direct))
         {
             return direct;
         }
-
         foreach ((string _, T2IModel model) in handler.Models)
         {
             if (MatchesSelection(model, selection))
@@ -103,8 +91,20 @@ public static class ModelPrep
                 return model;
             }
         }
-
         return null;
+    }
+
+    private static bool MatchesSelection(T2IModel model, string sel)
+    {
+        if (model is null || string.IsNullOrWhiteSpace(sel))
+        {
+            return false;
+        }
+        if (StringUtils.Equals(model.Name, sel))
+        {
+            return true;
+        }
+        return StringUtils.Equals(T2IParamTypes.CleanModelName(model.Name), sel);
     }
 
     internal static ParamSnapshot SnapshotLoraParams(WorkflowGenerator g) =>

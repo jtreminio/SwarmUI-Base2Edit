@@ -80,8 +80,7 @@ public class EditStage
 
         foreach (StageSpec stage in primaryChain)
         {
-            RestoreParentPipelineState(stage.ApplyAfter);
-            ApplyStageOverrides(stage);
+            RestoreParentPipelineState(stage);
             runner.RunStage(
                 isFinalStep: isFinalStep,
                 stage: stage,
@@ -103,8 +102,7 @@ public class EditStage
 
             foreach (StageSpec branch in branches)
             {
-                RestoreParentPipelineState(branch.ApplyAfter);
-                ApplyStageOverrides(branch);
+                RestoreParentPipelineState(branch);
                 runner.RunStage(
                     isFinalStep: isFinalStep,
                     stage: branch,
@@ -169,8 +167,9 @@ public class EditStage
             return ([], []);
         }
 
+        ParentKind rootKind = isFinalStep ? ParentKind.Refiner : ParentKind.Base;
         List<StageSpec> roots = [.. stages
-            .Where(stage => StringUtils.Equals(stage.ApplyAfter, isFinalStep ? "Refiner" : "Base"))
+            .Where(stage => stage.ParentKind == rootKind)
             .OrderBy(stage => stage.Id)];
 
         if (roots.Count == 0)
@@ -342,22 +341,15 @@ public class EditStage
         return false;
     }
 
-    private void RestoreParentPipelineState(string applyAfter)
+    private void RestoreParentPipelineState(StageSpec stage)
     {
-        StageRefStore.StageRef parentRef = null;
-
-        if (StringUtils.Equals(applyAfter, "Base"))
+        StageRefStore.StageRef parentRef = stage.ParentKind switch
         {
-            parentRef = store.Base;
-        }
-        else if (StringUtils.Equals(applyAfter, "Refiner"))
-        {
-            parentRef = store.Refiner;
-        }
-        else if (StageRefStore.TryParseStageIndexKey(applyAfter, out int parentId))
-        {
-            store.TryGetEditRef(parentId, out parentRef);
-        }
+            ParentKind.Base => store.Base,
+            ParentKind.Refiner => store.Refiner,
+            ParentKind.Edit => store.TryGetEditRef(stage.ParentStageId, out StageRefStore.StageRef r) ? r : null,
+            _ => null,
+        };
 
         if (parentRef is null)
         {
@@ -444,18 +436,5 @@ public class EditStage
 
         PromptRegion prompt = new(g.UserInput.Get(T2IParamTypes.Prompt, ""));
         return prompt.Parts.Any(p => p.Type == PromptRegion.PartType.Segment);
-    }
-
-    private void ApplyStageOverrides(StageSpec stage)
-    {
-        int sectionId = Base2EditExtension.EditSectionIdForStage(stage.Id);
-        if (stage.HasVaeOverride)
-        {
-            g.UserInput.Set(Base2EditExtension.EditVAE.Type, stage.Vae, sectionId);
-        }
-        else
-        {
-            g.UserInput.Remove(Base2EditExtension.EditVAE, sectionId);
-        }
     }
 }

@@ -1,31 +1,19 @@
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Core;
 using SwarmUI.Text2Image;
+using SwarmUI.Utils;
 using Xunit;
 
 namespace Base2Edit.Tests;
 
-/// <summary>
-/// Focused unit tests for behavior changes introduced by the parser refactor that unified
-/// stage-0 (from UserInput) and JSON-stage parsing under a single <c>ParseStage</c>.
-///
-/// The original <c>ParseStage0</c> used <c>editValue ?? inherited.X</c> for resolution,
-/// so an explicitly empty user value (e.g. <c>EditModel = ""</c>) propagated as <c>""</c>
-/// into the resolved <see cref="StageSpec"/>. The new shim path drops empty/whitespace
-/// values before they enter the JObject, so the resolved field uses the inherited default.
-/// This is a deliberate improvement — empty was never a meaningful override — but the change
-/// should be locked in by tests so a future revert is caught.
-/// </summary>
 [Collection("Base2EditTests")]
 public class Base2EditSpecParserTests
 {
     private static T2IParamInput BuildBaseInput()
     {
         _ = WorkflowTestHarness.Base2EditSteps();
-        var input = new T2IParamInput(null);
+        T2IParamInput input = new(null);
         input.Set(T2IParamTypes.Prompt, "test");
-        // Apply After Base + no refiner-phase work => hasRefinerPhaseWork is false and
-        // stage 0 ApplyAfter resolves to Base, so inherited = baseDefaults (predictable).
         input.Set(Base2EditExtension.ApplyEditAfter, "Base");
         input.Set(T2IParamTypes.Seed, 1L);
         input.Set(T2IParamTypes.Width, 512);
@@ -46,66 +34,72 @@ public class Base2EditSpecParserTests
         return stages.Single(s => s.Id == 0);
     }
 
-    // ----- C: empty/whitespace string Edit* params fall back to inherited -----
-
     [Fact]
     public void Stage0_emptyEditModel_fallsBackToInheritedModel()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
         input.Set(Base2EditExtension.EditModel, "");
 
         StageSpec stage0 = ParseStage0(input);
 
-        // baseDefaults.Model = T2IParamTypes.Model?.Name ?? ModelPrep.UseBase
-        // No T2IParamTypes.Model set => UseBase. Original code would have produced "".
-        Assert.Equal(ModelPrep.UseBase, stage0.Model);
+        Assert.Null(stage0.Model);
+        Assert.Equal(ModelSource.Base, stage0.ModelSource);
     }
 
     [Fact]
     public void Stage0_whitespaceEditModel_fallsBackToInheritedModel()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
         input.Set(Base2EditExtension.EditModel, "   ");
 
         StageSpec stage0 = ParseStage0(input);
 
-        Assert.Equal(ModelPrep.UseBase, stage0.Model);
+        Assert.Null(stage0.Model);
+        Assert.Equal(ModelSource.Base, stage0.ModelSource);
     }
 
     [Fact]
-    public void Stage0_nonEmptyEditModel_overridesInherited()
+    public void Stage0_useBaseSentinel_resolvesToBaseSource()
     {
-        // Sanity guardrail: a non-empty EditModel must still propagate through.
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
-        input.Set(Base2EditExtension.EditModel, "MyCustomModel.safetensors");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
 
         StageSpec stage0 = ParseStage0(input);
 
-        Assert.Equal("MyCustomModel.safetensors", stage0.Model);
+        Assert.Null(stage0.Model);
+        Assert.Equal(ModelSource.Base, stage0.ModelSource);
+    }
+
+    [Fact]
+    public void Stage0_unknownModelName_throws()
+    {
+        using SwarmUiTestContext _ = new();
+        T2IParamInput input = BuildBaseInput();
+        input.Set(Base2EditExtension.EditModel, "MyCustomModel.safetensors");
+
+        SwarmUserErrorException ex = Assert.Throws<SwarmUserErrorException>(() => ParseStage0(input));
+        Assert.Contains("unknown Model", ex.Message);
     }
 
     [Fact]
     public void Stage0_emptyEditSampler_fallsBackToInheritedSampler()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
         input.Set(Base2EditExtension.EditSampler, "");
 
         StageSpec stage0 = ParseStage0(input);
 
-        // paramDefaults.Sampler resolves to baseDefaults.Sampler (resolvedModel != UseRefiner).
-        // baseDefaults.Sampler = ComfyUIBackendExtension.SamplerParam default = "euler".
-        // Original code would have produced "" here.
         Assert.Equal("euler", stage0.Sampler);
     }
 
     [Fact]
     public void Stage0_emptyEditScheduler_fallsBackToInheritedScheduler()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
         input.Set(Base2EditExtension.EditScheduler, "");
 
@@ -117,7 +111,7 @@ public class Base2EditSpecParserTests
     [Fact]
     public void Stage0_whitespaceEditScheduler_fallsBackToInheritedScheduler()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildBaseInput();
         input.Set(Base2EditExtension.EditScheduler, "\t  ");
 
@@ -126,18 +120,16 @@ public class Base2EditSpecParserTests
         Assert.Equal("normal", stage0.Scheduler);
     }
 
-    // ----- D: EditVAE with empty Name resolves to inherited.Vae, HasVaeOverride=false -----
-
     [Fact]
-    public void Stage0_editVaeWithEmptyName_fallsBackToInheritedAndNoOverride()
+    public void Stage0_editVaeWithEmptyName_fallsBackToInherited()
     {
-        using var _ = new SwarmUiTestContext();
-        var vaeHandler = new T2IModelHandler { ModelType = "VAE" };
+        using SwarmUiTestContext _ = new();
+        T2IModelHandler vaeHandler = new() { ModelType = "VAE" };
         Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
         {
             ["VAE"] = vaeHandler
         };
-        var emptyNameVae = new T2IModel(vaeHandler, "/tmp", "/tmp/empty.safetensors", "");
+        T2IModel emptyNameVae = new(vaeHandler, "/tmp", "/tmp/empty.safetensors", "");
         vaeHandler.Models[emptyNameVae.Name] = emptyNameVae;
 
         T2IParamInput input = BuildBaseInput();
@@ -145,24 +137,19 @@ public class Base2EditSpecParserTests
 
         StageSpec stage0 = ParseStage0(input);
 
-        // baseDefaults.Vae = T2IParamTypes.VAE?.Name ?? "None". No VAE set => "None".
-        // Original code: vaeModel?.Name ?? inherited => "" (not "None").
-        // HasVaeOverride was already false in both paths; we lock that in too.
-        Assert.Equal("None", stage0.Vae);
-        Assert.False(stage0.HasVaeOverride);
+        Assert.Null(stage0.Vae);
     }
 
     [Fact]
-    public void Stage0_editVaeWithRealName_setsHasVaeOverride()
+    public void Stage0_editVaeWithRealName_resolvesToT2IModel()
     {
-        // Sanity guardrail: a real VAE name must still set HasVaeOverride.
-        using var _ = new SwarmUiTestContext();
-        var vaeHandler = new T2IModelHandler { ModelType = "VAE" };
+        using SwarmUiTestContext _ = new();
+        T2IModelHandler vaeHandler = new() { ModelType = "VAE" };
         Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
         {
             ["VAE"] = vaeHandler
         };
-        var realVae = new T2IModel(vaeHandler, "/tmp", "/tmp/UnitTest_Vae.safetensors", "UnitTest_Vae.safetensors");
+        T2IModel realVae = new(vaeHandler, "/tmp", "/tmp/UnitTest_Vae.safetensors", "UnitTest_Vae.safetensors");
         vaeHandler.Models[realVae.Name] = realVae;
 
         T2IParamInput input = BuildBaseInput();
@@ -170,7 +157,49 @@ public class Base2EditSpecParserTests
 
         StageSpec stage0 = ParseStage0(input);
 
-        Assert.Equal("UnitTest_Vae.safetensors", stage0.Vae);
-        Assert.True(stage0.HasVaeOverride);
+        Assert.NotNull(stage0.Vae);
+        Assert.Equal("UnitTest_Vae.safetensors", stage0.Vae.Name);
+    }
+
+    [Fact]
+    public void InvalidApplyAfter_throws()
+    {
+        using SwarmUiTestContext _ = new();
+        T2IParamInput input = BuildBaseInput();
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditStages,
+            "[{\"ApplyAfter\":\"nonsense\"}]");
+
+        SwarmUserErrorException ex = Assert.Throws<SwarmUserErrorException>(
+            () => Base2EditSpecParser.Parse(MakeGenerator(input)));
+        Assert.Contains("invalid Apply After", ex.Message);
+    }
+
+    [Fact]
+    public void ApplyAfterReferencingFutureStage_throws()
+    {
+        using SwarmUiTestContext _ = new();
+        T2IParamInput input = BuildBaseInput();
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditStages,
+            "[{\"ApplyAfter\":\"Edit Stage 5\"}]");
+
+        SwarmUserErrorException ex = Assert.Throws<SwarmUserErrorException>(
+            () => Base2EditSpecParser.Parse(MakeGenerator(input)));
+        Assert.Contains("must reference an earlier stage", ex.Message);
+    }
+
+    [Fact]
+    public void ApplyAfterReferencingMissingStage_throws()
+    {
+        using SwarmUiTestContext _ = new();
+        T2IParamInput input = BuildBaseInput();
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditStages,
+            "[{\"Skipped\":\"true\"},{\"ApplyAfter\":\"Edit Stage 1\"}]");
+
+        SwarmUserErrorException ex = Assert.Throws<SwarmUserErrorException>(
+            () => Base2EditSpecParser.Parse(MakeGenerator(input)));
+        Assert.Contains("missing or invalid", ex.Message);
     }
 }

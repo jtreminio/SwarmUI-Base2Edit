@@ -323,28 +323,28 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         bool isFinalStep,
         RunEditStageOptions options)
     {
-        bool trackResolvedModelForMetadata = options.TrackResolvedModelForMetadata;
         WGNodeData preEditVae = g.CurrentVae;
         WGNodeData model = g.CurrentModel;
         WGNodeData clip = g.CurrentTextEnc;
         WGNodeData vae = g.CurrentVae;
-        T2IModel editModel = ModelPrep.TryResolveEditModel(g, ctx.Stage.Model ?? ModelPrep.UseRefiner, out bool mustReencode);
+        T2IModel editModel = ctx.Stage.Model;
 
         if (editModel is null)
         {
-            return new ModelState(model, clip, vae, preEditVae, mustReencode);
+            return new ModelState(model, clip, vae, preEditVae, MustReencode: false);
         }
 
-        if (trackResolvedModelForMetadata)
+        bool mustReencode = ModelPrep.RegisterAsFinalLoaded(g, editModel);
+
+        if (options.TrackResolvedModelForMetadata)
         {
             g.UserInput.Set(Base2EditExtension.EditModelResolvedForMetadata, editModel);
         }
 
-        string selection = ctx.Stage.Model ?? ModelPrep.UseRefiner;
         int stageSectionId = ctx.SectionId;
 
-        (model, clip, vae) = ResolveModelStack(selection, editModel, isFinalStep, stageSectionId, model, clip, vae);
-        (vae, mustReencode) = ResolveVae(selection, isFinalStep, stageSectionId, vae, mustReencode);
+        (model, clip, vae) = ResolveModelStack(ctx.Stage.ModelSource, editModel, isFinalStep, stageSectionId, model, clip, vae);
+        (vae, mustReencode) = ResolveVae(ctx.Stage, isFinalStep, vae, mustReencode);
         (model, clip) = ApplyLoraStack(ctx.Stage, stageSectionId, model, clip);
 
         if (mustReencode
@@ -359,7 +359,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     }
 
     private (WGNodeData model, WGNodeData clip, WGNodeData vae) ResolveModelStack(
-        string selection,
+        ModelSource source,
         T2IModel editModel,
         bool isFinalStep,
         int stageSectionId,
@@ -367,80 +367,81 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WGNodeData clip,
         WGNodeData vae)
     {
-        if (StringUtils.Equals(selection, ModelPrep.UseBase))
+        switch (source)
         {
-            if (store.GetCapturedModelState(StageRefStore.StageKind.Base) is { } baseState)
-            {
-                return (baseState.Model, baseState.Clip, baseState.Vae);
-            }
-        }
-        else if (StringUtils.Equals(selection, ModelPrep.UseRefiner))
-        {
-            if (isFinalStep && store.GetCapturedModelState(StageRefStore.StageKind.Refiner) is { } refinerState)
-            {
-                return (refinerState.Model, refinerState.Clip, refinerState.Vae);
-            }
-
-            if (!isFinalStep)
-            {
-                ModelPrep.ModelRef modelRef = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
-                model = modelRef.Model;
-                clip = modelRef.Clip;
-                vae = modelRef.Vae;
-                (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(-1, model.Path, clip.Path);
-                model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
-                clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
-                (mArray, cArray) = g.LoadLorasForConfinement(0, model.Path, clip.Path);
-                model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
-                clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
-                (mArray, cArray) = g.LoadLorasForConfinement(T2IParamInput.SectionID_Refiner, model.Path, clip.Path);
-                model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
-                clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
+            case ModelSource.Base:
+                if (store.GetCapturedModelState(StageRefStore.StageKind.Base) is { } baseState)
+                {
+                    return (baseState.Model, baseState.Clip, baseState.Vae);
+                }
                 return (model, clip, vae);
-            }
-        }
-        else
-        {
-            ModelPrep.ModelRef modelRef = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
-            model = modelRef.Model;
-            clip = modelRef.Clip;
-            vae = modelRef.Vae;
-            (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(-1, model.Path, clip.Path);
-            model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
-            clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
-            (mArray, cArray) = g.LoadLorasForConfinement(0, model.Path, clip.Path);
-            model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
-            clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
-            return (model, clip, vae);
-        }
 
+            case ModelSource.Refiner:
+                if (isFinalStep && store.GetCapturedModelState(StageRefStore.StageKind.Refiner) is { } refinerState)
+                {
+                    return (refinerState.Model, refinerState.Clip, refinerState.Vae);
+                }
+                if (isFinalStep)
+                {
+                    return (model, clip, vae);
+                }
+                return LoadFreshWithGlobalLoras(editModel, stageSectionId, includeRefinerConfinement: true);
+
+            case ModelSource.Specific:
+                return LoadFreshWithGlobalLoras(editModel, stageSectionId, includeRefinerConfinement: false);
+
+            default:
+                return (model, clip, vae);
+        }
+    }
+
+    private (WGNodeData model, WGNodeData clip, WGNodeData vae) LoadFreshWithGlobalLoras(
+        T2IModel editModel,
+        int stageSectionId,
+        bool includeRefinerConfinement)
+    {
+        ModelPrep.ModelRef modelRef = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
+        WGNodeData model = modelRef.Model;
+        WGNodeData clip = modelRef.Clip;
+        WGNodeData vae = modelRef.Vae;
+        (model, clip) = ApplyConfinement(-1, model, clip);
+        (model, clip) = ApplyConfinement(0, model, clip);
+        if (includeRefinerConfinement)
+        {
+            (model, clip) = ApplyConfinement(T2IParamInput.SectionID_Refiner, model, clip);
+        }
         return (model, clip, vae);
     }
 
+    private (WGNodeData model, WGNodeData clip) ApplyConfinement(int sectionId, WGNodeData model, WGNodeData clip)
+    {
+        (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(sectionId, model.Path, clip.Path);
+        return (
+            new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat()),
+            new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat())
+        );
+    }
+
     private (WGNodeData vae, bool mustReencode) ResolveVae(
-        string selection,
+        StageSpec stage,
         bool isFinalStep,
-        int stageSectionId,
         WGNodeData vae,
         bool mustReencode)
     {
-        if (!isFinalStep
-            && StringUtils.Equals(selection, ModelPrep.UseRefiner)
-            && !g.UserInput.TryGet(Base2EditExtension.EditVAE, out _, sectionId: stageSectionId)
-            && g.UserInput.TryGet(T2IParamTypes.RefinerVAE, out T2IModel refinerVaeOverride)
-            && refinerVaeOverride is not null)
+        if (stage.Vae is not null)
         {
-            JArray vaeArray = g.CreateVAELoader(refinerVaeOverride.ToString(g.ModelFolderFormat));
+            JArray vaeArray = g.CreateVAELoader(stage.Vae.ToString(g.ModelFolderFormat));
             vae = new WGNodeData(vaeArray, g, WGNodeData.DT_VAE, g.CurrentCompat());
             g.CurrentVae = vae;
             return (vae, true);
         }
 
-        if (g.UserInput.TryGet(Base2EditExtension.EditVAE, out T2IModel altEditVae, sectionId: stageSectionId)
-            && altEditVae is not null
-            && altEditVae.Name != "Automatic")
+        if (!isFinalStep
+            && stage.ModelSource == ModelSource.Refiner
+            && g.UserInput.TryGet(T2IParamTypes.RefinerVAE, out T2IModel refinerVaeOverride)
+            && refinerVaeOverride is not null)
         {
-            JArray vaeArray = g.CreateVAELoader(altEditVae.ToString(g.ModelFolderFormat));
+            JArray vaeArray = g.CreateVAELoader(refinerVaeOverride.ToString(g.ModelFolderFormat));
             vae = new WGNodeData(vaeArray, g, WGNodeData.DT_VAE, g.CurrentCompat());
             g.CurrentVae = vae;
             return (vae, true);
@@ -750,9 +751,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         int baseWidth = Math.Max(g.CurrentMedia?.Width ?? g.UserInput.GetImageWidth(), 16);
         int baseHeight = Math.Max(g.CurrentMedia?.Height ?? g.UserInput.GetImageHeight(), 16);
         double upscale = ctx.Stage.Upscale;
-        string upscaleMethod = ctx.Stage.UpscaleMethod ?? "pixel-lanczos";
-        bool doUpscale = upscale != 1 && !string.IsNullOrWhiteSpace(upscaleMethod);
-        if (!doUpscale)
+        string upscaleMethod = ctx.Stage.UpscaleMethod;
+        if (upscale == 1)
         {
             return (baseWidth, baseHeight);
         }
