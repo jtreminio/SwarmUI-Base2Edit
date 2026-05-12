@@ -232,4 +232,11 @@ internal static class WorkflowTestHarness
         Template_BaseThenRefiner()
             .Concat(Template_BaseThenSegments(segmentCount).Where(s => s.Priority > -950));
 
+    public static WorkflowGenerator.WorkflowGenStep PostBaseLatentStep() =>
+        new WorkflowGenerator.WorkflowGenStep(g =>
+        {
+            string postBaseLatent = g.CreateNode("UnitTest_PostBaseLatent", [], id: "2100", idMandatory: false);
+            g.CurrentMedia = new WGNodeData([postBaseLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+        }, 2);
+
 }
