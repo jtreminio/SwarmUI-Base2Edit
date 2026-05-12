@@ -12,12 +12,6 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 {
     private const int PreEditImageSaveId = 50200;
 
-    private WGNodeData WrapLatent(JArray path) => new(path, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
-    private WGNodeData WrapImage(JArray path) => new(path, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
-    private WGNodeData WrapVae(JArray path) => new(path, g, WGNodeData.DT_VAE, g.CurrentCompat());
-    private WGNodeData WrapModel(JArray path) => new(path, g, WGNodeData.DT_MODEL, g.CurrentCompat());
-    private WGNodeData WrapClip(JArray path) => new(path, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
-
     public void RunStage(
         bool isFinalStep,
         StageSpec stage,
@@ -58,7 +52,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                         if (node is VAEDecodeNode
                             && (StringUtils.Equals(input.Name, "samples") || StringUtils.Equals(input.Name, "latent")))
                         {
-                            preEditConsumerSourceRef = WrapImage([node.Id, 0]);
+                            preEditConsumerSourceRef = new WGNodeData([node.Id, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
                             break;
                         }
                     }
@@ -81,9 +75,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             {
                 int? mediaWidth = g.CurrentMedia?.Width;
                 int? mediaHeight = g.CurrentMedia?.Height;
-                g.CurrentMedia = WrapLatent(currentSamples.Path);
-                g.CurrentMedia.Width = mediaWidth;
-                g.CurrentMedia.Height = mediaHeight;
+                g.CurrentMedia = new WGNodeData(currentSamples.Path, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+                {
+                    Width = mediaWidth,
+                    Height = mediaHeight
+                };
             }
 
             ReencodeIfNeeded(ctx, new ReencodeOptions(
@@ -107,7 +103,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
             if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
             {
-                g.CurrentVae = WrapVae(ctx.ModelState.Vae.Path);
+                g.CurrentVae = new WGNodeData(ctx.ModelState.Vae.Path, g, WGNodeData.DT_VAE, g.CurrentCompat());
             }
 
             FinalizeOutput(ctx, isFinalStep, options);
@@ -177,7 +173,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         else if (preEditImageTailRef is null
             && TryResolveUniqueDownstreamImageTail(bridge, postEditImageOut.Path, out JArray inferredTail))
         {
-            g.CurrentMedia = WrapImage(inferredTail);
+            g.CurrentMedia = new WGNodeData(inferredTail, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
         }
 
         ComfyNode orphanCandidate = bridge.Graph.GetNode($"{preEditConsumerSourceRef.Path[0]}");
@@ -392,14 +388,14 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 clip = modelRef.Clip;
                 vae = modelRef.Vae;
                 (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(-1, model.Path, clip.Path);
-                model = WrapModel(mArray);
-                clip = WrapClip(cArray);
+                model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
+                clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
                 (mArray, cArray) = g.LoadLorasForConfinement(0, model.Path, clip.Path);
-                model = WrapModel(mArray);
-                clip = WrapClip(cArray);
+                model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
+                clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
                 (mArray, cArray) = g.LoadLorasForConfinement(T2IParamInput.SectionID_Refiner, model.Path, clip.Path);
-                model = WrapModel(mArray);
-                clip = WrapClip(cArray);
+                model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
+                clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
                 return (model, clip, vae);
             }
         }
@@ -410,11 +406,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             clip = modelRef.Clip;
             vae = modelRef.Vae;
             (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(-1, model.Path, clip.Path);
-            model = WrapModel(mArray);
-            clip = WrapClip(cArray);
+            model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
             (mArray, cArray) = g.LoadLorasForConfinement(0, model.Path, clip.Path);
-            model = WrapModel(mArray);
-            clip = WrapClip(cArray);
+            model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
             return (model, clip, vae);
         }
 
@@ -435,7 +431,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             && refinerVaeOverride is not null)
         {
             JArray vaeArray = g.CreateVAELoader(refinerVaeOverride.ToString(g.ModelFolderFormat));
-            vae = WrapVae(vaeArray);
+            vae = new WGNodeData(vaeArray, g, WGNodeData.DT_VAE, g.CurrentCompat());
             g.CurrentVae = vae;
             return (vae, true);
         }
@@ -444,8 +440,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             && altEditVae is not null
             && altEditVae.Name != "Automatic")
         {
-            JArray vaeArray = g.CreateVAELoader(altEditVae.ToString(g.ModelFolderFormat));
-            vae = WrapVae(vaeArray);
+            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+            VAELoaderNode vaeNode = bridge.AddNode(
+                new VAELoaderNode().With(VaeName: altEditVae.ToString(g.ModelFolderFormat)),
+                id: $"{g.LastID++}");
+            vae = new WGNodeData(WorkflowBridge.ToPath(vaeNode.VAE), g, WGNodeData.DT_VAE, g.CurrentCompat());
             g.CurrentVae = vae;
             return (vae, true);
         }
@@ -473,8 +472,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             g.UserInput.Set(T2IParamTypes.LoraTencWeights, [.. stage.Loras.TencWeights]);
             g.UserInput.Set(T2IParamTypes.LoraSectionConfinement, confinements);
             (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(stageSectionId, model.Path, clip.Path);
-            model = WrapModel(mArray);
-            clip = WrapClip(cArray);
+            model = new WGNodeData(mArray, g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            clip = new WGNodeData(cArray, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
         }
 
         return (model, clip);
@@ -490,7 +489,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamples(g, currentSamples.Path, out INodeOutput reusedImage))
         {
-            g.CurrentMedia = WrapImage(WorkflowBridge.ToPath(reusedImage));
+            g.CurrentMedia = new WGNodeData(WorkflowBridge.ToPath(reusedImage), g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             return;
         }
 
@@ -514,7 +513,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
             if (!g.Workflow.ContainsKey(preEditSaveNodeId))
             {
-                WrapImage(currentImageOut.Path).SaveOutput(null, null, id: preEditSaveNodeId);
+                new WGNodeData(currentImageOut.Path, g, WGNodeData.DT_IMAGE, g.CurrentCompat()).SaveOutput(null, null, id: preEditSaveNodeId);
             }
             Logs.Debug("Base2Edit: Saved pre-edit image");
         }
@@ -528,16 +527,15 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out INodeOutput imageTailSamples))
             {
-                g.CurrentMedia = WrapLatent(WorkflowBridge.ToPath(imageTailSamples));
-                g.CurrentMedia.Width = currentImageOut.Width;
-                g.CurrentMedia.Height = currentImageOut.Height;
+                g.CurrentMedia = new WGNodeData(WorkflowBridge.ToPath(imageTailSamples), g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+                {
+                    Width = currentImageOut.Width,
+                    Height = currentImageOut.Height
+                };
             }
             else
             {
-                string forcedEncodeNode = g.CreateVAEEncode(modelState.Vae.Path, currentImageOut.Path);
-                g.CurrentMedia = WrapLatent([forcedEncodeNode, 0]);
-                g.CurrentMedia.Width = currentImageOut.Width;
-                g.CurrentMedia.Height = currentImageOut.Height;
+                g.CurrentMedia = currentImageOut.EncodeToLatent(modelState.Vae);
             }
             return;
         }
@@ -545,9 +543,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         if (currentImageOut is not null &&
             VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out INodeOutput reusedSamples))
         {
-            g.CurrentMedia = WrapLatent(WorkflowBridge.ToPath(reusedSamples));
-            g.CurrentMedia.Width = currentImageOut.Width;
-            g.CurrentMedia.Height = currentImageOut.Height;
+            g.CurrentMedia = new WGNodeData(WorkflowBridge.ToPath(reusedSamples), g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+            {
+                Width = currentImageOut.Width,
+                Height = currentImageOut.Height
+            };
             return;
         }
 
@@ -561,13 +561,16 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return;
         }
 
-        string encodeNode = g.CreateVAEEncode(modelState.Vae.Path, currentImageOut.Path);
-        g.CurrentMedia = WrapLatent([encodeNode, 0]);
-        g.CurrentMedia.Width = currentImageOut.Width;
-        g.CurrentMedia.Height = currentImageOut.Height;
+        g.CurrentMedia = currentImageOut.EncodeToLatent(modelState.Vae);
     }
 
     private JArray EnsureCurrentSamplesForEdit(WGNodeData preferredVae)
+    {
+        return TryEnsureCurrentSamplesForEdit(preferredVae)
+            ?? throw new SwarmReadableErrorException("Base2Edit: No latent anchor is available for edit-stage sampling.");
+    }
+
+    private JArray TryEnsureCurrentSamplesForEdit(WGNodeData preferredVae)
     {
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         if (currentSamples is not null)
@@ -579,7 +582,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         JArray vae = (preferredVae ?? g.CurrentVae).Path;
         if (currentImageOut is null || vae is null)
         {
-            return ["10", 0];
+            return null;
         }
 
         if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, vae, out INodeOutput reusedSamples))
@@ -587,8 +590,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return WorkflowBridge.ToPath(reusedSamples);
         }
 
-        string encodeNode = g.CreateVAEEncode(vae, currentImageOut.Path);
-        return [encodeNode, 0];
+        return currentImageOut.EncodeToLatent(new WGNodeData(vae, g, WGNodeData.DT_VAE, g.CurrentCompat())).Path;
     }
 
     private Conditioning CreateConditioning(
@@ -607,7 +609,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             ? resolver.ResolveImageLatents(imageRefs.References, currentStageVae.Path, stageIndex)
             : [];
         JArray currentStageSamples = !editParams.RefineOnly
-            ? EnsureCurrentSamplesForEdit(currentStageVae)
+            ? TryEnsureCurrentSamplesForEdit(currentStageVae)
             : null;
 
         WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
@@ -680,10 +682,6 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
             int stageSectionId = ctx.SectionId;
             JArray currentStageSamples = EnsureCurrentSamplesForEdit(preferredVae: null);
-            if (currentStageSamples is null)
-            {
-                throw new SwarmReadableErrorException("Base2Edit: No latent anchor is available for edit-stage sampling.");
-            }
             string samplerNode = g.CreateKSampler(
                 model.Path,
                 conditioning.Positive,
@@ -701,9 +699,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 sectionId: stageSectionId
             );
 
-            g.CurrentMedia = WrapLatent([samplerNode, 0]);
-            g.CurrentMedia.Width = editParams.Width;
-            g.CurrentMedia.Height = editParams.Height;
+            g.CurrentMedia = new WGNodeData([samplerNode, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+            {
+                Width = editParams.Width,
+                Height = editParams.Height
+            };
         }
         finally
         {
@@ -731,13 +731,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             currentSamples is not null &&
             VaeNodeReuse.TryRetargetUnconsumedVaeDecode(g, currentImageOut.Path, vae.Path, currentSamples.Path, out INodeOutput retargetedImage))
         {
-            g.CurrentMedia = WrapImage(WorkflowBridge.ToPath(retargetedImage));
+            g.CurrentMedia = new WGNodeData(WorkflowBridge.ToPath(retargetedImage), g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             return;
         }
 
         if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, currentSamples.Path, vae.Path, out INodeOutput reusedImage))
         {
-            g.CurrentMedia = WrapImage(WorkflowBridge.ToPath(reusedImage));
+            g.CurrentMedia = new WGNodeData(WorkflowBridge.ToPath(reusedImage), g, WGNodeData.DT_IMAGE, g.CurrentCompat());
             return;
         }
 
@@ -780,23 +780,27 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             if (upscaleMethod.StartsWith("pixel-", StringComparison.OrdinalIgnoreCase))
             {
                 string pixelMethod = upscaleMethod["pixel-".Length..];
-                upscaledImageRef = [AddImageScale(bridge, decoded.Path, width, height, pixelMethod, "disabled"), 0];
+                ImageScaleNode scaledPixel = AddImageScale(bridge, decoded.Path, width, height, pixelMethod, "disabled");
+                upscaledImageRef = WorkflowBridge.ToPath(scaledPixel.IMAGE);
             }
             else
             {
                 string modelName = upscaleMethod["model-".Length..];
-                string loader = AddUpscaleModelLoader(bridge, modelName);
-                string modelUpscale = AddImageUpscaleWithModel(bridge, new JArray(loader, 0), decoded.Path);
-                upscaledImageRef = [AddImageScale(bridge, new JArray(modelUpscale, 0), width, height, "lanczos", "disabled"), 0];
+                UpscaleModelLoaderNode loader = AddUpscaleModelLoader(bridge, modelName);
+                ImageUpscaleWithModelNode modelUpscale = AddImageUpscaleWithModel(bridge, WorkflowBridge.ToPath(loader.UPSCALEMODEL), decoded.Path);
+                ImageScaleNode scaledModel = AddImageScale(bridge, WorkflowBridge.ToPath(modelUpscale.IMAGE), width, height, "lanczos", "disabled");
+                upscaledImageRef = WorkflowBridge.ToPath(scaledModel.IMAGE);
             }
 
-            g.CurrentMedia = WrapImage(upscaledImageRef);
-            g.CurrentMedia.Width = width;
-            g.CurrentMedia.Height = height;
+            g.CurrentMedia = new WGNodeData(upscaledImageRef, g, WGNodeData.DT_IMAGE, g.CurrentCompat())
+            {
+                Width = width,
+                Height = height
+            };
 
             if (VaeNodeReuse.ReuseVaeEncodeForImage(g, upscaledImageRef, stageVae.Path, out INodeOutput reusedSamples))
             {
-                g.CurrentMedia = WrapLatent(WorkflowBridge.ToPath(reusedSamples));
+                g.CurrentMedia = new WGNodeData(WorkflowBridge.ToPath(reusedSamples), g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             }
             else
             {
@@ -820,20 +824,19 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
                 if (VaeNodeReuse.ReuseVaeEncodeForImage(g, imageMedia.Path, stageVae.Path, out INodeOutput reusedLatent))
                 {
-                    latentMedia = WrapLatent(WorkflowBridge.ToPath(reusedLatent));
+                    latentMedia = new WGNodeData(WorkflowBridge.ToPath(reusedLatent), g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
                 }
                 else
                 {
-                    string encodeNode = g.CreateVAEEncode(stageVae.Path, imageMedia.Path);
-                    latentMedia = WrapLatent([encodeNode, 0]);
+                    latentMedia = imageMedia.EncodeToLatent(stageVae);
                 }
             }
 
-            g.CurrentMedia = WrapLatent(latentMedia.Path);
+            g.CurrentMedia = new WGNodeData(latentMedia.Path, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             string latentMethod = upscaleMethod["latent-".Length..];
             WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
-            string latentUpscale = AddLatentUpscaleBy(bridge, g.CurrentMedia.Path, latentMethod, upscale);
-            g.CurrentMedia = g.CurrentMedia.WithPath([latentUpscale, 0]);
+            LatentUpscaleByNode latentUpscale = AddLatentUpscaleBy(bridge, g.CurrentMedia.Path, latentMethod, upscale);
+            g.CurrentMedia = g.CurrentMedia.WithPath(WorkflowBridge.ToPath(latentUpscale.LATENT));
             g.CurrentMedia.Width = width;
             g.CurrentMedia.Height = height;
             return (width, height);
@@ -842,7 +845,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         return (baseWidth, baseHeight);
     }
 
-    private string AddImageScale(WorkflowBridge bridge, JArray imagePath, int width, int height, string method, string crop)
+    private ImageScaleNode AddImageScale(WorkflowBridge bridge, JArray imagePath, int width, int height, string method, string crop)
     {
         ImageScaleNode node = bridge.AddNode(
             new ImageScaleNode().With(
@@ -852,28 +855,28 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 Crop: crop),
             id: $"{g.LastID++}");
         node.Image.ConnectFromPath(bridge, imagePath);
-        return node.Id;
+        return node;
     }
 
-    private string AddUpscaleModelLoader(WorkflowBridge bridge, string modelName)
+    private UpscaleModelLoaderNode AddUpscaleModelLoader(WorkflowBridge bridge, string modelName)
     {
         UpscaleModelLoaderNode node = bridge.AddNode(
             new UpscaleModelLoaderNode().With(ModelName: modelName),
             id: $"{g.LastID++}");
-        return node.Id;
+        return node;
     }
 
-    private string AddImageUpscaleWithModel(WorkflowBridge bridge, JArray modelPath, JArray imagePath)
+    private ImageUpscaleWithModelNode AddImageUpscaleWithModel(WorkflowBridge bridge, JArray modelPath, JArray imagePath)
     {
         ImageUpscaleWithModelNode node = bridge.AddNode(
             new ImageUpscaleWithModelNode(),
             id: $"{g.LastID++}");
         node.UpscaleModel.ConnectFromPath(bridge, modelPath);
         node.Image.ConnectFromPath(bridge, imagePath);
-        return node.Id;
+        return node;
     }
 
-    private string AddLatentUpscaleBy(WorkflowBridge bridge, JArray samplesPath, string method, double scaleBy)
+    private LatentUpscaleByNode AddLatentUpscaleBy(WorkflowBridge bridge, JArray samplesPath, string method, double scaleBy)
     {
         LatentUpscaleByNode node = bridge.AddNode(
             new LatentUpscaleByNode().With(
@@ -881,6 +884,6 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 ScaleBy: scaleBy),
             id: $"{g.LastID++}");
         node.Samples.ConnectFromPath(bridge, samplesPath);
-        return node.Id;
+        return node;
     }
 }
