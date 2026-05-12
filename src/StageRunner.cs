@@ -11,7 +11,6 @@ namespace Base2Edit;
 class StageRunner(WorkflowGenerator g, StageRefStore store)
 {
     private const int PreEditImageSaveId = 50200;
-    private const int EditSeedOffset = 2;
 
     private WGNodeData WrapLatent(JArray path) => new(path, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
     private WGNodeData WrapImage(JArray path) => new(path, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
@@ -30,97 +29,106 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             Base2EditExtension.EditSectionIdForStage(stageIndex),
             g.CurrentMedia,
             g.CurrentVae);
-        string positivePrompt = g.UserInput.Get(T2IParamTypes.Prompt, "");
-        string negativePrompt = g.UserInput.Get(T2IParamTypes.NegativePrompt, "");
-        string originalPositivePrompt = PromptParser.GetOriginalPrompt(g.UserInput, T2IParamTypes.Prompt.Type.ID, positivePrompt);
-        string originalNegativePrompt = PromptParser.GetOriginalPrompt(g.UserInput, T2IParamTypes.NegativePrompt.Type.ID, negativePrompt);
-
-        PromptParser.EditPrompts prompts = new(
-            PromptParser.ExtractPrompt(positivePrompt, originalPositivePrompt, stageIndex),
-            PromptParser.ExtractPrompt(negativePrompt, originalNegativePrompt, stageIndex)
-        );
-        ctx.ModelState = PrepareModelAndVae(ctx, isFinalStep, options);
-        bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
-            || ctx.Stage.KeepPreEditImage;
-        string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
-        WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
-        WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
-        bool needsPreEditImage = shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
-        WGNodeData preEditImageTailRef = currentImageOut;
-        WGNodeData preEditConsumerSourceRef = preEditImageTailRef;
-        if (isFinalStep && currentSamples is not null)
+        PromptParser.EditPrompts prompts = new(stage.PositivePrompt, stage.NegativePrompt);
+        WGNodeData savedModel = g.CurrentModel;
+        WGNodeData savedTextEnc = g.CurrentTextEnc;
+        T2IModel savedFinalLoadedModel = g.FinalLoadedModel;
+        List<T2IModel> savedFinalLoadedModelList = g.FinalLoadedModelList;
+        g.FinalLoadedModelList = [.. savedFinalLoadedModelList];
+        try
         {
-            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
-            if (bridge.ResolvePath(currentSamples.Path) is INodeOutput samplesOut)
+            ctx.ModelState = PrepareModelAndVae(ctx, isFinalStep, options);
+            g.CurrentModel = ctx.ModelState.Model;
+            g.CurrentTextEnc = ctx.ModelState.Clip;
+            bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
+                || ctx.Stage.KeepPreEditImage;
+            string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
+            WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
+            WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
+            bool needsPreEditImage = shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
+            WGNodeData preEditImageTailRef = currentImageOut;
+            WGNodeData preEditConsumerSourceRef = preEditImageTailRef;
+            if (isFinalStep && currentSamples is not null)
             {
-                foreach ((ComfyNode node, INodeInput input) in bridge.Graph.FindInputsConnectedTo(samplesOut))
+                using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+                if (bridge.ResolvePath(currentSamples.Path) is INodeOutput samplesOut)
                 {
-                    if (node is VAEDecodeNode
-                        && (StringUtils.Equals(input.Name, "samples") || StringUtils.Equals(input.Name, "latent")))
+                    foreach ((ComfyNode node, INodeInput input) in bridge.Graph.FindInputsConnectedTo(samplesOut))
                     {
-                        preEditConsumerSourceRef = WrapImage([node.Id, 0]);
-                        break;
+                        if (node is VAEDecodeNode
+                            && (StringUtils.Equals(input.Name, "samples") || StringUtils.Equals(input.Name, "latent")))
+                        {
+                            preEditConsumerSourceRef = WrapImage([node.Id, 0]);
+                            break;
+                        }
                     }
                 }
             }
+
+            if (needsPreEditImage)
+            {
+                EnsureImageAvailable(ctx.ModelState.PreEditVae);
+            }
+
+            if (shouldSavePreEdit)
+            {
+                SavePreEditImageIfNeeded(ctx);
+            }
+
+            if (!ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
+                && currentSamples is not null
+                && g.CurrentMedia?.IsLatentData != true)
+            {
+                int? mediaWidth = g.CurrentMedia?.Width;
+                int? mediaHeight = g.CurrentMedia?.Height;
+                g.CurrentMedia = WrapLatent(currentSamples.Path);
+                g.CurrentMedia.Width = mediaWidth;
+                g.CurrentMedia.Height = mediaHeight;
+            }
+
+            ReencodeIfNeeded(ctx, new ReencodeOptions(
+                ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
+            ));
+            (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx);
+            ctx.Parameters = new Parameters(
+                Width: stageWidth,
+                Height: stageHeight,
+                Steps: ctx.Stage.Steps,
+                CfgScale: ctx.Stage.CfgScale,
+                Control: ctx.Stage.Control,
+                RefineOnly: ctx.Stage.RefineOnly,
+                Guidance: stage.Guidance,
+                Seed: stage.Seed,
+                Sampler: ctx.Stage.Sampler,
+                Scheduler: ctx.Stage.Scheduler
+            );
+            ctx.Conditioning = CreateConditioning(ctx, prompts);
+            ExecuteSampler(ctx);
+
+            if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
+            {
+                g.CurrentVae = WrapVae(ctx.ModelState.Vae.Path);
+            }
+
+            FinalizeOutput(ctx, isFinalStep, options);
+
+            if (isFinalStep && options.RewireFinalConsumers)
+            {
+                RewireDownstreamConsumers(preEditConsumerSourceRef, preEditImageTailRef, preEditSaveNodeId);
+            }
+
+            if (g.CurrentMedia is not null)
+            {
+                g.CurrentMedia.Width ??= stageWidth;
+                g.CurrentMedia.Height ??= stageHeight;
+            }
         }
-
-        if (needsPreEditImage)
+        finally
         {
-            EnsureImageAvailable(ctx.ModelState.PreEditVae);
-        }
-
-        if (shouldSavePreEdit)
-        {
-            SavePreEditImageIfNeeded(ctx);
-        }
-
-        if (!ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
-            && currentSamples is not null
-            && g.CurrentMedia?.IsLatentData != true)
-        {
-            int? mediaWidth = g.CurrentMedia?.Width;
-            int? mediaHeight = g.CurrentMedia?.Height;
-            g.CurrentMedia = WrapLatent(currentSamples.Path);
-            g.CurrentMedia.Width = mediaWidth;
-            g.CurrentMedia.Height = mediaHeight;
-        }
-
-        ReencodeIfNeeded(ctx, new ReencodeOptions(
-            ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
-        ));
-        (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx);
-        ctx.Parameters = new Parameters(
-            Width: stageWidth,
-            Height: stageHeight,
-            Steps: ctx.Stage.Steps,
-            CfgScale: ctx.Stage.CfgScale,
-            Control: ctx.Stage.Control,
-            RefineOnly: ctx.Stage.RefineOnly,
-            Guidance: g.UserInput.Get(T2IParamTypes.FluxGuidanceScale, -1),
-            Seed: g.UserInput.Get(T2IParamTypes.Seed) + EditSeedOffset + stageIndex,
-            Sampler: ctx.Stage.Sampler,
-            Scheduler: ctx.Stage.Scheduler
-        );
-        ctx.Conditioning = CreateConditioning(ctx, prompts);
-        ExecuteSampler(ctx);
-
-        if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
-        {
-            g.CurrentVae = WrapVae(ctx.ModelState.Vae.Path);
-        }
-
-        FinalizeOutput(ctx, isFinalStep, options);
-
-        if (isFinalStep && options.RewireFinalConsumers)
-        {
-            RewireDownstreamConsumers(preEditConsumerSourceRef, preEditImageTailRef, preEditSaveNodeId);
-        }
-
-        if (g.CurrentMedia is not null)
-        {
-            g.CurrentMedia.Width ??= stageWidth;
-            g.CurrentMedia.Height ??= stageHeight;
+            g.CurrentModel = savedModel;
+            g.CurrentTextEnc = savedTextEnc;
+            g.FinalLoadedModel = savedFinalLoadedModel;
+            g.FinalLoadedModelList = savedFinalLoadedModelList;
         }
     }
 
@@ -319,7 +327,6 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         bool isFinalStep,
         RunEditStageOptions options)
     {
-        int stageIndex = ctx.Stage.Id;
         bool trackResolvedModelForMetadata = options.TrackResolvedModelForMetadata;
         WGNodeData preEditVae = g.CurrentVae;
         WGNodeData model = g.CurrentModel;
@@ -342,7 +349,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         (model, clip, vae) = ResolveModelStack(selection, editModel, isFinalStep, stageSectionId, model, clip, vae);
         (vae, mustReencode) = ResolveVae(selection, isFinalStep, stageSectionId, vae, mustReencode);
-        (model, clip) = ApplyLoraStack(stageIndex, stageSectionId, model, clip);
+        (model, clip) = ApplyLoraStack(ctx.Stage, stageSectionId, model, clip);
 
         if (mustReencode
             && preEditVae is not null
@@ -447,24 +454,12 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     }
 
     private (WGNodeData model, WGNodeData clip) ApplyLoraStack(
-        int stageIndex,
+        StageSpec stage,
         int stageSectionId,
         WGNodeData model,
         WGNodeData clip)
     {
-        string posPrompt = g.UserInput.Get(T2IParamTypes.Prompt, "");
-        string negPrompt = g.UserInput.Get(T2IParamTypes.NegativePrompt, "");
-        bool hasStageEditSection =
-            PromptParser.HasAnyEditSectionForStage(posPrompt, stageIndex)
-            || PromptParser.HasAnyEditSectionForStage(negPrompt, stageIndex);
-
-        if (!hasStageEditSection)
-        {
-            return (model, clip);
-        }
-
-        (List<string> Loras, List<string> Weights, List<string> TencWeights) loras = ExtractPromptLoras(stageIndex);
-        if (loras.Loras.Count == 0)
+        if (stage.Loras.IsEmpty)
         {
             return (model, clip);
         }
@@ -472,10 +467,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         using (ParamSnapshot snapshot = ModelPrep.SnapshotLoraParams(g))
         {
             snapshot.Remove();
-            List<string> confinements = [.. Enumerable.Repeat($"{stageSectionId}", loras.Loras.Count)];
-            g.UserInput.Set(T2IParamTypes.Loras, loras.Loras);
-            g.UserInput.Set(T2IParamTypes.LoraWeights, loras.Weights);
-            g.UserInput.Set(T2IParamTypes.LoraTencWeights, loras.TencWeights);
+            List<string> confinements = [.. Enumerable.Repeat($"{stageSectionId}", stage.Loras.Names.Count)];
+            g.UserInput.Set(T2IParamTypes.Loras, [.. stage.Loras.Names]);
+            g.UserInput.Set(T2IParamTypes.LoraWeights, [.. stage.Loras.Weights]);
+            g.UserInput.Set(T2IParamTypes.LoraTencWeights, [.. stage.Loras.TencWeights]);
             g.UserInput.Set(T2IParamTypes.LoraSectionConfinement, confinements);
             (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(stageSectionId, model.Path, clip.Path);
             model = WrapModel(mArray);
@@ -483,56 +478,6 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         return (model, clip);
-    }
-
-    private (List<string> Loras, List<string> Weights, List<string> TencWeights) ExtractPromptLoras(int stageIndex)
-    {
-        if (!g.UserInput.TryGet(T2IParamTypes.Loras, out List<string> loras)
-            || loras is null
-            || loras.Count == 0)
-        {
-            return ([], [], []);
-        }
-
-        List<string> weights = g.UserInput.Get(T2IParamTypes.LoraWeights) ?? [];
-        List<string> tencWeights = g.UserInput.Get(T2IParamTypes.LoraTencWeights) ?? [];
-        List<string> confinements = g.UserInput.Get(T2IParamTypes.LoraSectionConfinement) ?? [];
-
-        if (confinements.Count == 0)
-        {
-            return ([], [], []);
-        }
-
-        List<string> outLoras = [];
-        List<string> outWeights = [];
-        List<string> outTencWeights = [];
-
-        int globalCid = Base2EditExtension.SectionID_Edit;
-        int stageCid = Base2EditExtension.EditSectionIdForStage(stageIndex);
-
-        for (int i = 0; i < loras.Count; i++)
-        {
-            if (i >= confinements.Count)
-            {
-                continue;
-            }
-
-            if (!int.TryParse(confinements[i], out int confinementId))
-            {
-                continue;
-            }
-
-            if (confinementId != globalCid && confinementId != stageCid)
-            {
-                continue;
-            }
-
-            outLoras.Add(loras[i]);
-            outWeights.Add(i < weights.Count ? weights[i] : "1");
-            outTencWeights.Add(i < tencWeights.Count ? tencWeights[i] : (i < weights.Count ? weights[i] : "1"));
-        }
-
-        return (outLoras, outWeights, outTencWeights);
     }
 
     private void EnsureImageAvailable(WGNodeData preEditVae)

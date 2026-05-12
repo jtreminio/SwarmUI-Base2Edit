@@ -50,6 +50,8 @@ internal static class Base2EditSpecParser
         List<int> orderedIds = [];
 
         List<JObject> allEntries = [BuildStage0Shim(g), .. GetJsonStagesArray(g)];
+        string posPrompt = g.UserInput.Get(T2IParamTypes.Prompt, "");
+        string negPrompt = g.UserInput.Get(T2IParamTypes.NegativePrompt, "");
         StageSpec previousStage = null;
         for (int stageId = 0; stageId < allEntries.Count; stageId++)
         {
@@ -67,7 +69,14 @@ internal static class Base2EditSpecParser
                 refinerDefaults,
                 hasRefinerPhaseWork,
                 stagesById,
-                defaultsById);
+                defaultsById,
+                posPrompt,
+                negPrompt,
+                posOriginal: PromptParser.GetOriginalPrompt(g.UserInput, T2IParamTypes.Prompt.Type.ID, posPrompt),
+                negOriginal: PromptParser.GetOriginalPrompt(g.UserInput, T2IParamTypes.NegativePrompt.Type.ID, negPrompt),
+                loraInputs: new LoraInputsSnapshot(g),
+                baseSeed: g.UserInput.Get(T2IParamTypes.Seed),
+                guidance: g.UserInput.Get(T2IParamTypes.FluxGuidanceScale, -1));
             if (parsed is null)
             {
                 continue;
@@ -176,7 +185,14 @@ internal static class Base2EditSpecParser
         StageDefaults refinerDefaults,
         bool hasRefinerPhaseWork,
         Dictionary<int, StageSpec> stagesById,
-        Dictionary<int, StageDefaults> defaultsById)
+        Dictionary<int, StageDefaults> defaultsById,
+        string posPrompt,
+        string negPrompt,
+        string posOriginal,
+        string negOriginal,
+        LoraInputsSnapshot loraInputs,
+        long baseSeed,
+        double guidance)
     {
         string locationPrefix = $"Edit Stage {stageId}";
 
@@ -242,6 +258,14 @@ internal static class Base2EditSpecParser
             Sampler: GetOptionalString(obj, "Sampler", paramDefaults.Sampler, locationPrefix, allowEmpty: false),
             Scheduler: GetOptionalString(obj, "Scheduler", paramDefaults.Scheduler, locationPrefix, allowEmpty: false),
             HasVaeOverride: hasVaeOverride,
+            PositivePrompt: PromptParser.ExtractPrompt(posPrompt, posOriginal, stageId),
+            NegativePrompt: PromptParser.ExtractPrompt(negPrompt, negOriginal, stageId),
+            Loras: (PromptParser.HasAnyEditSectionForStage(posPrompt, stageId)
+                    || PromptParser.HasAnyEditSectionForStage(negPrompt, stageId))
+                ? loraInputs.FilterForStage(stageId)
+                : StageLoras.Empty,
+            Seed: baseSeed + Base2EditExtension.EditSeedOffset + stageId,
+            Guidance: guidance,
             Children: []
         );
     }
@@ -520,4 +544,58 @@ internal static class Base2EditSpecParser
 
     private static bool JsonHasOwnProperty(JObject obj, string key) =>
         obj.Properties().Any(p => StringUtils.Equals(p.Name, key));
+
+    private sealed class LoraInputsSnapshot
+    {
+        private readonly List<string> _loras;
+        private readonly List<string> _weights;
+        private readonly List<string> _tencWeights;
+        private readonly List<string> _confinements;
+
+        public LoraInputsSnapshot(WorkflowGenerator g)
+        {
+            g.UserInput.TryGet(T2IParamTypes.Loras, out _loras);
+            _loras ??= [];
+            _weights = g.UserInput.Get(T2IParamTypes.LoraWeights) ?? [];
+            _tencWeights = g.UserInput.Get(T2IParamTypes.LoraTencWeights) ?? [];
+            _confinements = g.UserInput.Get(T2IParamTypes.LoraSectionConfinement) ?? [];
+        }
+
+        public StageLoras FilterForStage(int stageIndex)
+        {
+            if (_loras.Count == 0 || _confinements.Count == 0)
+            {
+                return StageLoras.Empty;
+            }
+
+            int globalCid = Base2EditExtension.SectionID_Edit;
+            int stageCid = Base2EditExtension.EditSectionIdForStage(stageIndex);
+            List<string> outNames = [];
+            List<string> outWeights = [];
+            List<string> outTencWeights = [];
+
+            for (int i = 0; i < _loras.Count; i++)
+            {
+                if (i >= _confinements.Count)
+                {
+                    continue;
+                }
+                if (!int.TryParse(_confinements[i], out int confinementId))
+                {
+                    continue;
+                }
+                if (confinementId != globalCid && confinementId != stageCid)
+                {
+                    continue;
+                }
+                outNames.Add(_loras[i]);
+                outWeights.Add(i < _weights.Count ? _weights[i] : "1");
+                outTencWeights.Add(i < _tencWeights.Count ? _tencWeights[i] : (i < _weights.Count ? _weights[i] : "1"));
+            }
+
+            return outNames.Count == 0
+                ? StageLoras.Empty
+                : new StageLoras(outNames, outWeights, outTencWeights);
+        }
+    }
 }

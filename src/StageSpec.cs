@@ -15,5 +15,10 @@ public sealed record StageSpec(
     string Sampler,
     string Scheduler,
     bool HasVaeOverride,
+    string PositivePrompt,
+    string NegativePrompt,
+    StageLoras Loras,
+    long Seed,
+    double Guidance,
     List<StageSpec> Children = default!
 );
