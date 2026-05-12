@@ -1,5 +1,6 @@
 using ComfyTyped.Core;
 using ComfyTyped.Generated;
+using ComfyTyped.Types;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Utils;
@@ -31,16 +32,6 @@ public static class VaeNodeReuse
 
             using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
             ComfyNode decode = bridge.Graph.GetNode($"{imageRef[0]}");
-            if (decode is not (VAEDecodeNode or VAEDecodeTiledNode))
-            {
-                return false;
-            }
-
-            if (decode.Outputs.Count > 0
-                && bridge.Graph.FindInputsConnectedTo(decode.Outputs[0]).Count > 0)
-            {
-                return false;
-            }
 
             INodeOutput intendedVae = bridge.ResolvePath(intendedVaeRef);
             INodeOutput samples = bridge.ResolvePath(samplesRef);
@@ -49,22 +40,47 @@ public static class VaeNodeReuse
                 return false;
             }
 
-            INodeInput samplesInput = decode.FindInput("samples") ?? decode.FindInput("latent");
-            if (samplesInput is null)
+            if (decode is VAEDecodeNode typedDecode)
             {
-                return false;
+                if (bridge.Graph.FindInputsConnectedTo(typedDecode.IMAGE).Count > 0)
+                {
+                    return false;
+                }
+                return TryRetarget(typedDecode.Samples, typedDecode.Vae, typedDecode.IMAGE,
+                    intendedVae, samples, out imageOut);
             }
-            decode.FindInput("vae")?.ConnectToUntyped(intendedVae);
-            samplesInput.ConnectToUntyped(samples);
 
-            imageOut = decode.FindOutput(0);
-            return true;
+            if (decode is VAEDecodeTiledNode typedTiled)
+            {
+                if (bridge.Graph.FindInputsConnectedTo(typedTiled.IMAGE).Count > 0)
+                {
+                    return false;
+                }
+                return TryRetarget(typedTiled.Samples, typedTiled.Vae, typedTiled.IMAGE,
+                    intendedVae, samples, out imageOut);
+            }
+
+            return false;
         }
         catch (Exception ex)
         {
             Logs.Debug($"Base2Edit: Failed to retarget existing VAEDecode node: {ex}");
             return false;
         }
+    }
+
+    private static bool TryRetarget(
+        NodeInput<LatentType> samplesSlot,
+        NodeInput<VaeType> vaeSlot,
+        NodeOutput<ImageType> imageSlot,
+        INodeOutput intendedVae,
+        INodeOutput samples,
+        out INodeOutput imageOut)
+    {
+        vaeSlot.TryConnectToUntyped(intendedVae);
+        samplesSlot.ConnectToUntyped(samples);
+        imageOut = imageSlot;
+        return true;
     }
 
     public static bool ReuseVaeDecodeForSamples(WorkflowGenerator g, JArray samplesRef, out INodeOutput imageOut)
