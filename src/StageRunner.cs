@@ -16,6 +16,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     private WGNodeData WrapLatent(JArray path) => new(path, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
     private WGNodeData WrapImage(JArray path) => new(path, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
     private WGNodeData WrapVae(JArray path) => new(path, g, WGNodeData.DT_VAE, g.CurrentCompat());
+    private WGNodeData WrapModel(JArray path) => new(path, g, WGNodeData.DT_MODEL, g.CurrentCompat());
+    private WGNodeData WrapClip(JArray path) => new(path, g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
 
     public void RunStage(
         bool isFinalStep,
@@ -44,8 +46,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
         bool needsPreEditImage = shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
-        JArray preEditImageTailRef = currentImageOut?.Path;
-        JArray preEditConsumerSourceRef = preEditImageTailRef;
+        WGNodeData preEditImageTailRef = currentImageOut;
+        WGNodeData preEditConsumerSourceRef = preEditImageTailRef;
         if (isFinalStep && currentSamples is not null)
         {
             using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
@@ -56,7 +58,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                     if (node is VAEDecodeNode
                         && (StringUtils.Equals(input.Name, "samples") || StringUtils.Equals(input.Name, "latent")))
                     {
-                        preEditConsumerSourceRef = new JArray(node.Id, 0);
+                        preEditConsumerSourceRef = WrapImage([node.Id, 0]);
                         break;
                     }
                 }
@@ -105,7 +107,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
         {
-            g.CurrentVae = WrapVae(ctx.ModelState.Vae);
+            g.CurrentVae = WrapVae(ctx.ModelState.Vae.Path);
         }
 
         FinalizeOutput(ctx, isFinalStep, options);
@@ -123,14 +125,14 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     }
 
     private void RewireDownstreamConsumers(
-        JArray preEditConsumerSourceRef,
-        JArray preEditImageTailRef,
+        WGNodeData preEditConsumerSourceRef,
+        WGNodeData preEditImageTailRef,
         string preEditSaveNodeId)
     {
         WGNodeData postEditImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
         if (preEditConsumerSourceRef is null
             || postEditImageOut is null
-            || JToken.DeepEquals(preEditConsumerSourceRef, postEditImageOut.Path))
+            || JToken.DeepEquals(preEditConsumerSourceRef.Path, postEditImageOut.Path))
         {
             return;
         }
@@ -138,7 +140,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         string postEditImageNodeId = $"{postEditImageOut.Path[0]}";
 
         using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
-        INodeOutput from = bridge.ResolvePath(preEditConsumerSourceRef);
+        INodeOutput from = bridge.ResolvePath(preEditConsumerSourceRef.Path);
         INodeOutput to = bridge.ResolvePath(postEditImageOut.Path);
         if (from is null || to is null)
         {
@@ -160,9 +162,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         if (preEditImageTailRef is not null
-            && IsReachableDownstream(bridge, postEditImageNodeId, $"{preEditImageTailRef[0]}"))
+            && IsReachableDownstream(bridge, postEditImageNodeId, $"{preEditImageTailRef.Path[0]}"))
         {
-            g.CurrentMedia = WrapImage(preEditImageTailRef);
+            g.CurrentMedia = preEditImageTailRef;
         }
         else if (preEditImageTailRef is null
             && TryResolveUniqueDownstreamImageTail(bridge, postEditImageOut.Path, out JArray inferredTail))
@@ -170,7 +172,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             g.CurrentMedia = WrapImage(inferredTail);
         }
 
-        ComfyNode orphanCandidate = bridge.Graph.GetNode($"{preEditConsumerSourceRef[0]}");
+        ComfyNode orphanCandidate = bridge.Graph.GetNode($"{preEditConsumerSourceRef.Path[0]}");
         if (orphanCandidate is VAEDecodeNode or VAEDecodeTiledNode
             && orphanCandidate.Outputs.Count > 0
             && bridge.Graph.FindInputsConnectedTo(orphanCandidate.Outputs[0]).Count == 0)
@@ -319,10 +321,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     {
         int stageIndex = ctx.Stage.Id;
         bool trackResolvedModelForMetadata = options.TrackResolvedModelForMetadata;
-        JArray preEditVae = g.CurrentVae.Path;
-        JArray model = g.CurrentModel.Path;
-        JArray clip = g.CurrentTextEnc.Path;
-        JArray vae = g.CurrentVae.Path;
+        WGNodeData preEditVae = g.CurrentVae;
+        WGNodeData model = g.CurrentModel;
+        WGNodeData clip = g.CurrentTextEnc;
+        WGNodeData vae = g.CurrentVae;
         T2IModel editModel = ModelPrep.TryResolveEditModel(g, ctx.Stage.Model ?? ModelPrep.UseRefiner, out bool mustReencode);
 
         if (editModel is null)
@@ -345,7 +347,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         if (mustReencode
             && preEditVae is not null
             && vae is not null
-            && JToken.DeepEquals(preEditVae, vae))
+            && JToken.DeepEquals(preEditVae.Path, vae.Path))
         {
             mustReencode = false;
         }
@@ -353,54 +355,76 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         return new ModelState(model, clip, vae, preEditVae, mustReencode);
     }
 
-    private (JArray model, JArray clip, JArray vae) ResolveModelStack(
+    private (WGNodeData model, WGNodeData clip, WGNodeData vae) ResolveModelStack(
         string selection,
         T2IModel editModel,
         bool isFinalStep,
         int stageSectionId,
-        JArray model,
-        JArray clip,
-        JArray vae)
+        WGNodeData model,
+        WGNodeData clip,
+        WGNodeData vae)
     {
         if (StringUtils.Equals(selection, ModelPrep.UseBase))
         {
             if (store.TryGetCapturedModelState(StageRefStore.StageKind.Base, out JArray baseModel, out JArray baseClip, out JArray baseVae))
             {
-                return (baseModel, baseClip, baseVae);
+                WGNodeData wbm = WrapModel(baseModel);
+                WGNodeData wbc = WrapClip(baseClip);
+                WGNodeData wbv = WrapVae(baseVae);
+                return (wbm, wbc, wbv);
             }
         }
         else if (StringUtils.Equals(selection, ModelPrep.UseRefiner))
         {
             if (isFinalStep && store.TryGetCapturedModelState(StageRefStore.StageKind.Refiner, out JArray refinerModel, out JArray refinerClip, out JArray refinerVae))
             {
-                return (refinerModel, refinerClip, refinerVae);
+                WGNodeData wrm = WrapModel(refinerModel);
+                WGNodeData wrc = WrapClip(refinerClip);
+                WGNodeData wrv = WrapVae(refinerVae);
+                return (wrm, wrc, wrv);
             }
 
             if (!isFinalStep)
             {
-                (model, clip, vae) = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
-                (model, clip) = g.LoadLorasForConfinement(-1, model, clip);
-                (model, clip) = g.LoadLorasForConfinement(0, model, clip);
-                (model, clip) = g.LoadLorasForConfinement(T2IParamInput.SectionID_Refiner, model, clip);
+                ModelPrep.ModelRef modelRef = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
+                model = modelRef.Model;
+                clip = modelRef.Clip;
+                vae = modelRef.Vae;
+                (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(-1, model.Path, clip.Path);
+                model = WrapModel(mArray);
+                clip = WrapClip(cArray);
+                (mArray, cArray) = g.LoadLorasForConfinement(0, model.Path, clip.Path);
+                model = WrapModel(mArray);
+                clip = WrapClip(cArray);
+                (mArray, cArray) = g.LoadLorasForConfinement(T2IParamInput.SectionID_Refiner, model.Path, clip.Path);
+                model = WrapModel(mArray);
+                clip = WrapClip(cArray);
                 return (model, clip, vae);
             }
         }
         else
         {
-            (model, clip, vae) = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
-            (model, clip) = g.LoadLorasForConfinement(-1, model, clip);
-            (model, clip) = g.LoadLorasForConfinement(0, model, clip);
+            ModelPrep.ModelRef modelRef = ModelPrep.LoadEditModelWithoutLoras(g, editModel, sectionId: stageSectionId);
+            model = modelRef.Model;
+            clip = modelRef.Clip;
+            vae = modelRef.Vae;
+            (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(-1, model.Path, clip.Path);
+            model = WrapModel(mArray);
+            clip = WrapClip(cArray);
+            (mArray, cArray) = g.LoadLorasForConfinement(0, model.Path, clip.Path);
+            model = WrapModel(mArray);
+            clip = WrapClip(cArray);
             return (model, clip, vae);
         }
 
         return (model, clip, vae);
     }
 
-    private (JArray vae, bool mustReencode) ResolveVae(
+    private (WGNodeData vae, bool mustReencode) ResolveVae(
         string selection,
         bool isFinalStep,
         int stageSectionId,
-        JArray vae,
+        WGNodeData vae,
         bool mustReencode)
     {
         if (!isFinalStep
@@ -409,8 +433,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             && g.UserInput.TryGet(T2IParamTypes.RefinerVAE, out T2IModel refinerVaeOverride)
             && refinerVaeOverride is not null)
         {
-            vae = g.CreateVAELoader(refinerVaeOverride.ToString(g.ModelFolderFormat));
-            g.CurrentVae = WrapVae(vae);
+            JArray vaeArray = g.CreateVAELoader(refinerVaeOverride.ToString(g.ModelFolderFormat));
+            vae = WrapVae(vaeArray);
+            g.CurrentVae = vae;
             return (vae, true);
         }
 
@@ -418,19 +443,20 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             && altEditVae is not null
             && altEditVae.Name != "Automatic")
         {
-            vae = g.CreateVAELoader(altEditVae.ToString(g.ModelFolderFormat));
-            g.CurrentVae = WrapVae(vae);
+            JArray vaeArray = g.CreateVAELoader(altEditVae.ToString(g.ModelFolderFormat));
+            vae = WrapVae(vaeArray);
+            g.CurrentVae = vae;
             return (vae, true);
         }
 
         return (vae, mustReencode);
     }
 
-    private (JArray model, JArray clip) ApplyLoraStack(
+    private (WGNodeData model, WGNodeData clip) ApplyLoraStack(
         int stageIndex,
         int stageSectionId,
-        JArray model,
-        JArray clip)
+        WGNodeData model,
+        WGNodeData clip)
     {
         string posPrompt = g.UserInput.Get(T2IParamTypes.Prompt, "");
         string negPrompt = g.UserInput.Get(T2IParamTypes.NegativePrompt, "");
@@ -457,7 +483,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             g.UserInput.Set(T2IParamTypes.LoraWeights, loras.Weights);
             g.UserInput.Set(T2IParamTypes.LoraTencWeights, loras.TencWeights);
             g.UserInput.Set(T2IParamTypes.LoraSectionConfinement, confinements);
-            (model, clip) = g.LoadLorasForConfinement(stageSectionId, model, clip);
+            (JArray mArray, JArray cArray) = g.LoadLorasForConfinement(stageSectionId, model.Path, clip.Path);
+            model = WrapModel(mArray);
+            clip = WrapClip(cArray);
         }
 
         return (model, clip);
@@ -513,7 +541,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         return (outLoras, outWeights, outTencWeights);
     }
 
-    private void EnsureImageAvailable(JArray preEditVae)
+    private void EnsureImageAvailable(WGNodeData preEditVae)
     {
         if (g.CurrentMedia?.IsRawMedia == true)
         {
@@ -532,8 +560,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return;
         }
 
-        g.CurrentMedia = WrapLatent(currentSamples.Path)
-            .DecodeLatents(WrapVae(preEditVae), false);
+        g.CurrentMedia = currentSamples.DecodeLatents(preEditVae, false);
     }
 
     private void SavePreEditImageIfNeeded(EditStageContext ctx)
@@ -560,7 +587,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : WGNodeDataUtil.TryGetCurrentImage(g);
         if (options.ForceFromCurrentImage && currentImageOut is not null)
         {
-            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae, out JArray imageTailSamples))
+            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out JArray imageTailSamples))
             {
                 g.CurrentMedia = WrapLatent(imageTailSamples);
                 g.CurrentMedia.Width = currentImageOut.Width;
@@ -568,7 +595,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             }
             else
             {
-                string forcedEncodeNode = g.CreateVAEEncode(modelState.Vae, currentImageOut.Path);
+                string forcedEncodeNode = g.CreateVAEEncode(modelState.Vae.Path, currentImageOut.Path);
                 g.CurrentMedia = WrapLatent([forcedEncodeNode, 0]);
                 g.CurrentMedia.Width = currentImageOut.Width;
                 g.CurrentMedia.Height = currentImageOut.Height;
@@ -577,7 +604,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         if (currentImageOut is not null &&
-            VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae, out JArray reusedSamples))
+            VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out JArray reusedSamples))
         {
             g.CurrentMedia = WrapLatent(reusedSamples);
             g.CurrentMedia.Width = currentImageOut.Width;
@@ -595,13 +622,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return;
         }
 
-        string encodeNode = g.CreateVAEEncode(modelState.Vae, currentImageOut.Path);
+        string encodeNode = g.CreateVAEEncode(modelState.Vae.Path, currentImageOut.Path);
         g.CurrentMedia = WrapLatent([encodeNode, 0]);
         g.CurrentMedia.Width = currentImageOut.Width;
         g.CurrentMedia.Height = currentImageOut.Height;
     }
 
-    private JArray EnsureCurrentSamplesForEdit(JArray preferredVae)
+    private JArray EnsureCurrentSamplesForEdit(WGNodeData preferredVae)
     {
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         if (currentSamples is not null)
@@ -610,7 +637,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
-        JArray vae = preferredVae ?? g.CurrentVae.Path;
+        JArray vae = (preferredVae ?? g.CurrentVae).Path;
         if (currentImageOut is null || vae is null)
         {
             return ["10", 0];
@@ -629,16 +656,16 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         EditStageContext ctx,
         PromptParser.EditPrompts prompts)
     {
-        JArray clip = ctx.ModelState.Clip;
+        WGNodeData clip = ctx.ModelState.Clip;
         Parameters editParams = ctx.Parameters;
         int stageIndex = ctx.Stage.Id;
-        JArray currentStageVae = ctx.ModelState.Vae;
+        WGNodeData currentStageVae = ctx.ModelState.Vae;
         PromptParser.ImagePromptParseResult imageRefs = PromptParser.ParseImageTags(prompts, stageIndex);
         PromptParser.EditPrompts cleanedPrompts = imageRefs.Prompts;
         StageResolver resolver = new(g, store);
 
         List<JArray> referencedLatents = !editParams.RefineOnly
-            ? resolver.ResolveImageLatents(imageRefs.References, currentStageVae, stageIndex)
+            ? resolver.ResolveImageLatents(imageRefs.References, currentStageVae.Path, stageIndex)
             : [];
         JArray currentStageSamples = !editParams.RefineOnly
             ? EnsureCurrentSamplesForEdit(currentStageVae)
@@ -672,7 +699,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
     private string BuildPromptEncoder(
         WorkflowBridge bridge,
-        JArray clip,
+        WGNodeData clip,
         string prompt,
         Parameters editParams)
     {
@@ -686,7 +713,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 TargetHeight: editParams.Height,
                 Guidance: editParams.Guidance),
             id: $"{g.LastID++}");
-        node.Clip.ConnectFromPath(bridge, clip);
+        node.Clip.ConnectFromPath(bridge, clip.Path);
         return node.Id;
     }
 
@@ -700,7 +727,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
     private void ExecuteSampler(EditStageContext ctx)
     {
-        JArray model = ctx.ModelState.Model;
+        WGNodeData model = ctx.ModelState.Model;
         Conditioning conditioning = ctx.Conditioning;
         Parameters editParams = ctx.Parameters;
         bool hadPromptImages = g.UserInput.TryGet(T2IParamTypes.PromptImages, out List<Image> promptImages);
@@ -719,7 +746,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 throw new SwarmReadableErrorException("Base2Edit: No latent anchor is available for edit-stage sampling.");
             }
             string samplerNode = g.CreateKSampler(
-                model,
+                model.Path,
                 conditioning.Positive,
                 conditioning.Negative,
                 currentStageSamples,
@@ -755,7 +782,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return;
         }
 
-        JArray vae = ctx.ModelState.Vae;
+        WGNodeData vae = ctx.ModelState.Vae;
         bool allowFinalDecodeRetarget = options.AllowFinalDecodeRetarget;
 
         WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
@@ -763,13 +790,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         if (allowFinalDecodeRetarget &&
             currentImageOut is not null &&
             currentSamples is not null &&
-            VaeNodeReuse.TryRetargetUnconsumedVaeDecode(g, currentImageOut.Path, vae, currentSamples.Path, out JArray retargetedImage))
+            VaeNodeReuse.TryRetargetUnconsumedVaeDecode(g, currentImageOut.Path, vae.Path, currentSamples.Path, out JArray retargetedImage))
         {
             g.CurrentMedia = WrapImage(retargetedImage);
             return;
         }
 
-        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, currentSamples.Path, vae, out JArray reusedImage))
+        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, currentSamples.Path, vae.Path, out JArray reusedImage))
         {
             g.CurrentMedia = WrapImage(reusedImage);
             return;
@@ -777,13 +804,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         if (currentSamples is not null)
         {
-            g.CurrentMedia = WrapLatent(currentSamples.Path).DecodeLatents(WrapVae(vae), false);
+            g.CurrentMedia = currentSamples.DecodeLatents(vae, false);
         }
     }
 
     private (int Width, int Height) ApplyEditUpscaleIfNeeded(EditStageContext ctx)
     {
-        JArray stageVae = ctx.ModelState.Vae;
+        WGNodeData stageVae = ctx.ModelState.Vae;
         int baseWidth = Math.Max(g.CurrentMedia?.Width ?? g.UserInput.GetImageWidth(), 16);
         int baseHeight = Math.Max(g.CurrentMedia?.Height ?? g.UserInput.GetImageHeight(), 16);
         double upscale = ctx.Stage.Upscale;
@@ -828,13 +855,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             g.CurrentMedia.Width = width;
             g.CurrentMedia.Height = height;
 
-            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, upscaledImageRef, stageVae, out JArray reusedSamples))
+            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, upscaledImageRef, stageVae.Path, out JArray reusedSamples))
             {
                 g.CurrentMedia = WrapLatent(reusedSamples);
             }
             else
             {
-                g.CurrentMedia = g.CurrentMedia.EncodeToLatent(WrapVae(stageVae));
+                g.CurrentMedia = g.CurrentMedia.EncodeToLatent(stageVae);
             }
             g.CurrentMedia.Width = width;
             g.CurrentMedia.Height = height;
@@ -852,13 +879,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                     return (baseWidth, baseHeight);
                 }
 
-                if (VaeNodeReuse.ReuseVaeEncodeForImage(g, imageMedia.Path, stageVae, out JArray reusedLatent))
+                if (VaeNodeReuse.ReuseVaeEncodeForImage(g, imageMedia.Path, stageVae.Path, out JArray reusedLatent))
                 {
                     latentMedia = WrapLatent(reusedLatent);
                 }
                 else
                 {
-                    string encodeNode = g.CreateVAEEncode(stageVae, imageMedia.Path);
+                    string encodeNode = g.CreateVAEEncode(stageVae.Path, imageMedia.Path);
                     latentMedia = WrapLatent([encodeNode, 0]);
                 }
             }

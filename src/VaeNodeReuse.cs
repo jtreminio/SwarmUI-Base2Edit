@@ -8,10 +8,6 @@ namespace Base2Edit;
 
 public static class VaeNodeReuse
 {
-    /// <summary>
-    /// Re-target an existing unconsumed final decode node to point at new samples+VAE.
-    /// This avoids leaving a dangling pre-edit decode when Base2Edit runs after the normal decode step.
-    /// </summary>
     public static bool TryRetargetUnconsumedVaeDecode(
         WorkflowGenerator g,
         JArray imageRef,
@@ -40,7 +36,6 @@ public static class VaeNodeReuse
                 return false;
             }
 
-            // If this decode output already feeds any other node, treat it as in-use and do not mutate it.
             if (decode.Outputs.Count > 0
                 && bridge.Graph.FindInputsConnectedTo(decode.Outputs[0]).Count > 0)
             {
@@ -72,37 +67,24 @@ public static class VaeNodeReuse
         }
     }
 
-    /// <summary>
-    /// Find a VAEDecode node that already consumes samplesRef.
-    /// </summary>
     public static bool ReuseVaeDecodeForSamples(WorkflowGenerator g, JArray samplesRef, out JArray imageOutRef)
     {
         return TryFindConsumerNode<VAEDecodeNode>(g, samplesRef, vaeRef: null, out imageOutRef,
             "reuse existing VAEDecode node");
     }
 
-    /// <summary>
-    /// Find a VAEEncode node that already consumes imageRef and uses intendedVaeRef.
-    /// </summary>
     public static bool ReuseVaeEncodeForImage(WorkflowGenerator g, JArray imageRef, JArray intendedVaeRef, out JArray samplesOutRef)
     {
         return TryFindConsumerNode<VAEEncodeNode>(g, imageRef, intendedVaeRef, out samplesOutRef,
             "reuse existing VAEEncode node");
     }
 
-    /// <summary>
-    /// Find a VAEDecode node that already consumes samplesRef and uses intendedVaeRef.
-    /// </summary>
     public static bool ReuseVaeDecodeForSamplesAndVae(WorkflowGenerator g, JArray samplesRef, JArray intendedVaeRef, out JArray imageOutRef)
     {
         return TryFindConsumerNode<VAEDecodeNode>(g, samplesRef, intendedVaeRef, out imageOutRef,
             "reuse existing final VAEDecode node");
     }
 
-    /// <summary>
-    /// Returns true if the workflow already has a SwarmSaveImageWS or SaveImage node
-    /// connected to the given image output ref.
-    /// </summary>
     public static bool HasSaveForImage(WorkflowGenerator g, JArray imageRef)
     {
         if (imageRef is null || imageRef.Count != 2)
@@ -114,11 +96,6 @@ public static class VaeNodeReuse
             || TryFindConsumerNode<SaveImageNode>(g, imageRef, vaeRef: null, out _, "check existing save for image");
     }
 
-    /// <summary>
-    /// Searches downstream consumers of <paramref name="sourceRef"/> for a node of type
-    /// <typeparamref name="T"/>. When <paramref name="vaeRef"/> is non-null, only matches
-    /// nodes whose "vae" input is connected to that output.
-    /// </summary>
     private static bool TryFindConsumerNode<T>(
         WorkflowGenerator g,
         JArray sourceRef,

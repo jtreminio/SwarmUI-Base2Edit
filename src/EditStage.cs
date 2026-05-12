@@ -8,10 +8,10 @@ using SwarmUI.Utils;
 namespace Base2Edit;
 
 internal record ModelState(
-    JArray Model,
-    JArray Clip,
-    JArray Vae,
-    JArray PreEditVae,
+    WGNodeData Model,
+    WGNodeData Clip,
+    WGNodeData Vae,
+    WGNodeData PreEditVae,
     bool MustReencode
 );
 

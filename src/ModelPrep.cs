@@ -11,9 +11,9 @@ public static class ModelPrep
     public const string UseRefiner = "(Use Refiner)";
 
     public sealed record ModelRef(
-        JArray Model,
-        JArray Clip,
-        JArray Vae
+        WGNodeData Model,
+        WGNodeData Clip,
+        WGNodeData Vae
     );
 
     public static T2IModel TryResolveEditModel(
@@ -50,7 +50,7 @@ public static class ModelPrep
         (T2IModel _, WGNodeData modelNode, WGNodeData clipNode, WGNodeData vaeNode) =
             g.CreateModelLoader(editModel, "Edit", sectionId: sectionId);
 
-        return new ModelRef(modelNode.Path, clipNode.Path, vaeNode.Path);
+        return new ModelRef(modelNode, clipNode, vaeNode);
     }
 
     private static T2IModel ResolveEditModel(string selection, T2IModel baseModel, T2IModel refinerModel)
