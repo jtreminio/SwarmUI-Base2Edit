@@ -203,10 +203,7 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
         (string sourceType, JObject sourceInputs) = latent.SourceNodeData;
         if ((sourceType == VAEEncodeNode.ClassType || sourceType == VAEEncodeTiledNode.ClassType)
             && sourceInputs?["vae"] is JArray encodeVaePath
-            && vae.Path is JArray vaePath
-            && encodeVaePath.Count > 0
-            && vaePath.Count > 0
-            && $"{encodeVaePath[0]}" == $"{vaePath[0]}"
+            && encodeVaePath[0] == vae.Path[0]
             && sourceInputs["pixels"] is JArray pixelsPath)
         {
             return latent.WithPath(pixelsPath, WGNodeData.DT_IMAGE);
