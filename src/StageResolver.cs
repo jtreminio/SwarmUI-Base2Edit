@@ -3,7 +3,6 @@ using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using ComfyTyped.Core;
-using ComfyTyped.Generated;
 using Image = SwarmUI.Utils.Image;
 
 namespace Base2Edit;
@@ -200,15 +199,6 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
 
     private WGNodeData ToPixels(WGNodeData latent, WGNodeData vae)
     {
-        (string sourceType, JObject sourceInputs) = latent.SourceNodeData;
-        if ((sourceType == VAEEncodeNode.ClassType || sourceType == VAEEncodeTiledNode.ClassType)
-            && sourceInputs?["vae"] is JArray encodeVaePath
-            && encodeVaePath[0] == vae.Path[0]
-            && sourceInputs["pixels"] is JArray pixelsPath)
-        {
-            return latent.WithPath(pixelsPath, WGNodeData.DT_IMAGE);
-        }
-
         if (VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, latent.Path, vae.Path, out INodeOutput reusedImage))
         {
             return latent.WithPath(WorkflowBridge.ToPath(reusedImage), WGNodeData.DT_IMAGE);
