@@ -275,11 +275,11 @@ public class EditStage
         {
             return;
         }
-        (int resolvedWidth, int resolvedHeight) = ResolveImageDimensionsForAnchor(currentImageOut);
-        int anchorWidth = Math.Max(resolvedWidth, 16);
-        int anchorHeight = Math.Max(resolvedHeight, 16);
 
         using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        (int resolvedWidth, int resolvedHeight) = ResolveImageDimensionsForAnchor(bridge, currentImageOut);
+        int anchorWidth = Math.Max(resolvedWidth, 16);
+        int anchorHeight = Math.Max(resolvedHeight, 16);
 
         // Prefer resolving from the current image tail first. This avoids anchoring to a stale
         // sampler when latent media still points at refiner output but current image media has drifted
@@ -454,7 +454,7 @@ public class EditStage
         g.CurrentMedia.Height ??= height;
     }
 
-    private (int Width, int Height) ResolveImageDimensionsForAnchor(WGNodeData imageOut)
+    private (int Width, int Height) ResolveImageDimensionsForAnchor(WorkflowBridge bridge, WGNodeData imageOut)
     {
         int fallbackWidth = g.UserInput.GetImageWidth();
         int fallbackHeight = g.UserInput.GetImageHeight();
@@ -469,18 +469,13 @@ public class EditStage
         }
 
         if (imageOut.Path?.Count == 2
-            && g.Workflow.TryGetValue($"{imageOut.Path[0]}", out JToken nodeTok)
-            && nodeTok is JObject node
-            && node["inputs"] is JObject inputs)
+            && bridge.Graph.GetNode($"{imageOut.Path[0]}") is ComfyNode node)
         {
-            if (inputs.TryGetValue("width", out JToken widthTok)
-                && inputs.TryGetValue("height", out JToken heightTok)
-                && int.TryParse($"{widthTok}", out int widthFromNode)
-                && int.TryParse($"{heightTok}", out int heightFromNode)
-                && widthFromNode > 0
-                && heightFromNode > 0)
+            int? widthFromNode = node.FindInput("width").LiteralAsInt();
+            int? heightFromNode = node.FindInput("height").LiteralAsInt();
+            if (widthFromNode > 0 && heightFromNode > 0)
             {
-                return (widthFromNode, heightFromNode);
+                return (widthFromNode.Value, heightFromNode.Value);
             }
         }
 

@@ -41,8 +41,8 @@ public static class VaeNodeReuse
             }
 
             // If this decode output already feeds any other node, treat it as in-use and do not mutate it.
-            if (decode.Outputs.FirstOrDefault() is INodeOutput decodeOutput
-                && bridge.Graph.FindInputsConnectedTo(decodeOutput).Any())
+            if (decode.Outputs.Count > 0
+                && bridge.Graph.FindInputsConnectedTo(decode.Outputs[0]).Count > 0)
             {
                 return false;
             }

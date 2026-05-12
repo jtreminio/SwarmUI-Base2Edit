@@ -1,6 +1,5 @@
 using ComfyTyped.Core;
 using ComfyTyped.Generated;
-using ComfyTyped.SwarmUI;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
@@ -193,9 +192,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         // Remove orphaned pre-edit decode node if nothing else consumes it.
         ComfyNode orphanCandidate = bridge.Graph.GetNode($"{preEditConsumerSourceRef[0]}");
-        if (orphanCandidate is (VAEDecodeNode or VAEDecodeTiledNode)
-            && orphanCandidate.Outputs.FirstOrDefault() is INodeOutput orphanOutput
-            && !bridge.Graph.FindInputsConnectedTo(orphanOutput).Any())
+        if (orphanCandidate is VAEDecodeNode or VAEDecodeTiledNode
+            && orphanCandidate.Outputs.Count > 0
+            && bridge.Graph.FindInputsConnectedTo(orphanCandidate.Outputs[0]).Count == 0)
         {
             bridge.RemoveNode(orphanCandidate);
         }
@@ -269,11 +268,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             {
                 continue;
             }
-            if (node.Outputs.FirstOrDefault() is not INodeOutput output)
+            if (node.Outputs.Count == 0)
             {
                 continue;
             }
-            if (!bridge.Graph.FindInputsConnectedTo(output).Any())
+            if (bridge.Graph.FindInputsConnectedTo(node.Outputs[0]).Count == 0)
             {
                 bridge.RemoveNode(node);
             }
@@ -342,12 +341,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             }
 
             // Walk to consumer's first output and continue downstream.
-            if (imageConsumers[0].Outputs.FirstOrDefault() is not INodeOutput nextOutput)
+            ComfyNode nextNode = imageConsumers[0];
+            if (nextNode.Outputs.Count == 0)
             {
-                tailImageRef = new JArray(imageConsumers[0].Id, 0);
+                tailImageRef = new JArray(nextNode.Id, 0);
                 return false;
             }
-            current = nextOutput;
+            current = nextNode.Outputs[0];
         }
     }
 
