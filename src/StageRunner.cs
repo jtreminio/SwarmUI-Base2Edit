@@ -366,22 +366,16 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     {
         if (StringUtils.Equals(selection, ModelPrep.UseBase))
         {
-            if (store.TryGetCapturedModelState(StageRefStore.StageKind.Base, out JArray baseModel, out JArray baseClip, out JArray baseVae))
+            if (store.GetCapturedModelState(StageRefStore.StageKind.Base) is { } baseState)
             {
-                WGNodeData wbm = WrapModel(baseModel);
-                WGNodeData wbc = WrapClip(baseClip);
-                WGNodeData wbv = WrapVae(baseVae);
-                return (wbm, wbc, wbv);
+                return (baseState.Model, baseState.Clip, baseState.Vae);
             }
         }
         else if (StringUtils.Equals(selection, ModelPrep.UseRefiner))
         {
-            if (isFinalStep && store.TryGetCapturedModelState(StageRefStore.StageKind.Refiner, out JArray refinerModel, out JArray refinerClip, out JArray refinerVae))
+            if (isFinalStep && store.GetCapturedModelState(StageRefStore.StageKind.Refiner) is { } refinerState)
             {
-                WGNodeData wrm = WrapModel(refinerModel);
-                WGNodeData wrc = WrapClip(refinerClip);
-                WGNodeData wrv = WrapVae(refinerVae);
-                return (wrm, wrc, wrv);
+                return (refinerState.Model, refinerState.Clip, refinerState.Vae);
             }
 
             if (!isFinalStep)

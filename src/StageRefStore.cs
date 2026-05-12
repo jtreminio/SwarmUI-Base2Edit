@@ -30,6 +30,12 @@ public class StageRefStore(WorkflowGenerator g)
         WGNodeData Vae
     );
 
+    public sealed record CapturedModelState(
+        WGNodeData Model,
+        WGNodeData Clip,
+        WGNodeData Vae
+    );
+
     private static string StageName(StageKind kind, int? index) => kind switch
     {
         StageKind.Base => "base",
@@ -159,34 +165,20 @@ public class StageRefStore(WorkflowGenerator g)
         return removedModel || removedClip || removedMedia || removedVae;
     }
 
-    public bool TryGetCapturedModelState(
-        StageKind stageKind,
-        out JArray model,
-        out JArray clip,
-        out JArray vae)
+    public CapturedModelState? GetCapturedModelState(StageKind stageKind)
     {
-        model = null;
-        clip = null;
-        vae = null;
-
         if (!HasCaptured(stageKind))
         {
-            return false;
+            return null;
         }
-
-        StageRef stageRef = LoadStageRef(stageKind);
-
-        if (stageRef.Model?.Path is not JArray m || m.Count != 2
-            || stageRef.TextEnc?.Path is not JArray c || c.Count != 2
-            || stageRef.Vae?.Path is not JArray v || v.Count != 2)
+        StageRef r = LoadStageRef(stageKind);
+        if (r.Model?.Path is not JArray { Count: 2 }
+            || r.TextEnc?.Path is not JArray { Count: 2 }
+            || r.Vae?.Path is not JArray { Count: 2 })
         {
-            return false;
+            return null;
         }
-
-        model = m;
-        clip = c;
-        vae = v;
-        return true;
+        return new CapturedModelState(r.Model, r.TextEnc, r.Vae);
     }
 
     public static bool TryParseStageIndexKey(string rawValue, out int stageIndex)
