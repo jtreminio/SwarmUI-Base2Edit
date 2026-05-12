@@ -1,3 +1,4 @@
+using ComfyTyped.Generated;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -30,7 +31,7 @@ internal static class WorkflowAssertions
         Assert.NotNull(expectedLatentRef);
         Assert.Equal(2, expectedLatentRef.Count);
 
-        IReadOnlyList<WorkflowNode> refLatents = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refLatents = WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType);
         Assert.NotEmpty(refLatents);
 
         return refLatents.Single(n => n.Node?["inputs"] is JObject inputs
@@ -45,7 +46,7 @@ internal static class WorkflowAssertions
         Assert.NotNull(referenceLatent.Node);
 
         JArray expectedRef = new() { referenceLatent.Id, 0 };
-        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
+        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
         Assert.NotEmpty(samplers);
 
         return samplers.Single(s => HasAnyInputConnection(s.Node, expectedRef));

@@ -9,10 +9,7 @@ public readonly record struct WorkflowNode(string Id, JObject Node);
 public readonly record struct WorkflowInputConnection(string NodeId, string InputName, JArray Connection);
 
 /// <summary>
-/// Test-only workflow assertion helpers built on top of ComfyTyped's <see cref="WorkflowBridge"/>.
-/// Tests use these to inspect generated workflow shape (count nodes of a given class, find
-/// VAEDecodes by samples ref, etc.) without reimplementing the typed-graph walk in every test.
-/// Production code constructs bridges inline at call sites — see VideoStages for the pattern.
+/// Test helpers for querying generated workflow JSON via <see cref="WorkflowBridge"/>.
 /// </summary>
 public static class WorkflowQuery
 {
@@ -93,8 +90,6 @@ public static class WorkflowQuery
             {
                 return true;
             }
-            // Predicate sees the input's state *before* the retarget — the live JArray
-            // currently still points at fromOutputRef.
             JArray liveConn = LiveConnectionJArray(workflow, node.Id, input.Name, fromOutputRef);
             return shouldRetarget(new WorkflowInputConnection(node.Id, input.Name, liveConn));
         });
@@ -170,9 +165,6 @@ public static class WorkflowQuery
         }
 
         List<WorkflowNode> matches = [];
-        // Only VAEDecode is matched (legacy behavior — VAEDecodeTiled is intentionally excluded).
-        // Most Comfy graphs use "samples"; some variants may rename this input to "latent",
-        // so we accept either.
         foreach ((ComfyNode node, INodeInput input) in bridge.Graph.FindInputsConnectedTo(sourceOutput))
         {
             if (node is not VAEDecodeNode)

@@ -11,7 +11,7 @@ public class Base2EditSpecParserTests
 {
     private static T2IParamInput BuildBaseInput()
     {
-        _ = WorkflowTestHarness.Base2EditSteps();
+        WorkflowTestHarness.Base2EditSteps();
         T2IParamInput input = new(null);
         input.Set(T2IParamTypes.Prompt, "test");
         input.Set(Base2EditExtension.ApplyEditAfter, "Base");

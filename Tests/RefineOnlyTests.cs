@@ -1,3 +1,4 @@
+using ComfyTyped.Generated;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
@@ -43,7 +44,7 @@ public class RefineOnlyTests
 
     private static T2IParamInput BuildInput()
     {
-        _ = WorkflowTestHarness.Base2EditSteps();
+        WorkflowTestHarness.Base2EditSteps();
         var input = new T2IParamInput(null);
         input.Set(T2IParamTypes.Prompt, "global <edit>do the edit");
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
@@ -66,9 +67,9 @@ public class RefineOnlyTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType));
 
-        WorkflowNode sampler = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler").Single();
+        WorkflowNode sampler = NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType).Single();
         JArray positive = RequireConnectionInput(sampler.Node, "positive");
         Assert.Equal("SwarmClipTextEncodeAdvanced", RequireClassType(workflow, $"{positive[0]}"));
     }
@@ -97,11 +98,11 @@ public class RefineOnlyTests
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
         // Stage 0 uses ReferenceLatent; stage 1 (refineOnly=true) does not.
-        Assert.Single(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Single(WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType));
 
         WorkflowNode stage0Ref = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
         WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, stage0Ref);
-        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
+        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
         Assert.Equal(2, samplers.Count);
 
         WorkflowNode stage1Sampler = samplers.Single(s =>
@@ -135,9 +136,9 @@ public class RefineOnlyTests
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
+        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
         Assert.Equal(2, samplers.Count);
-        Assert.Single(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Single(WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType));
 
         WorkflowNode stage0Sampler = samplers.Single(s =>
             JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray("10", 0)));

@@ -23,7 +23,6 @@ internal static class WorkflowTestHarness
                 return;
             }
 
-            // Snapshot, init, then detect which steps were added by the extension.
             List<WorkflowGenerator.WorkflowGenStep> before = [.. WorkflowGenerator.Steps];
 
             if (T2IParamTypes.Width is null)
@@ -34,14 +33,13 @@ internal static class WorkflowTestHarness
             UnitTestStubs.EnsureComfySetClipDeviceRegistered();
             UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
 
-            var ext = new Base2EditExtension();
+            Base2EditExtension ext = new();
             ext.OnPreInit();
             ext.OnInit();
 
             List<WorkflowGenerator.WorkflowGenStep> after = [.. WorkflowGenerator.Steps];
             _base2EditSteps = after.Where(step => !before.Contains(step)).ToList();
 
-            // Restore full steps list; tests will override Steps per-run.
             WorkflowGenerator.Steps = before;
 
             if (_base2EditSteps.Count == 0)
@@ -63,7 +61,6 @@ internal static class WorkflowTestHarness
     {
         EnsureInitialized();
 
-        // Snapshot global state and restore after this generation.
         List<WorkflowGenerator.WorkflowGenStep> priorSteps = [.. WorkflowGenerator.Steps];
 
         try
@@ -71,7 +68,7 @@ internal static class WorkflowTestHarness
             WorkflowGenerator.Steps = [.. steps.OrderBy(s => s.Priority)];
             input.ApplyLateSpecialLogic();
 
-            var gen = new WorkflowGenerator
+            WorkflowGenerator gen = new()
             {
                 UserInput = input,
                 Features = [], // keep KSampler output stable (avoid SwarmKSampler path)
@@ -98,7 +95,7 @@ internal static class WorkflowTestHarness
             WorkflowGenerator.Steps = [.. steps.OrderBy(s => s.Priority)];
             input.ApplyLateSpecialLogic();
 
-            var gen = new WorkflowGenerator
+            WorkflowGenerator gen = new()
             {
                 UserInput = input,
                 Features = [],

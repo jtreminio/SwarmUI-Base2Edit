@@ -1,3 +1,4 @@
+using ComfyTyped.Generated;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Core;
@@ -16,7 +17,7 @@ public class MultiStageMergeTests
             .ToList();
 
     private static IReadOnlyList<WorkflowNode> Samplers(JObject workflow) =>
-        NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
+        NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
 
     private static JArray RequireConnectionInput(JObject node, params string[] preferredKeys)
     {
@@ -46,7 +47,7 @@ public class MultiStageMergeTests
 
     private static T2IParamInput BuildInputWithStage0(string applyAfter)
     {
-        _ = WorkflowTestHarness.Base2EditSteps();
+        WorkflowTestHarness.Base2EditSteps();
         var input = new T2IParamInput(null);
         input.Set(T2IParamTypes.Prompt, "global <edit>do the edit");
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner); // enables Base2Edit group
@@ -94,7 +95,7 @@ public class MultiStageMergeTests
         IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
         Assert.Equal(2, samplers.Count);
 
-        IReadOnlyList<WorkflowNode> refLatents = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refLatents = WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType);
         Assert.Equal(2, refLatents.Count);
 
         WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
@@ -232,7 +233,7 @@ public class MultiStageMergeTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
 
-        WorkflowNode editRefLatent = WorkflowAssertions.RequireNodeOfType(workflow, "ReferenceLatent");
+        WorkflowNode editRefLatent = WorkflowAssertions.RequireNodeOfType(workflow, ReferenceLatentNode.ClassType);
         JArray preEditLatent = RequireConnectionInput(editRefLatent.Node, "latent");
 
         IReadOnlyList<WorkflowNode> danglingPreEditDecodes = WorkflowQuery.FindVaeDecodesBySamples(workflow, preEditLatent);
@@ -268,7 +269,7 @@ public class MultiStageMergeTests
         _ = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, stage0Ref);
 
         Assert.DoesNotContain(
-            WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"),
+            WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType),
             n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray("2100", 0))
         );
     }
@@ -309,7 +310,7 @@ public class MultiStageMergeTests
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
 
         Assert.DoesNotContain(
-            WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"),
+            WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType),
             n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray("2100", 0))
         );
     }
@@ -365,7 +366,7 @@ public class MultiStageMergeTests
         WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
         WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
 
-        WorkflowNode stage1Ref = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent")
+        WorkflowNode stage1Ref = WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType)
             .Single(n => n.Id != ref0.Id);
         WorkflowNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, stage1Ref);
 
@@ -378,10 +379,10 @@ public class MultiStageMergeTests
         Assert.NotEqual($"{((JArray)s0Inputs["model"])[0]}", $"{((JArray)s1Inputs["model"])[0]}");
 
         // VAE override should introduce a VAELoader and a corresponding VAEEncode for stage1
-        WorkflowNode vaeLoader = WorkflowQuery.NodesOfType(workflow, "VAELoader").Single();
+        WorkflowNode vaeLoader = WorkflowQuery.NodesOfType(workflow, VAELoaderNode.ClassType).Single();
         Assert.Contains("UnitTest_Vae.safetensors", $"{((JObject)vaeLoader.Node["inputs"])["vae_name"]}");
 
-        WorkflowNode vaeEncode = WorkflowQuery.NodesOfType(workflow, "VAEEncode")
+        WorkflowNode vaeEncode = WorkflowQuery.NodesOfType(workflow, VAEEncodeNode.ClassType)
             .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
 
         Assert.NotNull(vaeEncode.Node);
@@ -419,10 +420,10 @@ public class MultiStageMergeTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        WorkflowNode vaeLoader = WorkflowQuery.NodesOfType(workflow, "VAELoader")
+        WorkflowNode vaeLoader = WorkflowQuery.NodesOfType(workflow, VAELoaderNode.ClassType)
             .Single(n => $"{((JObject)n.Node["inputs"])["vae_name"]}".Contains("UnitTest_RefinerVae.safetensors"));
 
-        WorkflowNode vaeEncode = WorkflowQuery.NodesOfType(workflow, "VAEEncode")
+        WorkflowNode vaeEncode = WorkflowQuery.NodesOfType(workflow, VAEEncodeNode.ClassType)
             .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
 
         Assert.NotNull(vaeEncode.Node);
@@ -460,7 +461,7 @@ public class MultiStageMergeTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        IReadOnlyList<WorkflowNode> refs = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refs = WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType);
         Assert.Equal(2, refs.Count);
 
         WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
@@ -524,7 +525,7 @@ public class MultiStageMergeTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        IReadOnlyList<WorkflowNode> refs = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refs = WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType);
         Assert.Equal(2, refs.Count);
 
         WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
@@ -537,9 +538,9 @@ public class MultiStageMergeTests
         Assert.Equal("dpmpp_2m", $"{s1Inputs["sampler_name"]}");
         Assert.Equal("karras", $"{s1Inputs["scheduler"]}");
 
-        WorkflowNode vaeLoader = WorkflowQuery.NodesOfType(workflow, "VAELoader")
+        WorkflowNode vaeLoader = WorkflowQuery.NodesOfType(workflow, VAELoaderNode.ClassType)
             .Single(n => $"{((JObject)n.Node["inputs"])["vae_name"]}".Contains("UnitTest_RefinerVae.safetensors"));
-        WorkflowNode vaeEncode = WorkflowQuery.NodesOfType(workflow, "VAEEncode")
+        WorkflowNode vaeEncode = WorkflowQuery.NodesOfType(workflow, VAEEncodeNode.ClassType)
             .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
         Assert.NotNull(vaeEncode.Node);
     }
@@ -576,7 +577,7 @@ public class MultiStageMergeTests
             WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps());
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, stepsWithRefiner);
 
-        IReadOnlyList<WorkflowNode> refLatents = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refLatents = WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType);
         Assert.Equal(2, refLatents.Count);
 
         JArray anchorRef = RequireConnectionInput(refLatents[0].Node, "latent");
@@ -589,7 +590,7 @@ public class MultiStageMergeTests
         WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, refLatents[0]);
         WorkflowNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, refLatents[1]);
 
-        IReadOnlyList<WorkflowNode> decodes = WorkflowQuery.NodesOfType(workflow, "VAEDecode");
+        IReadOnlyList<WorkflowNode> decodes = WorkflowQuery.NodesOfType(workflow, VAEDecodeNode.ClassType);
         Assert.True(decodes.Count >= 2, "Expected at least 2 VAEDecode (stage0 final + stage1 branch).");
 
         // Branch stage1 output is saved via a dedicated SaveImage (id = 1000 + 50300 + 1 = 51301)
@@ -631,7 +632,7 @@ public class MultiStageMergeTests
                 .Concat(WorkflowTestHarness.Base2EditSteps());
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, stepsWithRefinerAndWs);
 
-        IReadOnlyList<WorkflowNode> vaeDecodes = WorkflowQuery.NodesOfType(workflow, "VAEDecode");
+        IReadOnlyList<WorkflowNode> vaeDecodes = WorkflowQuery.NodesOfType(workflow, VAEDecodeNode.ClassType);
         Assert.NotEmpty(vaeDecodes);
 
         foreach (WorkflowNode decode in vaeDecodes)
@@ -733,7 +734,7 @@ public class MultiStageMergeTests
         IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
         Assert.Equal(3, samplers.Count);
 
-        IReadOnlyList<WorkflowNode> scales = WorkflowQuery.NodesOfType(workflow, "ImageScale");
+        IReadOnlyList<WorkflowNode> scales = WorkflowQuery.NodesOfType(workflow, ImageScaleNode.ClassType);
         Assert.True(scales.Count >= 3, "Expected one ImageScale per edit stage.");
     }
 
