@@ -233,7 +233,7 @@ internal static class WorkflowTestHarness
             .Concat(Template_BaseThenSegments(segmentCount).Where(s => s.Priority > -950));
 
     public static List<JObject> NodesOfType(JObject workflow, string classType) =>
-        WorkflowUtils.NodesOfType(workflow, classType)
+        WorkflowQuery.NodesOfType(workflow, classType)
             .Select(node => node.Node)
             .Where(node => node is not null)
             .ToList();

@@ -12,7 +12,7 @@ public class WorkflowTests
     private static IReadOnlyList<WorkflowNode> NodesOfAnyType(JObject workflow, params string[] classTypes) =>
         (classTypes ?? [])
             .Where(t => !string.IsNullOrWhiteSpace(t))
-            .SelectMany(t => WorkflowUtils.NodesOfType(workflow, t))
+            .SelectMany(t => WorkflowQuery.NodesOfType(workflow, t))
             .ToList();
 
     private static WorkflowNode RequireSingleNodeOfAnyType(JObject workflow, params string[] classTypes)
@@ -83,7 +83,7 @@ public class WorkflowTests
 
     private static List<string> CollectEncoderPrompts(JObject workflow)
     {
-        IReadOnlyList<WorkflowNode> encoders = WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
+        IReadOnlyList<WorkflowNode> encoders = WorkflowQuery.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced");
         Assert.NotEmpty(encoders);
 
         List<string> prompts = [];
@@ -609,8 +609,8 @@ public class WorkflowTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "VAEDecode"));
-        Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "SaveImage"));
+        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, "VAEDecode"));
+        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, "SaveImage"));
     }
 
     [Fact]
@@ -620,9 +620,9 @@ public class WorkflowTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "KSamplerAdvanced"));
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SwarmKSampler"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "KSamplerAdvanced"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "SwarmKSampler"));
     }
 
     [Fact]
@@ -632,7 +632,7 @@ public class WorkflowTests
         T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: "global <edit[1]>do stage1 edit");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
         Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
 
         List<string> prompts = CollectEncoderPrompts(workflow);
@@ -647,7 +647,7 @@ public class WorkflowTests
         T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: "global <edit[0]>do stage0 edit");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
         Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
     }
 
@@ -700,7 +700,7 @@ public class WorkflowTests
         T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: "global prompt only");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.NotEmpty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
         Assert.NotEmpty(NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler"));
 
         List<string> prompts = CollectEncoderPrompts(workflow);
@@ -1012,7 +1012,7 @@ public class WorkflowTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        IReadOnlyList<WorkflowNode> saves = WorkflowUtils.NodesOfType(workflow, "SaveImage");
+        IReadOnlyList<WorkflowNode> saves = WorkflowQuery.NodesOfType(workflow, "SaveImage");
         Assert.Single(saves);
         WorkflowNode save = saves[0];
         JArray saveImagesRef = RequireConnectionInput(save.Node, "images");
@@ -1026,7 +1026,7 @@ public class WorkflowTests
 
         // And there should be a distinct VAEDecode decoding the post-edit latent (sampler output).
         WorkflowNode sampler = RequireSingleSampler(workflow);
-        IReadOnlyList<WorkflowNode> postEditDecodes = WorkflowUtils.FindVaeDecodesBySamples(workflow, new JArray(sampler.Id, 0));
+        IReadOnlyList<WorkflowNode> postEditDecodes = WorkflowQuery.FindVaeDecodesBySamples(workflow, new JArray(sampler.Id, 0));
         Assert.NotEmpty(postEditDecodes);
         Assert.Contains(postEditDecodes, n => n.Id != preEditDecodeId);
     }
@@ -1046,9 +1046,9 @@ public class WorkflowTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
 
-        IReadOnlyList<WorkflowNode> wsSaves = WorkflowUtils.NodesOfType(workflow, "SwarmSaveImageWS");
+        IReadOnlyList<WorkflowNode> wsSaves = WorkflowQuery.NodesOfType(workflow, "SwarmSaveImageWS");
         Assert.Single(wsSaves);
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SaveImage"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "SaveImage"));
 
         WorkflowNode save = wsSaves[0];
         JArray saveImagesRef = RequireConnectionInput(save.Node, "images");
@@ -1062,7 +1062,7 @@ public class WorkflowTests
 
         // And there should be a distinct post-edit decode from the sampler output.
         WorkflowNode sampler = RequireSingleSampler(workflow);
-        IReadOnlyList<WorkflowNode> postEditDecodes = WorkflowUtils.FindVaeDecodesBySamples(workflow, new JArray(sampler.Id, 0));
+        IReadOnlyList<WorkflowNode> postEditDecodes = WorkflowQuery.FindVaeDecodesBySamples(workflow, new JArray(sampler.Id, 0));
         Assert.NotEmpty(postEditDecodes);
         Assert.Contains(postEditDecodes, n => n.Id != preEditDecodeId);
     }
@@ -1073,7 +1073,7 @@ public class WorkflowTests
         T2IParamInput input = BuildEditInput("Base");
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SaveImage"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "SaveImage"));
     }
 
     [Fact]
@@ -1142,7 +1142,7 @@ public class WorkflowTests
         WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
         Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(existingSave.Node, "images"));
 
-        IReadOnlyList<WorkflowNode> saves = WorkflowUtils.NodesOfType(workflow, "SaveImage");
+        IReadOnlyList<WorkflowNode> saves = WorkflowQuery.NodesOfType(workflow, "SaveImage");
         Assert.True(saves.Count >= 2, "Expected dedicated pre-edit save plus existing final save.");
         WorkflowNode preEditSave = saves.Single(s => s.Id != "900");
         string preEditDecodeId = $"{RequireConnectionInput(preEditSave.Node, "images")[0]}";
@@ -1161,7 +1161,7 @@ public class WorkflowTests
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
 
         // Edit-only: when we start with an image and no latents, the edit stage must VAE-encode.
-        IReadOnlyList<WorkflowNode> encodes = WorkflowUtils.NodesOfType(workflow, "VAEEncode");
+        IReadOnlyList<WorkflowNode> encodes = WorkflowQuery.NodesOfType(workflow, "VAEEncode");
         Assert.NotEmpty(encodes);
         Assert.Contains(
             encodes,
@@ -1231,7 +1231,7 @@ public class WorkflowTests
         ).ToString());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        IReadOnlyList<WorkflowNode> scales = WorkflowUtils.NodesOfType(workflow, "ImageScale");
+        IReadOnlyList<WorkflowNode> scales = WorkflowQuery.NodesOfType(workflow, "ImageScale");
         Assert.Equal(2, scales.Count);
 
         var widthsHeights = scales
@@ -1314,7 +1314,7 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        IReadOnlyList<WorkflowNode> scales = WorkflowUtils.NodesOfType(workflow, "ImageScale");
+        IReadOnlyList<WorkflowNode> scales = WorkflowQuery.NodesOfType(workflow, "ImageScale");
 
         var widthsHeights = scales
             .Select(s =>

@@ -19,7 +19,7 @@ public class B2EImageReferenceTests
     private static IReadOnlyList<WorkflowNode> NodesOfAnyType(JObject workflow, params string[] classTypes) =>
         (classTypes ?? [])
             .Where(t => !string.IsNullOrWhiteSpace(t))
-            .SelectMany(t => WorkflowUtils.NodesOfType(workflow, t))
+            .SelectMany(t => WorkflowQuery.NodesOfType(workflow, t))
             .ToList();
 
     private static IReadOnlyList<WorkflowNode> Samplers(JObject workflow) =>
@@ -114,7 +114,7 @@ public class B2EImageReferenceTests
     private static List<string> CollectEncoderPromptsIncludingEmpty(JObject workflow)
     {
         List<string> prompts = [];
-        foreach (WorkflowNode node in WorkflowUtils.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced"))
+        foreach (WorkflowNode node in WorkflowQuery.NodesOfType(workflow, "SwarmClipTextEncodeAdvanced"))
         {
             if (node.Node?["inputs"] is JObject inputs && inputs.TryGetValue("prompt", out JToken promptTok))
             {
@@ -188,17 +188,17 @@ public class B2EImageReferenceTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        WorkflowNode targetVaeLoader = WorkflowUtils.NodesOfType(workflow, "VAELoader")
+        WorkflowNode targetVaeLoader = WorkflowQuery.NodesOfType(workflow, "VAELoader")
             .Single(n => $"{((JObject)n.Node["inputs"])["vae_name"]}".Contains("UnitTest_TargetVae.safetensors"));
 
-        WorkflowNode baseDecode = WorkflowUtils.FindVaeDecodesBySamples(workflow, new JArray("10", 0)).Single();
-        WorkflowNode convertedEncode = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
+        WorkflowNode baseDecode = WorkflowQuery.FindVaeDecodesBySamples(workflow, new JArray("10", 0)).Single();
+        WorkflowNode convertedEncode = WorkflowQuery.NodesOfType(workflow, "VAEEncode")
             .Single(n =>
                 JToken.DeepEquals(((JObject)n.Node["inputs"])["pixels"], new JArray(baseDecode.Id, 0))
                 && JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(targetVaeLoader.Id, 0)));
 
         Assert.Contains(
-            WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"),
+            WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"),
             n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray(convertedEncode.Id, 0))
         );
     }
@@ -237,21 +237,21 @@ public class B2EImageReferenceTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        WorkflowNode targetVaeLoader = WorkflowUtils.NodesOfType(workflow, "VAELoader")
+        WorkflowNode targetVaeLoader = WorkflowQuery.NodesOfType(workflow, "VAELoader")
             .Single(n => $"{((JObject)n.Node["inputs"])["vae_name"]}".Contains("UnitTest_TargetVae.safetensors"));
 
-        IReadOnlyList<WorkflowNode> baseDecodes = WorkflowUtils.FindVaeDecodesBySamples(workflow, new JArray("10", 0));
+        IReadOnlyList<WorkflowNode> baseDecodes = WorkflowQuery.FindVaeDecodesBySamples(workflow, new JArray("10", 0));
         Assert.Single(baseDecodes);
         WorkflowNode baseDecode = baseDecodes[0];
 
-        IReadOnlyList<WorkflowNode> convertedEncodes = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
+        IReadOnlyList<WorkflowNode> convertedEncodes = WorkflowQuery.NodesOfType(workflow, "VAEEncode")
             .Where(n =>
                 JToken.DeepEquals(((JObject)n.Node["inputs"])["pixels"], new JArray(baseDecode.Id, 0))
                 && JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(targetVaeLoader.Id, 0)))
             .ToList();
         Assert.Single(convertedEncodes);
 
-        int refsUsingSharedEncode = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent")
+        int refsUsingSharedEncode = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent")
             .Count(n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray(convertedEncodes[0].Id, 0)));
         Assert.Equal(2, refsUsingSharedEncode);
     }
@@ -262,7 +262,7 @@ public class B2EImageReferenceTests
         T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0 <b2eimage[refiner]>");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refs = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
         Assert.Single(refs);
         Assert.True(JToken.DeepEquals(RequireConnectionInput(refs[0].Node, "latent"), new JArray("10", 0)));
     }
@@ -273,7 +273,7 @@ public class B2EImageReferenceTests
         T2IParamInput input = BuildInput("Refiner", "global <edit[0]>stage0 <b2eimage[refiner]>");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, RefinerSteps());
 
-        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refs = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
         Assert.Single(refs);
 
         WorkflowNode sampler = Samplers(workflow).Single();
@@ -338,11 +338,11 @@ public class B2EImageReferenceTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        WorkflowNode imageLoader = WorkflowUtils.NodesOfType(workflow, "LoadImage").Single();
-        WorkflowNode promptEncode = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
+        WorkflowNode imageLoader = WorkflowQuery.NodesOfType(workflow, "LoadImage").Single();
+        WorkflowNode promptEncode = WorkflowQuery.NodesOfType(workflow, "VAEEncode")
             .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["pixels"], new JArray(imageLoader.Id, 0)));
 
-        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refs = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
         Assert.Equal(2, refs.Count);
         Assert.Contains(refs, n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray(promptEncode.Id, 0)));
     }
@@ -401,10 +401,10 @@ public class B2EImageReferenceTests
             new[] { fluxSeedStep }.Concat(WorkflowTestHarness.Base2EditSteps())
         );
 
-        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refs = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
         Assert.Equal(2, refs.Count);
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "LoadImage"));
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "SwarmLoadImageB64"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "LoadImage"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "SwarmLoadImageB64"));
     }
 
     [Fact]
@@ -414,7 +414,7 @@ public class B2EImageReferenceTests
         input.Set(T2IParamTypes.PromptImages, new List<Image> { new(TinyPngBytes, MediaType.ImagePng) });
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        Assert.Single(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Single(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
     }
 
     [Fact]
@@ -423,7 +423,7 @@ public class B2EImageReferenceTests
         T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0 <b2eimage[edit0]> <b2eimage[edit1]>");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.Single(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Single(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
     }
 
     [Fact]
@@ -434,7 +434,7 @@ public class B2EImageReferenceTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
         WorkflowNode sampler = Samplers(workflow).Single();
         JArray positive = RequireConnectionInput(sampler.Node, "positive");
         Assert.Equal("SwarmClipTextEncodeAdvanced", RequireClassType(workflow, $"{positive[0]}"));

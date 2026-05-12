@@ -1,7 +1,9 @@
+using ComfyTyped.Core;
+using ComfyTyped.Generated;
+using Newtonsoft.Json.Linq;
+using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
-using SwarmUI.Builtin_ComfyUIBackend;
-using Newtonsoft.Json.Linq;
 
 namespace Base2Edit;
 
@@ -277,11 +279,13 @@ public class EditStage
         int anchorWidth = Math.Max(resolvedWidth, 16);
         int anchorHeight = Math.Max(resolvedHeight, 16);
 
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+
         // Prefer resolving from the current image tail first. This avoids anchoring to a stale
         // sampler when latent media still points at refiner output but current image media has drifted
         // into a downstream chain.
-        if (WorkflowUtils.TryResolveNearestSamplerOrDecodeAnchor(
-                g.Workflow,
+        if (TryResolveNearestAnchor(
+                bridge,
                 samplesRef: null,
                 imageRef: currentImageOut.Path,
                 out JArray imagePathSamples,
@@ -297,8 +301,8 @@ public class EditStage
         // can reach a sampler that doesn't have a direct image-path connection.
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         if (currentSamples is not null
-            && WorkflowUtils.TryResolveNearestSamplerOrDecodeAnchor(
-                g.Workflow,
+            && TryResolveNearestAnchor(
+                bridge,
                 samplesRef: currentSamples.Path,
                 imageRef: currentImageOut.Path,
                 out JArray anchorSamples,
@@ -308,6 +312,81 @@ public class EditStage
             ApplyAnchorState(anchorSamples, anchorImageOut, anchorVae);
             ApplyAnchorDimensions(anchorWidth, anchorHeight);
         }
+    }
+
+    /// <summary>
+    /// Walks upstream from the current workflow outputs and snaps to the nearest stable edit
+    /// anchor: either a sampler output (SwarmKSampler/KSamplerAdvanced) or a VAEDecode image.
+    /// Operates on the shared bridge so the two-attempt fallback in <see cref="NormalizeFinalStepAnchor"/>
+    /// pays one deserialize.
+    /// </summary>
+    private static bool TryResolveNearestAnchor(
+        WorkflowBridge bridge,
+        JArray samplesRef,
+        JArray imageRef,
+        out JArray anchorSamples,
+        out JArray anchorImageOut,
+        out JArray anchorVae)
+    {
+        anchorSamples = null;
+        anchorImageOut = null;
+        anchorVae = null;
+
+        Queue<ComfyNode> pending = new();
+        HashSet<string> visited = [];
+
+        void enqueueProducer(JArray nodeRef)
+        {
+            if (nodeRef is null || nodeRef.Count != 2)
+            {
+                return;
+            }
+            if (bridge.ResolvePath(nodeRef) is INodeOutput produced
+                && visited.Add(produced.Node.Id))
+            {
+                pending.Enqueue(produced.Node);
+            }
+        }
+
+        enqueueProducer(samplesRef);
+        enqueueProducer(imageRef);
+
+        while (pending.Count > 0)
+        {
+            ComfyNode node = pending.Dequeue();
+
+            if (node is SwarmKSamplerNode or KSamplerAdvancedNode)
+            {
+                anchorSamples = new JArray(node.Id, 0);
+                return true;
+            }
+
+            if (node is VAEDecodeNode or VAEDecodeTiledNode)
+            {
+                anchorImageOut = new JArray(node.Id, 0);
+                INodeOutput samplesConn = node.FindInput("samples")?.Connection
+                                          ?? node.FindInput("latent")?.Connection;
+                if (samplesConn is not null)
+                {
+                    anchorSamples = new JArray(samplesConn.Node.Id, samplesConn.SlotIndex);
+                }
+                if (node.FindInput("vae")?.Connection is INodeOutput vaeConn)
+                {
+                    anchorVae = new JArray(vaeConn.Node.Id, vaeConn.SlotIndex);
+                }
+                return anchorSamples is not null || anchorImageOut is not null;
+            }
+
+            foreach (INodeInput input in node.Inputs)
+            {
+                if (input.Connection?.Node is ComfyNode upstream && visited.Add(upstream.Id))
+                {
+                    pending.Enqueue(upstream);
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

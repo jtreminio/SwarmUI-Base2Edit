@@ -16,7 +16,7 @@ internal static class WorkflowAssertions
 
     public static WorkflowNode RequireNodeOfType(JObject workflow, string classType)
     {
-        foreach (WorkflowNode node in WorkflowUtils.NodesOfType(workflow, classType))
+        foreach (WorkflowNode node in WorkflowQuery.NodesOfType(workflow, classType))
         {
             return node;
         }
@@ -30,7 +30,7 @@ internal static class WorkflowAssertions
         Assert.NotNull(expectedLatentRef);
         Assert.Equal(2, expectedLatentRef.Count);
 
-        IReadOnlyList<WorkflowNode> refLatents = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<WorkflowNode> refLatents = WorkflowQuery.NodesOfType(workflow, "ReferenceLatent");
         Assert.NotEmpty(refLatents);
 
         return refLatents.Single(n => n.Node?["inputs"] is JObject inputs
@@ -53,7 +53,7 @@ internal static class WorkflowAssertions
 
     public static WorkflowNode RequireSingleVaeDecodeBySamples(JObject workflow, JArray samplesRef)
     {
-        var matches = WorkflowUtils.FindVaeDecodesBySamples(workflow, samplesRef);
+        var matches = WorkflowQuery.FindVaeDecodesBySamples(workflow, samplesRef);
         if (matches.Count != 1)
         {
             throw new InvalidOperationException($"Expected exactly one VAEDecode with samples input {samplesRef}, but found {matches.Count}.");
@@ -65,7 +65,7 @@ internal static class WorkflowAssertions
     private static IReadOnlyList<WorkflowNode> NodesOfAnyType(JObject workflow, params string[] classTypes) =>
         (classTypes ?? [])
             .Where(t => !string.IsNullOrWhiteSpace(t))
-            .SelectMany(t => WorkflowUtils.NodesOfType(workflow, t))
+            .SelectMany(t => WorkflowQuery.NodesOfType(workflow, t))
             .ToList();
 
     private static bool HasAnyInputConnection(JObject node, JArray expectedRef)

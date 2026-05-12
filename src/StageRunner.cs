@@ -60,11 +60,18 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         JArray preEditConsumerSourceRef = preEditImageTailRef;
         if (isFinalStep && currentSamples is not null)
         {
-            IReadOnlyList<WorkflowNode> preEditDecodes = WorkflowUtils.FindVaeDecodesBySamples(g.Workflow, currentSamples.Path);
-            if (preEditDecodes.Count > 0)
+            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+            if (bridge.ResolvePath(currentSamples.Path) is INodeOutput samplesOut)
             {
-                WorkflowNode decode = preEditDecodes[0];
-                preEditConsumerSourceRef = new JArray(decode.Id, 0);
+                foreach ((ComfyNode node, INodeInput input) in bridge.Graph.FindInputsConnectedTo(samplesOut))
+                {
+                    if (node is VAEDecodeNode
+                        && (StringUtils.Equals(input.Name, "samples") || StringUtils.Equals(input.Name, "latent")))
+                    {
+                        preEditConsumerSourceRef = new JArray(node.Id, 0);
+                        break;
+                    }
+                }
             }
         }
 
@@ -148,24 +155,23 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         string postEditImageNodeId = $"{postEditImageOut.Path[0]}";
-        int rewired = WorkflowUtils.RetargetInputConnections(
-            g.Workflow,
-            preEditConsumerSourceRef,
-            postEditImageOut.Path,
-            conn =>
-            {
-                if (g.Workflow[conn.NodeId] is not JObject node)
-                {
-                    return true;
-                }
-                string classType = $"{node["class_type"]}";
-                if (classType == NodeTypes.SaveImage || classType == NodeTypes.SwarmSaveImageWS)
-                {
-                    return conn.NodeId != preEditSaveNodeId;
-                }
 
-                return !WorkflowUtils.IsNodeReachableFromNode(g.Workflow, conn.NodeId, postEditImageNodeId);
-            });
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        INodeOutput from = bridge.ResolvePath(preEditConsumerSourceRef);
+        INodeOutput to = bridge.ResolvePath(postEditImageOut.Path);
+        if (from is null || to is null)
+        {
+            return;
+        }
+
+        int rewired = bridge.Graph.RetargetConnections(from, to, (node, _) =>
+        {
+            if (node is SaveImageNode or SwarmSaveImageWSNode)
+            {
+                return node.Id != preEditSaveNodeId;
+            }
+            return !IsReachableDownstream(bridge, node.Id, postEditImageNodeId);
+        });
 
         if (rewired == 0)
         {
@@ -175,28 +181,69 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         // If we rewired an existing downstream branch (eg upscaler chain),
         // keep that branch endpoint as the final output so later save nodes attach there.
         if (preEditImageTailRef is not null
-            && WorkflowUtils.IsNodeReachableFromNode(g.Workflow, postEditImageNodeId, $"{preEditImageTailRef[0]}"))
+            && IsReachableDownstream(bridge, postEditImageNodeId, $"{preEditImageTailRef[0]}"))
         {
             g.CurrentMedia = WrapImage(preEditImageTailRef);
         }
         else if (preEditImageTailRef is null
-            && TryResolveUniqueDownstreamImageTail(postEditImageOut.Path, out JArray inferredTail))
+            && TryResolveUniqueDownstreamImageTail(bridge, postEditImageOut.Path, out JArray inferredTail))
         {
             g.CurrentMedia = WrapImage(inferredTail);
         }
 
-        // Remove orphaned pre-edit decode node if nothing else consumes it
-        if (preEditConsumerSourceRef.Count == 2
-            && g.Workflow.TryGetValue($"{preEditConsumerSourceRef[0]}", out JToken sourceTok)
-            && sourceTok is JObject sourceNode)
+        // Remove orphaned pre-edit decode node if nothing else consumes it.
+        ComfyNode orphanCandidate = bridge.Graph.GetNode($"{preEditConsumerSourceRef[0]}");
+        if (orphanCandidate is (VAEDecodeNode or VAEDecodeTiledNode)
+            && orphanCandidate.Outputs.FirstOrDefault() is INodeOutput orphanOutput
+            && !bridge.Graph.FindInputsConnectedTo(orphanOutput).Any())
         {
-            string classType = $"{sourceNode["class_type"]}";
-            if ((classType == NodeTypes.VAEDecode || classType == NodeTypes.VAEDecodeTiled)
-                && WorkflowUtils.FindInputConnections(g.Workflow, preEditConsumerSourceRef).Count == 0)
+            bridge.RemoveNode(orphanCandidate);
+        }
+    }
+
+    /// <summary>
+    /// BFS from <paramref name="startNodeId"/> downstream (following each node's outputs to their
+    /// consumers) looking for <paramref name="targetNodeId"/>. Operates on the shared bridge so
+    /// callers reusing it across multiple reachability checks pay one deserialize.
+    /// </summary>
+    private static bool IsReachableDownstream(WorkflowBridge bridge, string startNodeId, string targetNodeId)
+    {
+        if (string.IsNullOrWhiteSpace(startNodeId) || string.IsNullOrWhiteSpace(targetNodeId))
+        {
+            return false;
+        }
+        if (startNodeId == targetNodeId)
+        {
+            return true;
+        }
+        if (bridge.Graph.GetNode(startNodeId) is not ComfyNode start)
+        {
+            return false;
+        }
+
+        Queue<ComfyNode> pending = new();
+        HashSet<string> visited = [startNodeId];
+        pending.Enqueue(start);
+        while (pending.Count > 0)
+        {
+            ComfyNode current = pending.Dequeue();
+            foreach (INodeOutput output in current.Outputs)
             {
-                _ = g.Workflow.Remove($"{preEditConsumerSourceRef[0]}");
+                foreach (ComfyNode consumer in bridge.Graph.FindDownstream(output))
+                {
+                    if (!visited.Add(consumer.Id))
+                    {
+                        continue;
+                    }
+                    if (consumer.Id == targetNodeId)
+                    {
+                        return true;
+                    }
+                    pending.Enqueue(consumer);
+                }
             }
         }
+        return false;
     }
 
     /// <summary>
@@ -208,28 +255,27 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     {
         WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
         string keepNodeId = currentImageOut is not null ? $"{currentImageOut.Path[0]}" : null;
-        List<WorkflowNode> candidates =
+
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        List<ComfyNode> candidates =
         [
-            .. WorkflowUtils.NodesOfType(g.Workflow, NodeTypes.VAEDecode),
-            .. WorkflowUtils.NodesOfType(g.Workflow, NodeTypes.VAEDecodeTiled)
+            .. bridge.Graph.NodesOfType<VAEDecodeNode>(),
+            .. bridge.Graph.NodesOfType<VAEDecodeTiledNode>()
         ];
 
-        foreach (WorkflowNode node in candidates)
+        foreach (ComfyNode node in candidates)
         {
-            if (node.Node is null)
-            {
-                continue;
-            }
-
             if (!string.IsNullOrWhiteSpace(keepNodeId) && node.Id == keepNodeId)
             {
                 continue;
             }
-
-            JArray outRef = new(node.Id, 0);
-            if (WorkflowUtils.FindInputConnections(g.Workflow, outRef).Count == 0)
+            if (node.Outputs.FirstOrDefault() is not INodeOutput output)
             {
-                _ = g.Workflow.Remove(node.Id);
+                continue;
+            }
+            if (!bridge.Graph.FindInputsConnectedTo(output).Any())
+            {
+                bridge.RemoveNode(node);
             }
         }
     }
@@ -240,7 +286,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     /// an upscaler pipeline). Returns false if the chain branches or loops. Save nodes are
     /// ignored so they don't cut the walk short.
     /// </summary>
-    private bool TryResolveUniqueDownstreamImageTail(JArray startImageRef, out JArray tailImageRef)
+    private static bool TryResolveUniqueDownstreamImageTail(
+        WorkflowBridge bridge,
+        JArray startImageRef,
+        out JArray tailImageRef)
     {
         tailImageRef = startImageRef;
         if (startImageRef is null || startImageRef.Count != 2)
@@ -251,50 +300,54 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         static bool IsImageFlowInputName(string inputName) =>
             inputName == "image" || inputName == "images" || inputName == "image_pass";
 
+        if (bridge.ResolvePath(startImageRef) is not INodeOutput startOutput)
+        {
+            return false;
+        }
+
         HashSet<string> visited = [];
-        JArray current = new(startImageRef[0], startImageRef[1]);
+        INodeOutput current = startOutput;
 
         while (true)
         {
-            string currentKey = $"{current[0]}:{current[1]}";
+            string currentKey = $"{current.Node.Id}:{current.SlotIndex}";
             if (!visited.Add(currentKey))
             {
                 return false;
             }
 
-            List<WorkflowInputConnection> imageConsumers = [];
-            foreach (WorkflowInputConnection conn in WorkflowUtils.FindInputConnections(g.Workflow, current))
+            List<ComfyNode> imageConsumers = [];
+            foreach ((ComfyNode node, INodeInput input) in bridge.Graph.FindInputsConnectedTo(current))
             {
-                if (!IsImageFlowInputName(conn.InputName))
+                if (!IsImageFlowInputName(input.Name))
                 {
                     continue;
                 }
-                if (g.Workflow[conn.NodeId] is not JObject node)
+                if (node is SaveImageNode or SwarmSaveImageWSNode)
                 {
                     continue;
                 }
-
-                string classType = $"{node["class_type"]}";
-                if (classType == NodeTypes.SaveImage || classType == NodeTypes.SwarmSaveImageWS)
-                {
-                    continue;
-                }
-                imageConsumers.Add(conn);
+                imageConsumers.Add(node);
             }
 
             if (imageConsumers.Count == 0)
             {
-                tailImageRef = current;
+                tailImageRef = new JArray(current.Node.Id, current.SlotIndex);
                 return true;
             }
             if (imageConsumers.Count > 1)
             {
-                tailImageRef = current;
+                tailImageRef = new JArray(current.Node.Id, current.SlotIndex);
                 return false;
             }
 
-            WorkflowInputConnection onlyConsumer = imageConsumers[0];
-            current = new JArray(onlyConsumer.NodeId, 0);
+            // Walk to consumer's first output and continue downstream.
+            if (imageConsumers[0].Outputs.FirstOrDefault() is not INodeOutput nextOutput)
+            {
+                tailImageRef = new JArray(imageConsumers[0].Id, 0);
+                return false;
+            }
+            current = nextOutput;
         }
     }
 

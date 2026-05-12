@@ -11,7 +11,7 @@ public class RefineOnlyTests
     private static IReadOnlyList<WorkflowNode> NodesOfAnyType(JObject workflow, params string[] classTypes) =>
         (classTypes ?? [])
             .Where(t => !string.IsNullOrWhiteSpace(t))
-            .SelectMany(t => WorkflowUtils.NodesOfType(workflow, t))
+            .SelectMany(t => WorkflowQuery.NodesOfType(workflow, t))
             .ToList();
 
     private static JArray RequireConnectionInput(JObject node, params string[] preferredKeys)
@@ -66,7 +66,7 @@ public class RefineOnlyTests
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
-        Assert.Empty(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Empty(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
 
         WorkflowNode sampler = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler").Single();
         JArray positive = RequireConnectionInput(sampler.Node, "positive");
@@ -97,7 +97,7 @@ public class RefineOnlyTests
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
         // Stage 0 uses ReferenceLatent; stage 1 (refineOnly=true) does not.
-        Assert.Single(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Single(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
 
         WorkflowNode stage0Ref = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
         WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, stage0Ref);
@@ -137,7 +137,7 @@ public class RefineOnlyTests
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
         IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
         Assert.Equal(2, samplers.Count);
-        Assert.Single(WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"));
+        Assert.Single(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
 
         WorkflowNode stage0Sampler = samplers.Single(s =>
             JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray("10", 0)));

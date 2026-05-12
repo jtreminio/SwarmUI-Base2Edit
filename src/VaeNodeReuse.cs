@@ -1,4 +1,5 @@
-using System;
+using ComfyTyped.Core;
+using ComfyTyped.Generated;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Utils;
@@ -27,50 +28,41 @@ public static class VaeNodeReuse
 
         try
         {
-            string nodeId = $"{imageRef[0]}";
-            string outIdx = $"{imageRef[1]}";
-            if (outIdx != "0")
+            if ($"{imageRef[1]}" != "0")
             {
                 return false;
             }
 
-            if (g.Workflow[nodeId] is not JObject nodeObj)
-            {
-                return false;
-            }
-
-            string classType = $"{nodeObj["class_type"]}";
-            if (classType != NodeTypes.VAEDecode && classType != NodeTypes.VAEDecodeTiled)
+            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+            ComfyNode decode = bridge.Graph.GetNode($"{imageRef[0]}");
+            if (decode is not (VAEDecodeNode or VAEDecodeTiledNode))
             {
                 return false;
             }
 
             // If this decode output already feeds any other node, treat it as in-use and do not mutate it.
-            if (WorkflowUtils.FindInputConnections(g.Workflow, imageRef).Count > 0)
+            if (decode.Outputs.FirstOrDefault() is INodeOutput decodeOutput
+                && bridge.Graph.FindInputsConnectedTo(decodeOutput).Any())
             {
                 return false;
             }
 
-            if (nodeObj["inputs"] is not JObject inputs)
+            INodeOutput intendedVae = bridge.ResolvePath(intendedVaeRef);
+            INodeOutput samples = bridge.ResolvePath(samplesRef);
+            if (intendedVae is null || samples is null)
             {
                 return false;
             }
 
-            inputs["vae"] = new JArray(intendedVaeRef[0], intendedVaeRef[1]);
-            if (inputs.ContainsKey("samples"))
-            {
-                inputs["samples"] = new JArray(samplesRef[0], samplesRef[1]);
-            }
-            else if (inputs.ContainsKey("latent"))
-            {
-                inputs["latent"] = new JArray(samplesRef[0], samplesRef[1]);
-            }
-            else
+            INodeInput samplesInput = decode.FindInput("samples") ?? decode.FindInput("latent");
+            if (samplesInput is null)
             {
                 return false;
             }
+            decode.FindInput("vae")?.ConnectToUntyped(intendedVae);
+            samplesInput.ConnectToUntyped(samples);
 
-            imageOutRef = [nodeId, 0];
+            imageOutRef = [decode.Id, 0];
             return true;
         }
         catch (Exception ex)
@@ -85,7 +77,7 @@ public static class VaeNodeReuse
     /// </summary>
     public static bool ReuseVaeDecodeForSamples(WorkflowGenerator g, JArray samplesRef, out JArray imageOutRef)
     {
-        return TryFindConsumerNode(g, samplesRef, NodeTypes.VAEDecode, vaeRef: null, out imageOutRef,
+        return TryFindConsumerNode<VAEDecodeNode>(g, samplesRef, vaeRef: null, out imageOutRef,
             "reuse existing VAEDecode node");
     }
 
@@ -94,7 +86,7 @@ public static class VaeNodeReuse
     /// </summary>
     public static bool ReuseVaeEncodeForImage(WorkflowGenerator g, JArray imageRef, JArray intendedVaeRef, out JArray samplesOutRef)
     {
-        return TryFindConsumerNode(g, imageRef, NodeTypes.VAEEncode, intendedVaeRef, out samplesOutRef,
+        return TryFindConsumerNode<VAEEncodeNode>(g, imageRef, intendedVaeRef, out samplesOutRef,
             "reuse existing VAEEncode node");
     }
 
@@ -103,7 +95,7 @@ public static class VaeNodeReuse
     /// </summary>
     public static bool ReuseVaeDecodeForSamplesAndVae(WorkflowGenerator g, JArray samplesRef, JArray intendedVaeRef, out JArray imageOutRef)
     {
-        return TryFindConsumerNode(g, samplesRef, NodeTypes.VAEDecode, intendedVaeRef, out imageOutRef,
+        return TryFindConsumerNode<VAEDecodeNode>(g, samplesRef, intendedVaeRef, out imageOutRef,
             "reuse existing final VAEDecode node");
     }
 
@@ -118,22 +110,22 @@ public static class VaeNodeReuse
             return false;
         }
 
-        return TryFindConsumerNode(g, imageRef, NodeTypes.SwarmSaveImageWS, vaeRef: null, out _, "check existing save for image")
-            || TryFindConsumerNode(g, imageRef, NodeTypes.SaveImage, vaeRef: null, out _, "check existing save for image");
+        return TryFindConsumerNode<SwarmSaveImageWSNode>(g, imageRef, vaeRef: null, out _, "check existing save for image")
+            || TryFindConsumerNode<SaveImageNode>(g, imageRef, vaeRef: null, out _, "check existing save for image");
     }
 
     /// <summary>
-    /// Searches downstream consumers of <paramref name="sourceRef"/> for a node matching
-    /// <paramref name="classType"/>. When <paramref name="vaeRef"/> is non-null, only matches
-    /// nodes whose "vae" input equals the given ref.
+    /// Searches downstream consumers of <paramref name="sourceRef"/> for a node of type
+    /// <typeparamref name="T"/>. When <paramref name="vaeRef"/> is non-null, only matches
+    /// nodes whose "vae" input is connected to that output.
     /// </summary>
-    private static bool TryFindConsumerNode(
+    private static bool TryFindConsumerNode<T>(
         WorkflowGenerator g,
         JArray sourceRef,
-        string classType,
         JArray vaeRef,
         out JArray outRef,
         string debugLabel)
+        where T : ComfyNode
     {
         outRef = null;
 
@@ -144,24 +136,36 @@ public static class VaeNodeReuse
 
         try
         {
-            foreach (var conn in WorkflowUtils.FindInputConnections(g.Workflow, sourceRef))
+            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+            if (bridge.ResolvePath(sourceRef) is not INodeOutput sourceOutput)
             {
-                if (g.Workflow[conn.NodeId] is not JObject nodeObj || $"{nodeObj["class_type"]}" != classType)
+                return false;
+            }
+
+            INodeOutput expectedVae = vaeRef is not null ? bridge.ResolvePath(vaeRef) : null;
+            if (vaeRef is not null && expectedVae is null)
+            {
+                return false;
+            }
+
+            foreach ((ComfyNode node, _) in bridge.Graph.FindInputsConnectedTo(sourceOutput))
+            {
+                if (node is not T)
                 {
                     continue;
                 }
 
-                if (vaeRef is not null)
+                if (expectedVae is not null)
                 {
-                    if (nodeObj["inputs"] is not JObject inputs
-                        || !inputs.TryGetValue("vae", out JToken vaeTok)
-                        || !JToken.DeepEquals(vaeTok, vaeRef))
+                    if (node.FindInput("vae")?.Connection is not INodeOutput vaeConn
+                        || vaeConn.Node.Id != expectedVae.Node.Id
+                        || vaeConn.SlotIndex != expectedVae.SlotIndex)
                     {
                         continue;
                     }
                 }
 
-                outRef = [conn.NodeId, 0];
+                outRef = [node.Id, 0];
                 return true;
             }
 
