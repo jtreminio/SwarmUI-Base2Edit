@@ -543,9 +543,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
-        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamples(g, currentSamples.Path, out JArray reusedImage))
+        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamples(g, currentSamples.Path, out INodeOutput reusedImage))
         {
-            g.CurrentMedia = WrapImage(reusedImage);
+            g.CurrentMedia = WrapImage(WorkflowBridge.ToPath(reusedImage));
             return;
         }
 
@@ -581,9 +581,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : WGNodeDataUtil.TryGetCurrentImage(g);
         if (options.ForceFromCurrentImage && currentImageOut is not null)
         {
-            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out JArray imageTailSamples))
+            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out INodeOutput imageTailSamples))
             {
-                g.CurrentMedia = WrapLatent(imageTailSamples);
+                g.CurrentMedia = WrapLatent(WorkflowBridge.ToPath(imageTailSamples));
                 g.CurrentMedia.Width = currentImageOut.Width;
                 g.CurrentMedia.Height = currentImageOut.Height;
             }
@@ -598,9 +598,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         if (currentImageOut is not null &&
-            VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out JArray reusedSamples))
+            VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out INodeOutput reusedSamples))
         {
-            g.CurrentMedia = WrapLatent(reusedSamples);
+            g.CurrentMedia = WrapLatent(WorkflowBridge.ToPath(reusedSamples));
             g.CurrentMedia.Width = currentImageOut.Width;
             g.CurrentMedia.Height = currentImageOut.Height;
             return;
@@ -637,9 +637,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return ["10", 0];
         }
 
-        if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, vae, out JArray reusedSamples))
+        if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, vae, out INodeOutput reusedSamples))
         {
-            return reusedSamples;
+            return WorkflowBridge.ToPath(reusedSamples);
         }
 
         string encodeNode = g.CreateVAEEncode(vae, currentImageOut.Path);
@@ -784,15 +784,15 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         if (allowFinalDecodeRetarget &&
             currentImageOut is not null &&
             currentSamples is not null &&
-            VaeNodeReuse.TryRetargetUnconsumedVaeDecode(g, currentImageOut.Path, vae.Path, currentSamples.Path, out JArray retargetedImage))
+            VaeNodeReuse.TryRetargetUnconsumedVaeDecode(g, currentImageOut.Path, vae.Path, currentSamples.Path, out INodeOutput retargetedImage))
         {
-            g.CurrentMedia = WrapImage(retargetedImage);
+            g.CurrentMedia = WrapImage(WorkflowBridge.ToPath(retargetedImage));
             return;
         }
 
-        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, currentSamples.Path, vae.Path, out JArray reusedImage))
+        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, currentSamples.Path, vae.Path, out INodeOutput reusedImage))
         {
-            g.CurrentMedia = WrapImage(reusedImage);
+            g.CurrentMedia = WrapImage(WorkflowBridge.ToPath(reusedImage));
             return;
         }
 
@@ -849,9 +849,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             g.CurrentMedia.Width = width;
             g.CurrentMedia.Height = height;
 
-            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, upscaledImageRef, stageVae.Path, out JArray reusedSamples))
+            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, upscaledImageRef, stageVae.Path, out INodeOutput reusedSamples))
             {
-                g.CurrentMedia = WrapLatent(reusedSamples);
+                g.CurrentMedia = WrapLatent(WorkflowBridge.ToPath(reusedSamples));
             }
             else
             {
@@ -873,9 +873,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                     return (baseWidth, baseHeight);
                 }
 
-                if (VaeNodeReuse.ReuseVaeEncodeForImage(g, imageMedia.Path, stageVae.Path, out JArray reusedLatent))
+                if (VaeNodeReuse.ReuseVaeEncodeForImage(g, imageMedia.Path, stageVae.Path, out INodeOutput reusedLatent))
                 {
-                    latentMedia = WrapLatent(reusedLatent);
+                    latentMedia = WrapLatent(WorkflowBridge.ToPath(reusedLatent));
                 }
                 else
                 {

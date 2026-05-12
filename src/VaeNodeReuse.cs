@@ -13,9 +13,9 @@ public static class VaeNodeReuse
         JArray imageRef,
         JArray intendedVaeRef,
         JArray samplesRef,
-        out JArray imageOutRef)
+        out INodeOutput imageOut)
     {
-        imageOutRef = null;
+        imageOut = null;
 
         if (imageRef is null || intendedVaeRef is null || samplesRef is null || imageRef.Count != 2)
         {
@@ -57,7 +57,7 @@ public static class VaeNodeReuse
             decode.FindInput("vae")?.ConnectToUntyped(intendedVae);
             samplesInput.ConnectToUntyped(samples);
 
-            imageOutRef = [decode.Id, 0];
+            imageOut = decode.FindOutput(0);
             return true;
         }
         catch (Exception ex)
@@ -67,21 +67,21 @@ public static class VaeNodeReuse
         }
     }
 
-    public static bool ReuseVaeDecodeForSamples(WorkflowGenerator g, JArray samplesRef, out JArray imageOutRef)
+    public static bool ReuseVaeDecodeForSamples(WorkflowGenerator g, JArray samplesRef, out INodeOutput imageOut)
     {
-        return TryFindConsumerNode<VAEDecodeNode>(g, samplesRef, vaeRef: null, out imageOutRef,
+        return TryFindConsumerNode<VAEDecodeNode>(g, samplesRef, vaeRef: null, out imageOut,
             "reuse existing VAEDecode node");
     }
 
-    public static bool ReuseVaeEncodeForImage(WorkflowGenerator g, JArray imageRef, JArray intendedVaeRef, out JArray samplesOutRef)
+    public static bool ReuseVaeEncodeForImage(WorkflowGenerator g, JArray imageRef, JArray intendedVaeRef, out INodeOutput samplesOut)
     {
-        return TryFindConsumerNode<VAEEncodeNode>(g, imageRef, intendedVaeRef, out samplesOutRef,
+        return TryFindConsumerNode<VAEEncodeNode>(g, imageRef, intendedVaeRef, out samplesOut,
             "reuse existing VAEEncode node");
     }
 
-    public static bool ReuseVaeDecodeForSamplesAndVae(WorkflowGenerator g, JArray samplesRef, JArray intendedVaeRef, out JArray imageOutRef)
+    public static bool ReuseVaeDecodeForSamplesAndVae(WorkflowGenerator g, JArray samplesRef, JArray intendedVaeRef, out INodeOutput imageOut)
     {
-        return TryFindConsumerNode<VAEDecodeNode>(g, samplesRef, intendedVaeRef, out imageOutRef,
+        return TryFindConsumerNode<VAEDecodeNode>(g, samplesRef, intendedVaeRef, out imageOut,
             "reuse existing final VAEDecode node");
     }
 
@@ -100,7 +100,7 @@ public static class VaeNodeReuse
         WorkflowGenerator g,
         JArray sourceRef,
         JArray vaeRef,
-        out JArray outRef,
+        out INodeOutput outRef,
         string debugLabel)
         where T : ComfyNode
     {
@@ -142,7 +142,7 @@ public static class VaeNodeReuse
                     }
                 }
 
-                outRef = [node.Id, 0];
+                outRef = node.FindOutput(0);
                 return true;
             }
 

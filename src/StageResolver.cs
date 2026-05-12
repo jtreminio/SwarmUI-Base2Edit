@@ -2,6 +2,7 @@ using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
+using ComfyTyped.Core;
 using ComfyTyped.Generated;
 using Image = SwarmUI.Utils.Image;
 
@@ -169,9 +170,9 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
 
         if (!media.IsLatentData)
         {
-            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, media.Path, targetVae.Path, out JArray reusedEncoded))
+            if (VaeNodeReuse.ReuseVaeEncodeForImage(g, media.Path, targetVae.Path, out INodeOutput reusedEncoded))
             {
-                return CloneNodeRef(reusedEncoded);
+                return CloneNodeRef(WorkflowBridge.ToPath(reusedEncoded));
             }
 
             return CloneNodeRef(media.AsLatentImage(targetVae).Path);
@@ -189,9 +190,9 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
         }
 
         WGNodeData pixels = ToPixels(media, sourceVae);
-        if (VaeNodeReuse.ReuseVaeEncodeForImage(g, pixels.Path, targetVae.Path, out JArray reusedLatent))
+        if (VaeNodeReuse.ReuseVaeEncodeForImage(g, pixels.Path, targetVae.Path, out INodeOutput reusedLatent))
         {
-            return CloneNodeRef(reusedLatent);
+            return CloneNodeRef(WorkflowBridge.ToPath(reusedLatent));
         }
 
         return CloneNodeRef(pixels.AsLatentImage(targetVae).Path);
@@ -211,9 +212,9 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
             return latent.WithPath(pixelsPath, WGNodeData.DT_IMAGE);
         }
 
-        if (VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, latent.Path, vae.Path, out JArray reusedImage))
+        if (VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, latent.Path, vae.Path, out INodeOutput reusedImage))
         {
-            return latent.WithPath(reusedImage, WGNodeData.DT_IMAGE);
+            return latent.WithPath(WorkflowBridge.ToPath(reusedImage), WGNodeData.DT_IMAGE);
         }
 
         return latent.AsRawImage(vae);
