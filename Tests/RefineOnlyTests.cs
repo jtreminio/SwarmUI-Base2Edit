@@ -10,32 +10,21 @@ namespace Base2Edit.Tests;
 [Collection("Base2EditTests")]
 public class RefineOnlyTests
 {
-    private static JArray RequireConnectionInput(JObject node, params string[] preferredKeys)
-    {
-        Assert.NotNull(node);
-        Assert.True(node["inputs"] is JObject, "Expected node to have an 'inputs' object.");
-        JObject inputs = (JObject)node["inputs"];
-
-        foreach (string key in preferredKeys ?? [])
+    private static INodeOutput PositiveConnection(ComfyNode sampler) =>
+        sampler switch
         {
-            if (!string.IsNullOrWhiteSpace(key) && inputs.TryGetValue(key, out JToken tok) && tok is JArray arr && arr.Count == 2)
-            {
-                return arr;
-            }
-        }
+            KSamplerAdvancedNode ks => ks.Positive.Connection,
+            SwarmKSamplerNode sk    => sk.Positive.Connection,
+            _                       => null
+        };
 
-        Assert.Fail("Expected at least one [nodeId, outputIndex] connection input.");
-        return null;
-    }
-
-    private static string RequireClassType(JObject workflow, string nodeId)
-    {
-        Assert.True(workflow.TryGetValue(nodeId, out JToken tok), $"Expected workflow node '{nodeId}' to exist.");
-        Assert.True(tok is JObject, $"Expected workflow node '{nodeId}' to be an object.");
-        JObject obj = (JObject)tok;
-        Assert.True(obj.TryGetValue("class_type", out JToken classType), $"Expected workflow node '{nodeId}' to have class_type.");
-        return $"{classType}";
-    }
+    private static INodeOutput LatentImageConnection(ComfyNode sampler) =>
+        sampler switch
+        {
+            KSamplerAdvancedNode ks => ks.LatentImage.Connection,
+            SwarmKSamplerNode sk    => sk.LatentImage.Connection,
+            _                       => null
+        };
 
     private static T2IParamInput BuildInput()
     {
@@ -60,14 +49,14 @@ public class RefineOnlyTests
         T2IParamInput input = BuildInput();
         input.Set(Base2EditExtension.EditRefineOnly, true);
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
         Assert.Empty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
 
         ComfyNode sampler = WorkflowQuery.Samplers(bridge).Single();
-        JArray positive = RequireConnectionInput((JObject)workflow[sampler.Id], "positive");
-        Assert.Equal("SwarmClipTextEncodeAdvanced", RequireClassType(workflow, $"{positive[0]}"));
+        INodeOutput positiveConn = PositiveConnection(sampler);
+        Assert.NotNull(positiveConn);
+        Assert.IsType<SwarmClipTextEncodeAdvancedNode>(positiveConn.Node);
     }
 
     [Fact]
@@ -91,8 +80,7 @@ public class RefineOnlyTests
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
         // Stage 0 uses ReferenceLatent; stage 1 (refineOnly=true) does not.
         Assert.Single(bridge.Graph.NodesOfType<ReferenceLatentNode>());
@@ -103,10 +91,14 @@ public class RefineOnlyTests
         Assert.Equal(2, samplers.Count);
 
         ComfyNode stage1Sampler = samplers.Single(s =>
-            JToken.DeepEquals(RequireConnectionInput((JObject)workflow[s.Id], "latent_image", "latent"), new JArray(stage0Sampler.Id, 0)));
+        {
+            INodeOutput latConn = LatentImageConnection(s);
+            return latConn?.Node.Id == stage0Sampler.Id && latConn.SlotIndex == 0;
+        });
 
-        JArray stage1Positive = RequireConnectionInput((JObject)workflow[stage1Sampler.Id], "positive");
-        Assert.Equal("SwarmClipTextEncodeAdvanced", RequireClassType(workflow, $"{stage1Positive[0]}"));
+        INodeOutput stage1PositiveConn = PositiveConnection(stage1Sampler);
+        Assert.NotNull(stage1PositiveConn);
+        Assert.IsType<SwarmClipTextEncodeAdvancedNode>(stage1PositiveConn.Node);
     }
 
     [Fact]
@@ -132,20 +124,28 @@ public class RefineOnlyTests
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
         IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
         Assert.Equal(2, samplers.Count);
         Assert.Single(bridge.Graph.NodesOfType<ReferenceLatentNode>());
 
         ComfyNode stage0Sampler = samplers.Single(s =>
-            JToken.DeepEquals(RequireConnectionInput((JObject)workflow[s.Id], "latent_image", "latent"), new JArray("10", 0)));
-        JArray stage0Positive = RequireConnectionInput((JObject)workflow[stage0Sampler.Id], "positive");
-        Assert.Equal("SwarmClipTextEncodeAdvanced", RequireClassType(workflow, $"{stage0Positive[0]}"));
+        {
+            INodeOutput latConn = LatentImageConnection(s);
+            return latConn?.Node.Id == "10" && latConn.SlotIndex == 0;
+        });
+
+        INodeOutput stage0PositiveConn = PositiveConnection(stage0Sampler);
+        Assert.NotNull(stage0PositiveConn);
+        Assert.IsType<SwarmClipTextEncodeAdvancedNode>(stage0PositiveConn.Node);
 
         ReferenceLatentNode stage1Ref = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray(stage0Sampler.Id, 0)));
         ComfyNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, stage1Ref);
-        Assert.True(JToken.DeepEquals(RequireConnectionInput((JObject)workflow[stage1Sampler.Id], "positive"), new JArray(stage1Ref.Id, 0)));
+
+        INodeOutput stage1PositiveConn = PositiveConnection(stage1Sampler);
+        Assert.NotNull(stage1PositiveConn);
+        Assert.Equal(stage1Ref.Id, stage1PositiveConn.Node.Id);
+        Assert.Equal(0, stage1PositiveConn.SlotIndex);
     }
 }
