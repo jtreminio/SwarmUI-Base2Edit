@@ -1,3 +1,4 @@
+using ComfyTyped.Core;
 using ComfyTyped.Generated;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -6,79 +7,76 @@ namespace Base2Edit.Tests;
 
 internal static class WorkflowAssertions
 {
-    public static WorkflowNode RequireNodeById(JObject workflow, string id)
+    public static T RequireNodeById<T>(WorkflowBridge bridge, string id) where T : ComfyNode
     {
-        Assert.NotNull(workflow);
-        Assert.False(string.IsNullOrWhiteSpace(id));
-        Assert.True(workflow.TryGetValue(id, out JToken tok), $"Expected workflow to contain node id '{id}'.");
-        Assert.True(tok is JObject, $"Expected workflow node '{id}' to be an object.");
-        return new WorkflowNode(id, (JObject)tok);
+        ArgumentNullException.ThrowIfNull(bridge);
+        T node = bridge.Graph.GetNode<T>(id);
+        Assert.NotNull(node);
+        return node;
     }
 
-    public static WorkflowNode RequireNodeOfType(JObject workflow, string classType)
+    public static ComfyNode RequireNodeById(WorkflowBridge bridge, string id)
     {
-        foreach (WorkflowNode node in WorkflowQuery.NodesOfType(workflow, classType))
+        ArgumentNullException.ThrowIfNull(bridge);
+        ComfyNode node = bridge.Graph.GetNode(id);
+        Assert.NotNull(node);
+        return node;
+    }
+
+    public static T RequireNodeOfType<T>(WorkflowBridge bridge) where T : ComfyNode
+    {
+        ArgumentNullException.ThrowIfNull(bridge);
+        T node = bridge.Graph.NodesOfType<T>().FirstOrDefault();
+        Assert.NotNull(node);
+        return node;
+    }
+
+    public static ComfyNode RequireNodeOfType(WorkflowBridge bridge, string classType)
+    {
+        ArgumentNullException.ThrowIfNull(bridge);
+        ComfyNode node = WorkflowQuery.NodesOfType(bridge, classType).FirstOrDefault();
+        Assert.NotNull(node);
+        return node;
+    }
+
+    public static ReferenceLatentNode RequireReferenceLatentByLatentInput(WorkflowBridge bridge, INodeOutput expectedLatentOutput)
+    {
+        ArgumentNullException.ThrowIfNull(bridge);
+        ArgumentNullException.ThrowIfNull(expectedLatentOutput);
+
+        foreach (ReferenceLatentNode refLatent in bridge.Graph.NodesOfType<ReferenceLatentNode>())
         {
-            return node;
+            if (refLatent.Latent.Connection == expectedLatentOutput)
+            {
+                return refLatent;
+            }
         }
 
-        throw new InvalidOperationException($"Expected node with class_type '{classType}' was not found.");
+        throw new InvalidOperationException($"Expected ReferenceLatent connected to {expectedLatentOutput.Node.Id}:{expectedLatentOutput.SlotIndex} was not found.");
     }
 
-    public static WorkflowNode RequireReferenceLatentByLatentInput(JObject workflow, JArray expectedLatentRef)
+    public static ComfyNode RequireSamplerForReferenceLatent(WorkflowBridge bridge, ReferenceLatentNode refLatent)
     {
-        Assert.NotNull(workflow);
-        Assert.NotNull(expectedLatentRef);
-        Assert.Equal(2, expectedLatentRef.Count);
+        ArgumentNullException.ThrowIfNull(bridge);
+        ArgumentNullException.ThrowIfNull(refLatent);
 
-        IReadOnlyList<WorkflowNode> refLatents = WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType);
-        Assert.NotEmpty(refLatents);
-
-        return refLatents.Single(n => n.Node?["inputs"] is JObject inputs
-            && inputs.TryGetValue("latent", out JToken tok)
-            && tok is JArray arr
-            && JToken.DeepEquals(arr, expectedLatentRef));
-    }
-
-    public static WorkflowNode RequireSamplerForReferenceLatent(JObject workflow, WorkflowNode referenceLatent)
-    {
-        Assert.NotNull(workflow);
-        Assert.NotNull(referenceLatent.Node);
-
-        JArray expectedRef = new() { referenceLatent.Id, 0 };
-        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
-        Assert.NotEmpty(samplers);
-
-        return samplers.Single(s => HasAnyInputConnection(s.Node, expectedRef));
-    }
-
-    public static WorkflowNode RequireSingleVaeDecodeBySamples(JObject workflow, JArray samplesRef)
-    {
-        var matches = WorkflowQuery.FindVaeDecodesBySamples(workflow, samplesRef);
-        if (matches.Count != 1)
+        INodeOutput refOutput = refLatent.Outputs[0];
+        foreach ((ComfyNode node, _) in bridge.Graph.FindInputsConnectedTo(refOutput))
         {
-            throw new InvalidOperationException($"Expected exactly one VAEDecode with samples input {samplesRef}, but found {matches.Count}.");
+            if (node is KSamplerAdvancedNode or SwarmKSamplerNode)
+            {
+                return node;
+            }
         }
 
+        throw new InvalidOperationException($"Expected sampler connected to ReferenceLatent {refLatent.Id} was not found.");
+    }
+
+    public static VAEDecodeNode RequireSingleVaeDecodeBySamples(WorkflowBridge bridge, INodeOutput samples)
+    {
+        ArgumentNullException.ThrowIfNull(bridge);
+        var matches = WorkflowQuery.FindVaeDecodesBySamples(bridge, samples);
+        Assert.Single(matches);
         return matches[0];
-    }
-
-    private static IReadOnlyList<WorkflowNode> NodesOfAnyType(JObject workflow, params string[] classTypes) =>
-        (classTypes ?? [])
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .SelectMany(t => WorkflowQuery.NodesOfType(workflow, t))
-            .ToList();
-
-    private static bool HasAnyInputConnection(JObject node, JArray expectedRef)
-    {
-        if (node?["inputs"] is not JObject inputs)
-        {
-            return false;
-        }
-
-        return inputs.Properties()
-            .Select(p => p.Value)
-            .OfType<JArray>()
-            .Any(arr => JToken.DeepEquals(arr, expectedRef));
     }
 }

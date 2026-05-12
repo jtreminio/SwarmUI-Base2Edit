@@ -1,3 +1,5 @@
+using ComfyTyped.Core;
+using ComfyTyped.SwarmUI;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
@@ -118,17 +120,18 @@ internal static class WorkflowTestHarness
     public static WorkflowGenerator.WorkflowGenStep MinimalGraphSeedStep() =>
         new(g =>
         {
-            // Generate() initializes g.Workflow, but we set up reserved node IDs to emulate
-            // the standard generator's state shape.
-            _ = g.CreateNode("UnitTest_Model", new JObject(), id: "4", idMandatory: false);
-            _ = g.CreateNode("UnitTest_Latent", new JObject(), id: "10", idMandatory: false);
+            using var bridge = BridgeSync.For(g);
+            UnknownNode model = bridge.AddStub("UnitTest_Model", "4")
+                .WithOutputs(WGNodeData.DT_MODEL, "CLIP", WGNodeData.DT_VAE);
+            UnknownNode latent = bridge.AddStub("UnitTest_Latent", "10")
+                .WithOutputs("LATENT");
 
-            g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
-            g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
-            g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
-            g.CurrentMedia = new WGNodeData(["10", 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
-            g.FinalLoadedModel = null;
-            g.FinalLoadedModelList = [];
+            g.CurrentModel = model.GetOutput(0).ToWGNodeData(g, WGNodeData.DT_MODEL);
+            g.CurrentTextEnc = model.GetOutput(1).ToWGNodeData(g, WGNodeData.DT_TEXTENC);
+            g.CurrentVae = model.GetOutput(2).ToWGNodeData(g, WGNodeData.DT_VAE);
+            g.CurrentMedia = latent.GetOutput(0).ToWGNodeData(g, WGNodeData.DT_LATENT_IMAGE);
+            g.FinalLoadedModel = g.UserInput.Get(T2IParamTypes.Model, null);
+            g.FinalLoadedModelList = g.FinalLoadedModel is null ? [] : [g.FinalLoadedModel];
         }, -1000);
 
     /// <summary>
@@ -229,9 +232,4 @@ internal static class WorkflowTestHarness
         Template_BaseThenRefiner()
             .Concat(Template_BaseThenSegments(segmentCount).Where(s => s.Priority > -950));
 
-    public static List<JObject> NodesOfType(JObject workflow, string classType) =>
-        WorkflowQuery.NodesOfType(workflow, classType)
-            .Select(node => node.Node)
-            .Where(node => node is not null)
-            .ToList();
 }

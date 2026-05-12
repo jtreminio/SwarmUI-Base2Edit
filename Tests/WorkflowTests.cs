@@ -1,3 +1,4 @@
+using ComfyTyped.Core;
 using ComfyTyped.Generated;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
@@ -10,19 +11,6 @@ namespace Base2Edit.Tests;
 [Collection("Base2EditTests")]
 public class WorkflowTests
 {
-    private static IReadOnlyList<WorkflowNode> NodesOfAnyType(JObject workflow, params string[] classTypes) =>
-        (classTypes ?? [])
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .SelectMany(t => WorkflowQuery.NodesOfType(workflow, t))
-            .ToList();
-
-    private static WorkflowNode RequireSingleNodeOfAnyType(JObject workflow, params string[] classTypes)
-    {
-        IReadOnlyList<WorkflowNode> nodes = NodesOfAnyType(workflow, classTypes);
-        Assert.Single(nodes);
-        return nodes[0];
-    }
-
     private static JArray RequireConnectionInput(JObject node, params string[] preferredKeys)
     {
         if (node?["inputs"] is not JObject inputs)
@@ -78,18 +66,18 @@ public class WorkflowTests
         return $"{ctTok}";
     }
 
-    private static WorkflowNode RequireSingleSampler(JObject workflow) =>
-        RequireSingleNodeOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
+    private static ComfyNode RequireSingleSampler(WorkflowBridge bridge) =>
+        Assert.Single(WorkflowQuery.Samplers(bridge));
 
-    private static List<string> CollectEncoderPrompts(JObject workflow)
+    private static List<string> CollectEncoderPrompts(WorkflowBridge bridge, JObject workflow)
     {
-        IReadOnlyList<WorkflowNode> encoders = WorkflowQuery.NodesOfType(workflow, SwarmClipTextEncodeAdvancedNode.ClassType);
+        IReadOnlyList<SwarmClipTextEncodeAdvancedNode> encoders = bridge.Graph.NodesOfType<SwarmClipTextEncodeAdvancedNode>();
         Assert.NotEmpty(encoders);
 
         List<string> prompts = [];
-        foreach (WorkflowNode enc in encoders)
+        foreach (SwarmClipTextEncodeAdvancedNode enc in encoders)
         {
-            if (enc.Node?["inputs"] is not JObject inputs)
+            if (workflow[enc.Id] is not JObject obj || obj["inputs"] is not JObject inputs)
             {
                 continue;
             }
@@ -154,25 +142,27 @@ public class WorkflowTests
         {
             T2IParamInput input = BuildEditInput("Base");
             JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+            using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-            WorkflowNode sampler = RequireSingleNodeOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
-            WorkflowNode afterBase = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_ProbeAfterBase");
-            WorkflowNode afterFinal = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_ProbeAfterFinal");
+            ComfyNode sampler = Assert.Single(WorkflowQuery.Samplers(bridge));
+            ComfyNode afterBase = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_ProbeAfterBase");
+            ComfyNode afterFinal = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_ProbeAfterFinal");
 
-            Assert.Equal(new JArray(sampler.Id, 0), RequireConnectionInput(afterBase.Node, "latent"));
-            Assert.Equal(new JArray(sampler.Id, 0), RequireConnectionInput(afterFinal.Node, "latent"));
+            Assert.Equal(new JArray(sampler.Id, 0), RequireConnectionInput((JObject)workflow[afterBase.Id], "latent"));
+            Assert.Equal(new JArray(sampler.Id, 0), RequireConnectionInput((JObject)workflow[afterFinal.Id], "latent"));
         }
 
         {
             T2IParamInput input = BuildEditInput("Refiner");
             JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+            using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-            WorkflowNode sampler = RequireSingleNodeOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
-            WorkflowNode afterBase = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_ProbeAfterBase");
-            WorkflowNode afterFinal = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_ProbeAfterFinal");
+            ComfyNode sampler = Assert.Single(WorkflowQuery.Samplers(bridge));
+            ComfyNode afterBase = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_ProbeAfterBase");
+            ComfyNode afterFinal = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_ProbeAfterFinal");
 
-            Assert.Equal(new JArray("10", 0), RequireConnectionInput(afterBase.Node, "latent"));
-            Assert.Equal(new JArray(sampler.Id, 0), RequireConnectionInput(afterFinal.Node, "latent"));
+            Assert.Equal(new JArray("10", 0), RequireConnectionInput((JObject)workflow[afterBase.Id], "latent"));
+            Assert.Equal(new JArray(sampler.Id, 0), RequireConnectionInput((JObject)workflow[afterFinal.Id], "latent"));
         }
     }
 
@@ -181,14 +171,15 @@ public class WorkflowTests
     {
         T2IParamInput input = BuildEditInput("Base");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode refLatent = WorkflowAssertions.RequireNodeOfType(workflow, ReferenceLatentNode.ClassType);
-        WorkflowNode sampler = RequireSingleSampler(workflow);
+        ReferenceLatentNode refLatent = WorkflowAssertions.RequireNodeOfType<ReferenceLatentNode>(bridge);
+        ComfyNode sampler = RequireSingleSampler(bridge);
 
-        Assert.Equal(new JArray("10", 0), RequireConnectionInput(refLatent.Node, "latent"));
-        AssertHasAnyInputConnection(sampler.Node, new JArray(refLatent.Id, 0), "Edit sampler must consume ReferenceLatent output (positive conditioning).");
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput((JObject)workflow[refLatent.Id], "latent"));
+        AssertHasAnyInputConnection((JObject)workflow[sampler.Id], new JArray(refLatent.Id, 0), "Edit sampler must consume ReferenceLatent output (positive conditioning).");
 
-        _ = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
+        _ = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
     }
 
     [Fact]
@@ -196,14 +187,15 @@ public class WorkflowTests
     {
         T2IParamInput input = BuildEditInput("Refiner");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode refLatent = WorkflowAssertions.RequireNodeOfType(workflow, ReferenceLatentNode.ClassType);
-        WorkflowNode sampler = RequireSingleSampler(workflow);
+        ReferenceLatentNode refLatent = WorkflowAssertions.RequireNodeOfType<ReferenceLatentNode>(bridge);
+        ComfyNode sampler = RequireSingleSampler(bridge);
 
-        Assert.Equal(new JArray("10", 0), RequireConnectionInput(refLatent.Node, "latent"));
-        AssertHasAnyInputConnection(sampler.Node, new JArray(refLatent.Id, 0), "Edit sampler must consume ReferenceLatent output (positive conditioning).");
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput((JObject)workflow[refLatent.Id], "latent"));
+        AssertHasAnyInputConnection((JObject)workflow[sampler.Id], new JArray(refLatent.Id, 0), "Edit sampler must consume ReferenceLatent output (positive conditioning).");
 
-        WorkflowNode decode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
+        VAEDecodeNode decode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
     }
 
     [Fact]
@@ -237,9 +229,10 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode refLatent = WorkflowAssertions.RequireNodeOfType(workflow, ReferenceLatentNode.ClassType);
-        Assert.Equal(new JArray("10", 0), RequireConnectionInput(refLatent.Node, "latent"));
+        ReferenceLatentNode refLatent = WorkflowAssertions.RequireNodeOfType<ReferenceLatentNode>(bridge);
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput((JObject)workflow[refLatent.Id], "latent"));
     }
 
     [Fact]
@@ -268,11 +261,12 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode sampler = WorkflowAssertions.RequireNodeOfType(workflow, KSamplerAdvancedNode.ClassType);
-        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
-        WorkflowNode consumer = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_ImageConsumer");
-        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(consumer.Node, "image"));
+        KSamplerAdvancedNode sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
+        VAEDecodeNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
+        ComfyNode consumer = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_ImageConsumer");
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput((JObject)workflow[consumer.Id], "image"));
     }
 
     [Fact]
@@ -305,13 +299,14 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode sampler = WorkflowAssertions.RequireNodeOfType(workflow, KSamplerAdvancedNode.ClassType);
-        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
-        WorkflowNode chainConsumer = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_A");
-        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(chainConsumer.Node, "image"));
+        KSamplerAdvancedNode sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
+        VAEDecodeNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
+        ComfyNode chainConsumer = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_A");
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput((JObject)workflow[chainConsumer.Id], "image"));
 
-        WorkflowNode chainTail = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_B");
+        ComfyNode chainTail = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_B");
         Assert.Equal(new JArray(chainTail.Id, 0), generator.CurrentMedia.Path);
     }
 
@@ -344,8 +339,9 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode tail = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_Tail");
+        ComfyNode tail = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_Tail");
         Assert.Equal(new JArray(tail.Id, 0), generator.CurrentMedia.Path);
     }
 
@@ -385,10 +381,12 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        WorkflowNode sampler = WorkflowAssertions.RequireNodeOfType(workflow, KSamplerAdvancedNode.ClassType);
-        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
-        WorkflowNode chainConsumer = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_A");
-        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(chainConsumer.Node, "image"));
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        KSamplerAdvancedNode sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
+        VAEDecodeNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
+        ComfyNode chainConsumer = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_A");
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput((JObject)workflow[chainConsumer.Id], "image"));
     }
 
     [Fact]
@@ -422,9 +420,10 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode chainTail = WorkflowAssertions.RequireNodeOfType(workflow, "UnitTest_SeedVR2Like_Tail");
-        JArray chainInput = RequireConnectionInput(chainTail.Node, "image");
+        ComfyNode chainTail = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_Tail");
+        JArray chainInput = RequireConnectionInput((JObject)workflow[chainTail.Id], "image");
         Assert.Equal(VAEDecodeNode.ClassType, RequireClassType(workflow, $"{chainInput[0]}"));
     }
 
@@ -460,18 +459,20 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
-        WorkflowNode editSampler = samplers.Single(s =>
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
+        ComfyNode editSampler = samplers.Single(s =>
         {
-            if (s.Node?["inputs"] is not JObject inputs || !inputs.TryGetValue("positive", out JToken posTok) || posTok is not JArray posRef)
+            if (workflow[s.Id] is not JObject obj || obj["inputs"] is not JObject inputs
+                || !inputs.TryGetValue("positive", out JToken posTok) || posTok is not JArray posRef)
             {
                 return false;
             }
             return RequireClassType(workflow, $"{posRef[0]}") == SwarmClipTextEncodeAdvancedNode.ClassType;
         });
 
-        JArray latentRef = RequireConnectionInput(editSampler.Node, "latent_image", "latent");
+        JArray latentRef = RequireConnectionInput((JObject)workflow[editSampler.Id], "latent_image", "latent");
         Assert.NotEqual("803", $"{latentRef[0]}");
     }
 
@@ -513,16 +514,17 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        JArray latentRef = RequireConnectionInput(sampler.Node, "latent_image", "latent");
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        JArray latentRef = RequireConnectionInput((JObject)workflow[sampler.Id], "latent_image", "latent");
         Assert.Equal(VAEEncodeNode.ClassType, RequireClassType(workflow, $"{latentRef[0]}"));
 
-        WorkflowNode encode = WorkflowAssertions.RequireNodeById(workflow, $"{latentRef[0]}");
-        Assert.Equal(new JArray("1802", 0), RequireConnectionInput(encode.Node, "pixels", "image"));
+        ComfyNode encode = WorkflowAssertions.RequireNodeById(bridge, $"{latentRef[0]}");
+        Assert.Equal(new JArray("1802", 0), RequireConnectionInput((JObject)workflow[encode.Id], "pixels", "image"));
 
-        WorkflowNode segmentTailNode = WorkflowAssertions.RequireNodeById(workflow, "1802");
-        Assert.Equal(new JArray("1801", 0), RequireConnectionInput(segmentTailNode.Node, "image"));
+        ComfyNode segmentTailNode = WorkflowAssertions.RequireNodeById(bridge, "1802");
+        Assert.Equal(new JArray("1801", 0), RequireConnectionInput((JObject)workflow[segmentTailNode.Id], "image"));
     }
 
     [Fact]
@@ -556,16 +558,17 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        JArray latentRef = RequireConnectionInput(sampler.Node, "latent_image", "latent");
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        JArray latentRef = RequireConnectionInput((JObject)workflow[sampler.Id], "latent_image", "latent");
         Assert.Equal(VAEEncodeNode.ClassType, RequireClassType(workflow, $"{latentRef[0]}"));
 
-        WorkflowNode encode = WorkflowAssertions.RequireNodeById(workflow, $"{latentRef[0]}");
-        Assert.Equal(new JArray("1802", 0), RequireConnectionInput(encode.Node, "pixels", "image"));
+        ComfyNode encode = WorkflowAssertions.RequireNodeById(bridge, $"{latentRef[0]}");
+        Assert.Equal(new JArray("1802", 0), RequireConnectionInput((JObject)workflow[encode.Id], "pixels", "image"));
 
-        WorkflowNode segmentTailNode = WorkflowAssertions.RequireNodeById(workflow, "1802");
-        Assert.Equal(new JArray("1801", 0), RequireConnectionInput(segmentTailNode.Node, "image"));
+        ComfyNode segmentTailNode = WorkflowAssertions.RequireNodeById(bridge, "1802");
+        Assert.Equal(new JArray("1801", 0), RequireConnectionInput((JObject)workflow[segmentTailNode.Id], "image"));
     }
 
     [Fact]
@@ -575,9 +578,10 @@ public class WorkflowTests
         input.Set(Base2EditExtension.KeepPreEditImage, true);
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, VAEDecodeNode.ClassType));
-        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, SaveImageNode.ClassType));
+        Assert.NotEmpty(bridge.Graph.NodesOfType<VAEDecodeNode>());
+        Assert.NotEmpty(bridge.Graph.NodesOfType<SaveImageNode>());
     }
 
     [Fact]
@@ -586,10 +590,11 @@ public class WorkflowTests
         T2IParamInput input = BuildEditInput(null, enableBase2EditGroup: false);
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        Assert.Empty(WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType));
-        Assert.Empty(WorkflowQuery.NodesOfType(workflow, KSamplerAdvancedNode.ClassType));
-        Assert.Empty(WorkflowQuery.NodesOfType(workflow, SwarmKSamplerNode.ClassType));
+        Assert.Empty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
+        Assert.Empty(bridge.Graph.NodesOfType<KSamplerAdvancedNode>());
+        Assert.Empty(bridge.Graph.NodesOfType<SwarmKSamplerNode>());
     }
 
     [Fact]
@@ -597,11 +602,12 @@ public class WorkflowTests
     {
         T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: "global <edit[1]>do stage1 edit");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType));
-        Assert.NotEmpty(NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType));
+        Assert.NotEmpty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
+        Assert.NotEmpty(WorkflowQuery.Samplers(bridge));
 
-        List<string> prompts = CollectEncoderPrompts(workflow);
+        List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
         Assert.Contains(prompts, p => p.Contains("global") && !p.Contains("do stage1 edit"));
         Assert.DoesNotContain(prompts, p => p.Contains("do stage1 edit"));
@@ -612,9 +618,10 @@ public class WorkflowTests
     {
         T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: "global <edit[0]>do stage0 edit");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType));
-        Assert.NotEmpty(NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType));
+        Assert.NotEmpty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
+        Assert.NotEmpty(WorkflowQuery.Samplers(bridge));
     }
 
     [Fact]
@@ -645,7 +652,8 @@ public class WorkflowTests
                 prompt: "sonic the hedgehog\n<edit>Castlevania\n<videoclip>He is annihilate"
             );
             JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-            List<string> prompts = CollectEncoderPrompts(workflow);
+            using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+            List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
             Assert.Contains(prompts, prompt => prompt.Trim() == "Castlevania");
             Assert.DoesNotContain(prompts, prompt => prompt.Contains("He is annihilate", StringComparison.Ordinal));
@@ -665,11 +673,12 @@ public class WorkflowTests
     {
         T2IParamInput input = BuildEditInput("Base", enableBase2EditGroup: true, prompt: "global prompt only");
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        Assert.NotEmpty(WorkflowQuery.NodesOfType(workflow, ReferenceLatentNode.ClassType));
-        Assert.NotEmpty(NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType));
+        Assert.NotEmpty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
+        Assert.NotEmpty(WorkflowQuery.Samplers(bridge));
 
-        List<string> prompts = CollectEncoderPrompts(workflow);
+        List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
         Assert.Contains(prompts, p => p.Contains("global prompt only"));
     }
@@ -683,8 +692,9 @@ public class WorkflowTests
             prompt: "global prompt <base>base prompt <refiner>refiner prompt <edit[0]><b2eprompt[base]>"
         );
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        List<string> prompts = CollectEncoderPrompts(workflow);
+        List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
         Assert.Contains(prompts, p => p.Contains("base prompt"));
         Assert.DoesNotContain(prompts, p => p.Contains("global prompt"));
@@ -701,8 +711,9 @@ public class WorkflowTests
             prompt: "global prompt <edit[0]><b2eprompt[base]>"
         );
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        List<string> prompts = CollectEncoderPrompts(workflow);
+        List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
         Assert.Contains(prompts, p => p.Contains("global prompt"));
         Assert.DoesNotContain(prompts, p => p.Contains("<b2eprompt", StringComparison.OrdinalIgnoreCase));
@@ -734,7 +745,8 @@ public class WorkflowTests
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        List<string> prompts = CollectEncoderPrompts(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
         Assert.Contains(prompts, p => p.Contains("stage1 resolved"));
         Assert.Contains(prompts, p => p.Contains("global prompt"));
@@ -764,8 +776,9 @@ public class WorkflowTests
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        List<string> prompts = CollectEncoderPrompts(workflow);
+        List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
         Assert.Contains(prompts, p => p.Contains("GLOBAL") && !p.Contains("STAGE1"));
         Assert.Contains(prompts, p => p.Contains("GLOBAL") && p.Contains("STAGE1"));
@@ -781,7 +794,8 @@ public class WorkflowTests
         );
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        List<string> prompts = CollectEncoderPrompts(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
         Assert.Contains(prompts, p => p.Contains("global prompt", StringComparison.Ordinal));
         Assert.DoesNotContain(prompts, p => p.Contains("only-tag", StringComparison.Ordinal));
@@ -813,26 +827,29 @@ public class WorkflowTests
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
         Assert.Equal(2, samplers.Count);
 
         List<string> samplerPrompts = [];
-        foreach (WorkflowNode sampler in samplers)
+        foreach (ComfyNode sampler in samplers)
         {
-            JArray positiveRef = RequireConnectionInput(sampler.Node, "positive");
+            JArray positiveRef = RequireConnectionInput((JObject)workflow[sampler.Id], "positive");
             string positiveNodeId = $"{positiveRef[0]}";
             string positiveClass = RequireClassType(workflow, positiveNodeId);
 
             JArray conditioningRef = positiveRef;
             if (positiveClass == ReferenceLatentNode.ClassType)
             {
-                WorkflowNode referenceLatent = WorkflowAssertions.RequireNodeById(workflow, positiveNodeId);
-                conditioningRef = RequireConnectionInput(referenceLatent.Node, "conditioning");
+                ComfyNode referenceLatent = WorkflowAssertions.RequireNodeById(bridge, positiveNodeId);
+                conditioningRef = RequireConnectionInput((JObject)workflow[referenceLatent.Id], "conditioning");
             }
 
-            WorkflowNode encoder = WorkflowAssertions.RequireNodeById(workflow, $"{conditioningRef[0]}");
+            ComfyNode encoder = WorkflowAssertions.RequireNodeById(bridge, $"{conditioningRef[0]}");
             Assert.Equal("SwarmClipTextEncodeAdvanced", RequireClassType(workflow, encoder.Id));
-            if (encoder.Node?["inputs"] is JObject encInputs
+            if (workflow[encoder.Id] is JObject encObj
+                && encObj["inputs"] is JObject encInputs
                 && encInputs.TryGetValue("prompt", out JToken promptTok))
             {
                 samplerPrompts.Add($"{promptTok}");
@@ -862,13 +879,14 @@ public class WorkflowTests
 
         static void AssertStageChain(JObject workflow)
         {
-            IReadOnlyList<WorkflowNode> samplers = NodesOfAnyType(workflow, KSamplerAdvancedNode.ClassType, SwarmKSamplerNode.ClassType);
+            using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+            IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
             Assert.Equal(2, samplers.Count);
 
-            WorkflowNode stage0Sampler = samplers.Single(s =>
-                JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray("10", 0)));
-            WorkflowNode stage1Sampler = samplers.Single(s =>
-                JToken.DeepEquals(RequireConnectionInput(s.Node, "latent_image", "latent"), new JArray(stage0Sampler.Id, 0)));
+            ComfyNode stage0Sampler = samplers.Single(s =>
+                JToken.DeepEquals(RequireConnectionInput((JObject)workflow[s.Id], "latent_image", "latent"), new JArray("10", 0)));
+            ComfyNode stage1Sampler = samplers.Single(s =>
+                JToken.DeepEquals(RequireConnectionInput((JObject)workflow[s.Id], "latent_image", "latent"), new JArray(stage0Sampler.Id, 0)));
 
             Assert.NotEqual(stage0Sampler.Id, stage1Sampler.Id);
         }
@@ -959,7 +977,8 @@ public class WorkflowTests
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        List<string> prompts = CollectEncoderPrompts(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        List<string> prompts = CollectEncoderPrompts(bridge, workflow);
 
         Assert.Contains(prompts, p => p.Trim() == "aaa");
         Assert.Contains(prompts, p => p.Contains(portrait, StringComparison.Ordinal) && !p.TrimStart().StartsWith("<", StringComparison.Ordinal));
@@ -973,20 +992,20 @@ public class WorkflowTests
         input.Set(Base2EditExtension.KeepPreEditImage, true);
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        IReadOnlyList<WorkflowNode> saves = WorkflowQuery.NodesOfType(workflow, SaveImageNode.ClassType);
+        IReadOnlyList<SaveImageNode> saves = bridge.Graph.NodesOfType<SaveImageNode>();
         Assert.Single(saves);
-        WorkflowNode save = saves[0];
-        JArray saveImagesRef = RequireConnectionInput(save.Node, "images");
+        SaveImageNode save = saves[0];
+        JArray saveImagesRef = RequireConnectionInput((JObject)workflow[save.Id], "images");
 
         string preEditDecodeId = $"{saveImagesRef[0]}";
         Assert.Equal(VAEDecodeNode.ClassType, RequireClassType(workflow, preEditDecodeId));
 
-        WorkflowNode preEditDecodeNode = new(preEditDecodeId, (JObject)workflow[preEditDecodeId]);
-        Assert.Equal(new JArray("10", 0), RequireConnectionInput(preEditDecodeNode.Node, "samples", "latent"));
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput((JObject)workflow[preEditDecodeId], "samples", "latent"));
 
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        IReadOnlyList<WorkflowNode> postEditDecodes = WorkflowQuery.FindVaeDecodesBySamples(workflow, new JArray(sampler.Id, 0));
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        IReadOnlyList<VAEDecodeNode> postEditDecodes = WorkflowQuery.FindVaeDecodesBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
         Assert.NotEmpty(postEditDecodes);
         Assert.Contains(postEditDecodes, n => n.Id != preEditDecodeId);
     }
@@ -1003,22 +1022,22 @@ public class WorkflowTests
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        IReadOnlyList<WorkflowNode> wsSaves = WorkflowQuery.NodesOfType(workflow, SwarmSaveImageWSNode.ClassType);
+        IReadOnlyList<SwarmSaveImageWSNode> wsSaves = bridge.Graph.NodesOfType<SwarmSaveImageWSNode>();
         Assert.Single(wsSaves);
-        Assert.Empty(WorkflowQuery.NodesOfType(workflow, SaveImageNode.ClassType));
+        Assert.Empty(bridge.Graph.NodesOfType<SaveImageNode>());
 
-        WorkflowNode save = wsSaves[0];
-        JArray saveImagesRef = RequireConnectionInput(save.Node, "images");
+        SwarmSaveImageWSNode save = wsSaves[0];
+        JArray saveImagesRef = RequireConnectionInput((JObject)workflow[save.Id], "images");
 
         string preEditDecodeId = $"{saveImagesRef[0]}";
         Assert.Equal(VAEDecodeNode.ClassType, RequireClassType(workflow, preEditDecodeId));
 
-        WorkflowNode preEditDecodeNode = new(preEditDecodeId, (JObject)workflow[preEditDecodeId]);
-        Assert.Equal(new JArray("10", 0), RequireConnectionInput(preEditDecodeNode.Node, "samples", "latent"));
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput((JObject)workflow[preEditDecodeId], "samples", "latent"));
 
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        IReadOnlyList<WorkflowNode> postEditDecodes = WorkflowQuery.FindVaeDecodesBySamples(workflow, new JArray(sampler.Id, 0));
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        IReadOnlyList<VAEDecodeNode> postEditDecodes = WorkflowQuery.FindVaeDecodesBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
         Assert.NotEmpty(postEditDecodes);
         Assert.Contains(postEditDecodes, n => n.Id != preEditDecodeId);
     }
@@ -1029,7 +1048,8 @@ public class WorkflowTests
         T2IParamInput input = BuildEditInput("Base");
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        Assert.Empty(WorkflowQuery.NodesOfType(workflow, SaveImageNode.ClassType));
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        Assert.Empty(bridge.Graph.NodesOfType<SaveImageNode>());
     }
 
     [Fact]
@@ -1058,11 +1078,12 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode save = WorkflowAssertions.RequireNodeById(workflow, "900");
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
-        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(save.Node, "images"));
+        ComfyNode save = WorkflowAssertions.RequireNodeById(bridge, "900");
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        VAEDecodeNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput((JObject)workflow[save.Id], "images"));
     }
 
     [Fact]
@@ -1092,18 +1113,18 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode existingSave = WorkflowAssertions.RequireNodeById(workflow, "900");
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        WorkflowNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
-        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput(existingSave.Node, "images"));
+        ComfyNode existingSave = WorkflowAssertions.RequireNodeById(bridge, "900");
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        VAEDecodeNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
+        Assert.Equal(new JArray(postEditDecode.Id, 0), RequireConnectionInput((JObject)workflow[existingSave.Id], "images"));
 
-        IReadOnlyList<WorkflowNode> saves = WorkflowQuery.NodesOfType(workflow, SaveImageNode.ClassType);
+        IReadOnlyList<SaveImageNode> saves = bridge.Graph.NodesOfType<SaveImageNode>();
         Assert.True(saves.Count >= 2, "Expected dedicated pre-edit save plus existing final save.");
-        WorkflowNode preEditSave = saves.Single(s => s.Id != "900");
-        string preEditDecodeId = $"{RequireConnectionInput(preEditSave.Node, "images")[0]}";
-        WorkflowNode preEditDecodeNode = new(preEditDecodeId, (JObject)workflow[preEditDecodeId]);
-        Assert.Equal(new JArray("10", 0), RequireConnectionInput(preEditDecodeNode.Node, "samples", "latent"));
+        SaveImageNode preEditSave = saves.Single(s => s.Id != "900");
+        string preEditDecodeId = $"{RequireConnectionInput((JObject)workflow[preEditSave.Id], "images")[0]}";
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput((JObject)workflow[preEditDecodeId], "samples", "latent"));
     }
 
     [Fact]
@@ -1115,16 +1136,17 @@ public class WorkflowTests
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        IReadOnlyList<WorkflowNode> encodes = WorkflowQuery.NodesOfType(workflow, VAEEncodeNode.ClassType);
+        IReadOnlyList<VAEEncodeNode> encodes = bridge.Graph.NodesOfType<VAEEncodeNode>();
         Assert.NotEmpty(encodes);
         Assert.Contains(
             encodes,
-            n => JToken.DeepEquals(((JObject)n.Node["inputs"])["pixels"], new JArray("11", 0))
+            n => JToken.DeepEquals(((JObject)workflow[n.Id])["inputs"]["pixels"], new JArray("11", 0))
         );
 
-        WorkflowNode refLatent = WorkflowAssertions.RequireNodeOfType(workflow, ReferenceLatentNode.ClassType);
-        JArray refLatentInput = RequireConnectionInput(refLatent.Node, "latent");
+        ReferenceLatentNode refLatent = WorkflowAssertions.RequireNodeOfType<ReferenceLatentNode>(bridge);
+        JArray refLatentInput = RequireConnectionInput((JObject)workflow[refLatent.Id], "latent");
         Assert.Contains(encodes, n => n.Id == $"{refLatentInput[0]}");
     }
 
@@ -1137,9 +1159,10 @@ public class WorkflowTests
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(sampler.Id, 0));
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(sampler.Id, 0)));
     }
 
     [Fact]
@@ -1150,13 +1173,14 @@ public class WorkflowTests
         input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode imageScale = WorkflowAssertions.RequireNodeOfType(workflow, ImageScaleNode.ClassType);
-        WorkflowNode vaeEncode = WorkflowAssertions.RequireNodeOfType(workflow, VAEEncodeNode.ClassType);
-        Assert.Equal(new JArray(imageScale.Id, 0), RequireConnectionInput(vaeEncode.Node, "pixels", "image"));
+        ImageScaleNode imageScale = WorkflowAssertions.RequireNodeOfType<ImageScaleNode>(bridge);
+        VAEEncodeNode vaeEncode = WorkflowAssertions.RequireNodeOfType<VAEEncodeNode>(bridge);
+        Assert.Equal(new JArray(imageScale.Id, 0), RequireConnectionInput((JObject)workflow[vaeEncode.Id], "pixels", "image"));
 
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        Assert.Equal(new JArray(vaeEncode.Id, 0), RequireConnectionInput(sampler.Node, "latent_image", "latent"));
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        Assert.Equal(new JArray(vaeEncode.Id, 0), RequireConnectionInput((JObject)workflow[sampler.Id], "latent_image", "latent"));
     }
 
     [Fact]
@@ -1186,13 +1210,14 @@ public class WorkflowTests
         ).ToString());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
-        IReadOnlyList<WorkflowNode> scales = WorkflowQuery.NodesOfType(workflow, ImageScaleNode.ClassType);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        IReadOnlyList<ImageScaleNode> scales = bridge.Graph.NodesOfType<ImageScaleNode>();
         Assert.Equal(2, scales.Count);
 
         List<(int Width, int Height)> widthsHeights = scales
             .Select(s =>
             {
-                JObject inputs = (JObject)s.Node["inputs"];
+                JObject inputs = (JObject)workflow[s.Id]["inputs"];
                 return (
                     Width: (int)inputs["width"],
                     Height: (int)inputs["height"]
@@ -1267,12 +1292,13 @@ public class WorkflowTests
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        IReadOnlyList<WorkflowNode> scales = WorkflowQuery.NodesOfType(workflow, ImageScaleNode.ClassType);
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        IReadOnlyList<ImageScaleNode> scales = bridge.Graph.NodesOfType<ImageScaleNode>();
 
         List<(int Width, int Height)> widthsHeights = scales
             .Select(s =>
             {
-                JObject inputs = (JObject)s.Node["inputs"];
+                JObject inputs = (JObject)workflow[s.Id]["inputs"];
                 return (
                     Width: (int)inputs["width"],
                     Height: (int)inputs["height"]
@@ -1295,12 +1321,13 @@ public class WorkflowTests
         input.Set(Base2EditExtension.EditUpscaleMethod, "latent-bilinear");
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode latentUpscale = WorkflowAssertions.RequireNodeOfType(workflow, LatentUpscaleByNode.ClassType);
-        Assert.Equal(new JArray("10", 0), RequireConnectionInput(latentUpscale.Node, "samples"));
+        LatentUpscaleByNode latentUpscale = WorkflowAssertions.RequireNodeOfType<LatentUpscaleByNode>(bridge);
+        Assert.Equal(new JArray("10", 0), RequireConnectionInput((JObject)workflow[latentUpscale.Id], "samples"));
 
-        WorkflowNode sampler = RequireSingleSampler(workflow);
-        Assert.Equal(new JArray(latentUpscale.Id, 0), RequireConnectionInput(sampler.Node, "latent_image", "latent"));
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        Assert.Equal(new JArray(latentUpscale.Id, 0), RequireConnectionInput((JObject)workflow[sampler.Id], "latent_image", "latent"));
     }
 
     [Fact]
@@ -1311,12 +1338,13 @@ public class WorkflowTests
         input.Set(Base2EditExtension.EditUpscaleMethod, "model-UnitTestUpscaler.safetensors");
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        WorkflowNode loader = WorkflowAssertions.RequireNodeOfType(workflow, UpscaleModelLoaderNode.ClassType);
-        WorkflowNode modelUpscale = WorkflowAssertions.RequireNodeOfType(workflow, ImageUpscaleWithModelNode.ClassType);
-        WorkflowNode imageScale = WorkflowAssertions.RequireNodeOfType(workflow, ImageScaleNode.ClassType);
+        UpscaleModelLoaderNode loader = WorkflowAssertions.RequireNodeOfType<UpscaleModelLoaderNode>(bridge);
+        ImageUpscaleWithModelNode modelUpscale = WorkflowAssertions.RequireNodeOfType<ImageUpscaleWithModelNode>(bridge);
+        ImageScaleNode imageScale = WorkflowAssertions.RequireNodeOfType<ImageScaleNode>(bridge);
 
-        Assert.Equal(new JArray(loader.Id, 0), RequireConnectionInput(modelUpscale.Node, "upscale_model"));
-        Assert.Equal(new JArray(modelUpscale.Id, 0), RequireConnectionInput(imageScale.Node, "image"));
+        Assert.Equal(new JArray(loader.Id, 0), RequireConnectionInput((JObject)workflow[modelUpscale.Id], "upscale_model"));
+        Assert.Equal(new JArray(modelUpscale.Id, 0), RequireConnectionInput((JObject)workflow[imageScale.Id], "image"));
     }
 }
