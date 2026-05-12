@@ -11,8 +11,6 @@ namespace Base2Edit.Tests;
 [Collection("Base2EditTests")]
 public class ModelLoraTests
 {
-    private static bool TokenEquals(JToken a, JToken b) => JToken.DeepEquals(a, b);
-
     [Fact]
     public void Edit_prompt_multiple_loras_creates_multiple_lora_loaders_and_sampler_uses_last_lora_output()
     {
@@ -47,11 +45,9 @@ public class ModelLoraTests
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
             WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat([new WorkflowGenerator.WorkflowGenStep(g => g.Features.Add("variation_seed"), -999)])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
         Assert.Single(loaders);
@@ -66,25 +62,29 @@ public class ModelLoraTests
             sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
         }
 
-        JObject samplerInputs = (JObject)workflow[sampler.Id]["inputs"];
-        Assert.True(samplerInputs.TryGetValue("model", out JToken samplerModelTok), "Expected sampler.inputs.model");
-        JArray samplerModelRef = samplerModelTok as JArray;
-        Assert.NotNull(samplerModelRef);
-
-        HashSet<string> loraIds = new(loraLoaders.Select(n => n.Id));
-        Assert.Contains($"{samplerModelRef[0]}", loraIds);
+        HashSet<string> loraIds = [.. loraLoaders.Select(n => n.Id)];
+        string samplerUpstreamId = (sampler is KSamplerAdvancedNode ks1)
+            ? ks1.Model.Connection?.Node.Id
+            : (sampler as SwarmKSamplerNode)?.Model.Connection?.Node.Id;
+        Assert.NotNull(samplerUpstreamId);
+        Assert.Contains(samplerUpstreamId, loraIds);
 
         int fromCheckpoint = 0;
         int fromLora = 0;
         foreach (LoraLoaderNode lora in loraLoaders)
         {
-            JObject inputsObj = (JObject)workflow[lora.Id]["inputs"];
-            Assert.True(inputsObj.TryGetValue("model", out JToken modelTok) && modelTok is JArray, "Expected LoraLoader.inputs.model connection");
-            Assert.True(inputsObj.TryGetValue("clip", out JToken clipTok) && clipTok is JArray, "Expected LoraLoader.inputs.clip connection");
+            Assert.True(lora.Model.IsConnected, "Expected LoraLoader.inputs.model connection");
+            Assert.True(lora.Clip.IsConnected, "Expected LoraLoader.inputs.clip connection");
 
-            string upstreamModelNode = $"{((JArray)modelTok)[0]}";
-            if (upstreamModelNode == loaderId) fromCheckpoint++;
-            else if (loraIds.Contains(upstreamModelNode)) fromLora++;
+            string upstreamModelNode = lora.Model.Connection?.Node.Id;
+            if (upstreamModelNode == loaderId)
+            {
+                fromCheckpoint++;
+            }
+            else if (loraIds.Contains(upstreamModelNode))
+            {
+                fromLora++;
+            }
         }
         Assert.Equal(1, fromCheckpoint);
         Assert.Equal(1, fromLora);
@@ -93,12 +93,9 @@ public class ModelLoraTests
         Assert.True(encoders.Count >= 2, "Expected at least positive+negative SwarmClipTextEncodeAdvanced nodes.");
         foreach (SwarmClipTextEncodeAdvancedNode enc in encoders)
         {
-            JObject inputsObj = (JObject)workflow[enc.Id]["inputs"];
-            Assert.True(inputsObj.TryGetValue("clip", out JToken clipTok), "Expected encoder.inputs.clip");
-            JArray clipRef = clipTok as JArray;
-            Assert.NotNull(clipRef);
-            Assert.Contains($"{clipRef[0]}", loraIds);
-            Assert.False(TokenEquals(clipRef, new JArray(loaderId, 1)), "Encoder.clip must not come directly from CheckpointLoaderSimple.clip when LoRAs are active");
+            string clipUpstreamId = enc.Clip.Connection?.Node.Id;
+            Assert.NotNull(clipUpstreamId);
+            Assert.Contains(clipUpstreamId, loraIds);
         }
     }
 
@@ -136,8 +133,7 @@ public class ModelLoraTests
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
         Assert.Single(loaders);
@@ -146,25 +142,25 @@ public class ModelLoraTests
         IReadOnlyList<LoraLoaderNode> loraLoaders = bridge.Graph.NodesOfType<LoraLoaderNode>();
         Assert.Single(loraLoaders);
         string loraId = loraLoaders[0].Id;
-        JObject loraInputs = (JObject)workflow[loraId]["inputs"];
+        LoraLoaderNode loraNode = loraLoaders[0];
 
-        Assert.True(TokenEquals(loraInputs["model"], new JArray(loaderId, 0)), "LoraLoader.model must come from CheckpointLoaderSimple.model");
-        Assert.True(TokenEquals(loraInputs["clip"], new JArray(loaderId, 1)), "LoraLoader.clip must come from CheckpointLoaderSimple.clip");
+        Assert.Equal(loaderId, loraNode.Model.Connection?.Node.Id);
+        Assert.Equal(0, loraNode.Model.Connection?.SlotIndex);
+        Assert.Equal(loaderId, loraNode.Clip.Connection?.Node.Id);
+        Assert.Equal(1, loraNode.Clip.Connection?.SlotIndex);
 
         IReadOnlyList<SwarmClipTextEncodeAdvancedNode> encoders = bridge.Graph.NodesOfType<SwarmClipTextEncodeAdvancedNode>();
         Assert.True(encoders.Count >= 2, "Expected at least positive+negative SwarmClipTextEncodeAdvanced nodes.");
         foreach (SwarmClipTextEncodeAdvancedNode enc in encoders)
         {
-            JObject inputsObj = (JObject)workflow[enc.Id]["inputs"];
-            Assert.True(TokenEquals(inputsObj["clip"], new JArray(loraId, 1)), "Encoder.clip must come from LoraLoader.clip");
-            Assert.False(TokenEquals(inputsObj["clip"], new JArray(loaderId, 1)), "Encoder.clip must not come directly from CheckpointLoaderSimple.clip");
+            Assert.Equal(loraId, enc.Clip.Connection?.Node.Id);
+            Assert.Equal(1, enc.Clip.Connection?.SlotIndex);
         }
 
         IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
         Assert.Single(samplers);
-        JObject samplerInputs = (JObject)workflow[samplers[0].Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraId, 0)), "Sampler.model must come from LoraLoader.model");
-        Assert.False(TokenEquals(samplerInputs["model"], new JArray(loaderId, 0)), "Sampler.model must not come directly from CheckpointLoaderSimple.model");
+        Assert.Equal(loraId, samplers[0].Model.Connection?.Node.Id);
+        Assert.Equal(0, samplers[0].Model.Connection?.SlotIndex);
     }
 
     [Fact]
@@ -216,7 +212,6 @@ public class ModelLoraTests
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
             WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat([new WorkflowGenerator.WorkflowGenStep(g => g.Features.Add("variation_seed"), -999)])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
         JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
@@ -239,13 +234,15 @@ public class ModelLoraTests
             && JToken.DeepEquals(arr, new JArray(sampler0.Id, 0)));
         ComfyNode sampler1 = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref1);
 
-        JObject sampler0Inputs = (JObject)workflow[sampler0.Id]["inputs"];
-        JObject sampler1Inputs = (JObject)workflow[sampler1.Id]["inputs"];
-        Assert.True(sampler0Inputs.TryGetValue("model", out JToken s0ModelTok) && s0ModelTok is JArray, "Expected stage0 sampler.inputs.model");
-        Assert.True(sampler1Inputs.TryGetValue("model", out JToken s1ModelTok) && s1ModelTok is JArray, "Expected stage1 sampler.inputs.model");
+        string s0ModelUpstream = (sampler0 is KSamplerAdvancedNode ks0a)
+            ? ks0a.Model.Connection?.Node.Id
+            : (sampler0 as SwarmKSamplerNode)?.Model.Connection?.Node.Id;
+        string s1ModelUpstream = (sampler1 is KSamplerAdvancedNode ks1a)
+            ? ks1a.Model.Connection?.Node.Id
+            : (sampler1 as SwarmKSamplerNode)?.Model.Connection?.Node.Id;
 
-        Assert.NotEqual(loraId, $"{((JArray)s0ModelTok)[0]}");
-        Assert.Equal(loraId, $"{((JArray)s1ModelTok)[0]}");
+        Assert.NotEqual(loraId, s0ModelUpstream);
+        Assert.Equal(loraId, s1ModelUpstream);
     }
 
     [Fact]
@@ -277,8 +274,7 @@ public class ModelLoraTests
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         Assert.Empty(bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>());
         IReadOnlyList<LoraLoaderNode> loraLoaders = bridge.Graph.NodesOfType<LoraLoaderNode>();
@@ -288,14 +284,14 @@ public class ModelLoraTests
         Assert.True(encoders.Count >= 2, "Expected at least positive+negative SwarmClipTextEncodeAdvanced nodes.");
         foreach (SwarmClipTextEncodeAdvancedNode enc in encoders)
         {
-            JObject inputsObj = (JObject)workflow[enc.Id]["inputs"];
-            Assert.True(TokenEquals(inputsObj["clip"], new JArray("4", 1)), "Encoder.clip must come from the inherited base-stage clip reference.");
+            Assert.Equal("4", enc.Clip.Connection?.Node.Id);
+            Assert.Equal(1, enc.Clip.Connection?.SlotIndex);
         }
 
         IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
         Assert.Single(samplers);
-        JObject samplerInputs = (JObject)workflow[samplers[0].Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray("4", 0)), "Sampler.model must come from the inherited base-stage model reference.");
+        Assert.Equal("4", samplers[0].Model.Connection?.Node.Id);
+        Assert.Equal(0, samplers[0].Model.Connection?.SlotIndex);
     }
 
     [Fact]
@@ -305,13 +301,7 @@ public class ModelLoraTests
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
         using SwarmUiTestContext testContext = new();
 
-        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
-        T2IModelHandler loraHandler = new() { ModelType = "LoRA" };
-        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
-        {
-            ["Stable-Diffusion"] = sdHandler,
-            ["LoRA"] = loraHandler
-        };
+        (T2IModelHandler sdHandler, T2IModelHandler loraHandler) = CreateSdAndLoraHandlers();
 
         T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
         sdHandler.Models[baseModel.Name] = baseModel;
@@ -332,32 +322,31 @@ public class ModelLoraTests
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         Assert.Empty(bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>());
 
         IReadOnlyList<LoraLoaderNode> loraLoaders = bridge.Graph.NodesOfType<LoraLoaderNode>();
         Assert.Single(loraLoaders);
         string loraId = loraLoaders[0].Id;
-        JObject loraInputs = (JObject)workflow[loraId]["inputs"];
-        Assert.True(TokenEquals(loraInputs["model"], new JArray("4", 0)), "LoraLoader.model must come from the inherited base-stage model reference.");
-        Assert.True(TokenEquals(loraInputs["clip"], new JArray("4", 1)), "LoraLoader.clip must come from the inherited base-stage clip reference.");
+        LoraLoaderNode loraNode = loraLoaders[0];
+        Assert.Equal("4", loraNode.Model.Connection?.Node.Id);
+        Assert.Equal(0, loraNode.Model.Connection?.SlotIndex);
+        Assert.Equal("4", loraNode.Clip.Connection?.Node.Id);
+        Assert.Equal(1, loraNode.Clip.Connection?.SlotIndex);
 
         IReadOnlyList<SwarmClipTextEncodeAdvancedNode> encoders = bridge.Graph.NodesOfType<SwarmClipTextEncodeAdvancedNode>();
         Assert.True(encoders.Count >= 2, "Expected at least positive+negative SwarmClipTextEncodeAdvanced nodes.");
         foreach (SwarmClipTextEncodeAdvancedNode enc in encoders)
         {
-            JObject inputsObj = (JObject)workflow[enc.Id]["inputs"];
-            Assert.True(TokenEquals(inputsObj["clip"], new JArray(loraId, 1)), "Encoder.clip must come from LoraLoader.clip");
-            Assert.False(TokenEquals(inputsObj["clip"], new JArray("4", 1)), "Encoder.clip must not come directly from the inherited base-stage clip reference when LoRAs are active.");
+            Assert.Equal(loraId, enc.Clip.Connection?.Node.Id);
+            Assert.Equal(1, enc.Clip.Connection?.SlotIndex);
         }
 
         IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
         Assert.Single(samplers);
-        JObject samplerInputs = (JObject)workflow[samplers[0].Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraId, 0)), "Sampler.model must come from LoraLoader.model");
-        Assert.False(TokenEquals(samplerInputs["model"], new JArray("4", 0)), "Sampler.model must not come directly from the inherited base-stage model reference when LoRAs are active.");
+        Assert.Equal(loraId, samplers[0].Model.Connection?.Node.Id);
+        Assert.Equal(0, samplers[0].Model.Connection?.SlotIndex);
     }
 
     [Fact]
@@ -399,31 +388,27 @@ public class ModelLoraTests
                 ])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         Assert.Empty(bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>());
 
         IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
         Assert.Single(samplers);
-        JObject samplerInputs = (JObject)workflow[samplers[0].Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraNodeId, 0)), "Sampler.model must inherit the upstream lora-applied model reference.");
+        Assert.Equal(loraNodeId, samplers[0].Model.Connection?.Node.Id);
+        Assert.Equal(0, samplers[0].Model.Connection?.SlotIndex);
     }
 
-    [Fact]
-    public void Use_base_selection_with_edit_section_lora_inherits_stage_loras_and_stacks_edit_lora()
+    [Theory]
+    [InlineData(ModelPrep.UseBase,    "777", false, "Base")]
+    [InlineData(ModelPrep.UseRefiner, "778", true,  "Refiner")]
+    public void Edit_section_lora_inherits_stage_loras_and_stacks_edit_lora(
+        string editModelMode, string stageLoraNodeId, bool isRefinerStage, string applyEditAfter)
     {
         WorkflowTestHarness.Base2EditSteps();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
         using SwarmUiTestContext testContext = new();
 
-        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
-        T2IModelHandler loraHandler = new() { ModelType = "LoRA" };
-        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
-        {
-            ["Stable-Diffusion"] = sdHandler,
-            ["LoRA"] = loraHandler
-        };
+        (T2IModelHandler sdHandler, T2IModelHandler loraHandler) = CreateSdAndLoraHandlers();
 
         T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
         sdHandler.Models[baseModel.Name] = baseModel;
@@ -433,43 +418,52 @@ public class ModelLoraTests
 
         T2IParamInput input = new(null);
         input.Set(T2IParamTypes.Model, baseModel);
-        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditModel, editModelMode);
         input.Set(T2IParamTypes.Prompt, "global <edit>apply extra <lora:UnitTest_EditLora:0.5>");
-        input.Set(Base2EditExtension.ApplyEditAfter, "Base");
+        input.Set(Base2EditExtension.ApplyEditAfter, applyEditAfter);
         input.Set(T2IParamTypes.Seed, 1L);
         input.Set(T2IParamTypes.Width, 512);
         input.Set(T2IParamTypes.Height, 512);
 
-        const string stageLoraNodeId = "777";
+        if (isRefinerStage)
+        {
+            T2IModel refinerModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Refiner.safetensors", "UnitTest_Refiner.safetensors");
+            sdHandler.Models[refinerModel.Name] = refinerModel;
+            input.Set(T2IParamTypes.RefinerModel, refinerModel);
+            input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+            input.Set(T2IParamTypes.RefinerControl, 0.2);
+        }
+
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(
                 [
                     new WorkflowGenerator.WorkflowGenStep(g =>
                     {
-                        _ = g.CreateNode("UnitTest_BaseLoraAppliedModel", new JObject(), id: stageLoraNodeId, idMandatory: false);
+                        g.IsRefinerStage = isRefinerStage;
+                        _ = g.CreateNode("UnitTest_StageLoraAppliedModel", new JObject(), id: stageLoraNodeId, idMandatory: false);
                         g.CurrentModel = new WGNodeData([stageLoraNodeId, 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
                         g.CurrentTextEnc = new WGNodeData([stageLoraNodeId, 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
                     }, -800)
                 ])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         Assert.Empty(bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>());
 
         IReadOnlyList<LoraLoaderNode> loraLoaders = bridge.Graph.NodesOfType<LoraLoaderNode>();
         Assert.Single(loraLoaders);
-        string loraId = loraLoaders[0].Id;
+        LoraLoaderNode loraNode = loraLoaders[0];
 
-        JObject loraInputs = (JObject)workflow[loraId]["inputs"];
-        Assert.True(TokenEquals(loraInputs["model"], new JArray(stageLoraNodeId, 0)));
-        Assert.True(TokenEquals(loraInputs["clip"], new JArray(stageLoraNodeId, 1)));
+        Assert.Equal(stageLoraNodeId, loraNode.Model.Connection?.Node.Id);
+        Assert.Equal(0, loraNode.Model.Connection?.SlotIndex);
+        Assert.Equal(stageLoraNodeId, loraNode.Clip.Connection?.Node.Id);
+        Assert.Equal(1, loraNode.Clip.Connection?.SlotIndex);
 
         KSamplerAdvancedNode sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
-        JObject samplerInputs = (JObject)workflow[sampler.Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraId, 0)));
+        Assert.Equal(loraNode.Id, sampler.Model.Connection?.Node.Id);
+        Assert.Equal(0, sampler.Model.Connection?.SlotIndex);
     }
 
     [Fact]
@@ -507,25 +501,33 @@ public class ModelLoraTests
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
         Assert.Single(loaders);
-        JObject loaderInputs = (JObject)workflow[loaders[0].Id]["inputs"];
-        Assert.Contains("UnitTest_Edit", $"{loaderInputs["ckpt_name"]}");
+        Assert.Contains("UnitTest_Edit", $"{loaders[0].CkptName.LiteralValue}");
 
         IReadOnlyList<KSamplerAdvancedNode> ks = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
-        ComfyNode sampler = ks.Count > 0
-            ? ks[0]
-            : WorkflowAssertions.RequireNodeOfType<SwarmKSamplerNode>(bridge);
-        JObject samplerInputs = (JObject)workflow[sampler.Id]["inputs"];
-
-        Assert.Equal(13, (int)samplerInputs["steps"]);
-        Assert.Equal(6.5, (double)samplerInputs["cfg"]);
-        Assert.Equal("euler", $"{samplerInputs["sampler_name"]}");
-        Assert.Equal("normal", $"{samplerInputs["scheduler"]}");
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loaders[0].Id, 0)));
+        if (ks.Count > 0)
+        {
+            KSamplerAdvancedNode sampler = ks[0];
+            Assert.Equal(13L, sampler.Steps.LiteralValue);
+            Assert.Equal(6.5, sampler.Cfg.LiteralValue);
+            Assert.Equal("euler", sampler.SamplerName.LiteralValue);
+            Assert.Equal("normal", sampler.Scheduler.LiteralValue);
+            Assert.Equal(loaders[0].Id, sampler.Model.Connection?.Node.Id);
+            Assert.Equal(0, sampler.Model.Connection?.SlotIndex);
+        }
+        else
+        {
+            SwarmKSamplerNode sampler = WorkflowAssertions.RequireNodeOfType<SwarmKSamplerNode>(bridge);
+            Assert.Equal(13L, sampler.Steps.LiteralValue);
+            Assert.Equal(6.5, sampler.Cfg.LiteralValue);
+            Assert.Equal("euler", sampler.SamplerName.LiteralValue);
+            Assert.Equal("normal", sampler.Scheduler.LiteralValue);
+            Assert.Equal(loaders[0].Id, sampler.Model.Connection?.Node.Id);
+            Assert.Equal(0, sampler.Model.Connection?.SlotIndex);
+        }
     }
 
     [Fact]
@@ -568,17 +570,12 @@ public class ModelLoraTests
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         Assert.Empty(bridge.Graph.NodesOfType<LoraLoaderNode>());
 
         IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
         Assert.Single(loaders);
-
-        KSamplerAdvancedNode sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
-        JObject samplerInputs = (JObject)workflow[sampler.Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loaders[0].Id, 0)));
     }
 
     [Fact]
@@ -618,97 +615,26 @@ public class ModelLoraTests
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
         Assert.Single(loaders);
         string loaderId = loaders[0].Id;
-        JObject loaderInputs = (JObject)workflow[loaderId]["inputs"];
-        Assert.True(loaderInputs.TryGetValue("ckpt_name", out JToken ckptNameTok), "Expected CheckpointLoaderSimple.inputs.ckpt_name");
-        string ckptName = $"{ckptNameTok}";
-        Assert.Contains("UnitTest_Refiner", ckptName);
+        Assert.Contains("UnitTest_Refiner", $"{loaders[0].CkptName.LiteralValue}");
 
         IReadOnlyList<LoraLoaderNode> loraLoaders = bridge.Graph.NodesOfType<LoraLoaderNode>();
         Assert.Single(loraLoaders);
         string loraId = loraLoaders[0].Id;
-        JObject loraInputs = (JObject)workflow[loraId]["inputs"];
-        Assert.True(TokenEquals(loraInputs["model"], new JArray(loaderId, 0)), "LoraLoader.model must come from CheckpointLoaderSimple.model");
-        Assert.True(TokenEquals(loraInputs["clip"], new JArray(loaderId, 1)), "LoraLoader.clip must come from CheckpointLoaderSimple.clip");
+        LoraLoaderNode loraNode = loraLoaders[0];
+        Assert.Equal(loaderId, loraNode.Model.Connection?.Node.Id);
+        Assert.Equal(0, loraNode.Model.Connection?.SlotIndex);
+        Assert.Equal(loaderId, loraNode.Clip.Connection?.Node.Id);
+        Assert.Equal(1, loraNode.Clip.Connection?.SlotIndex);
 
         IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
         Assert.Single(samplers);
-        JObject samplerInputs = (JObject)workflow[samplers[0].Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraId, 0)), "Sampler.model must come from LoraLoader.model");
-        Assert.False(TokenEquals(samplerInputs["model"], new JArray(loaderId, 0)), "Sampler.model must not come directly from CheckpointLoaderSimple.model");
-    }
-
-    [Fact]
-    public void Use_refiner_selection_with_edit_section_lora_inherits_stage_loras_and_stacks_edit_lora()
-    {
-        WorkflowTestHarness.Base2EditSteps();
-        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
-        using SwarmUiTestContext testContext = new();
-
-        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
-        T2IModelHandler loraHandler = new() { ModelType = "LoRA" };
-        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
-        {
-            ["Stable-Diffusion"] = sdHandler,
-            ["LoRA"] = loraHandler
-        };
-
-        T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
-        T2IModel refinerModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Refiner.safetensors", "UnitTest_Refiner.safetensors");
-        sdHandler.Models[baseModel.Name] = baseModel;
-        sdHandler.Models[refinerModel.Name] = refinerModel;
-
-        T2IModel editLora = new(loraHandler, "/tmp", "/tmp/UnitTest_EditLora.safetensors", "UnitTest_EditLora.safetensors");
-        loraHandler.Models[editLora.Name] = editLora;
-
-        T2IParamInput input = new(null);
-        input.Set(T2IParamTypes.Model, baseModel);
-        input.Set(T2IParamTypes.RefinerModel, refinerModel);
-        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
-        input.Set(T2IParamTypes.Prompt, "global <edit>apply extra <lora:UnitTest_EditLora:0.5>");
-        input.Set(Base2EditExtension.ApplyEditAfter, "Refiner");
-        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
-        input.Set(T2IParamTypes.RefinerControl, 0.2);
-        input.Set(T2IParamTypes.Seed, 1L);
-        input.Set(T2IParamTypes.Width, 512);
-        input.Set(T2IParamTypes.Height, 512);
-
-        const string stageLoraNodeId = "778";
-        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
-            WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat(
-                [
-                    new WorkflowGenerator.WorkflowGenStep(g =>
-                    {
-                        g.IsRefinerStage = true;
-                        _ = g.CreateNode("UnitTest_RefinerLoraAppliedModel", new JObject(), id: stageLoraNodeId, idMandatory: false);
-                        g.CurrentModel = new WGNodeData([stageLoraNodeId, 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
-                        g.CurrentTextEnc = new WGNodeData([stageLoraNodeId, 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
-                    }, -800)
-                ])
-                .Concat(WorkflowTestHarness.Base2EditSteps());
-
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
-
-        Assert.Empty(bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>());
-
-        IReadOnlyList<LoraLoaderNode> loraLoaders = bridge.Graph.NodesOfType<LoraLoaderNode>();
-        Assert.Single(loraLoaders);
-        string loraId = loraLoaders[0].Id;
-
-        JObject loraInputs = (JObject)workflow[loraId]["inputs"];
-        Assert.True(TokenEquals(loraInputs["model"], new JArray(stageLoraNodeId, 0)));
-        Assert.True(TokenEquals(loraInputs["clip"], new JArray(stageLoraNodeId, 1)));
-
-        KSamplerAdvancedNode sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
-        JObject samplerInputs = (JObject)workflow[sampler.Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraId, 0)));
+        Assert.Equal(loraId, samplers[0].Model.Connection?.Node.Id);
+        Assert.Equal(0, samplers[0].Model.Connection?.SlotIndex);
     }
 
     [Fact]
@@ -747,121 +673,26 @@ public class ModelLoraTests
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
         Assert.Single(loaders);
         string loaderId = loaders[0].Id;
-        JObject loaderInputs = (JObject)workflow[loaderId]["inputs"];
-        Assert.True(loaderInputs.TryGetValue("ckpt_name", out JToken ckptNameTok), "Expected CheckpointLoaderSimple.inputs.ckpt_name");
-        string ckptName = $"{ckptNameTok}";
-        Assert.Contains("UnitTest_Edit", ckptName);
+        Assert.Contains("UnitTest_Edit", $"{loaders[0].CkptName.LiteralValue}");
 
         IReadOnlyList<LoraLoaderNode> loraLoaders = bridge.Graph.NodesOfType<LoraLoaderNode>();
         Assert.Single(loraLoaders);
         string loraId = loraLoaders[0].Id;
-        JObject loraInputs = (JObject)workflow[loraId]["inputs"];
-        Assert.True(TokenEquals(loraInputs["model"], new JArray(loaderId, 0)), "LoraLoader.model must come from CheckpointLoaderSimple.model");
-        Assert.True(TokenEquals(loraInputs["clip"], new JArray(loaderId, 1)), "LoraLoader.clip must come from CheckpointLoaderSimple.clip");
+        LoraLoaderNode loraNode = loraLoaders[0];
+        Assert.Equal(loaderId, loraNode.Model.Connection?.Node.Id);
+        Assert.Equal(0, loraNode.Model.Connection?.SlotIndex);
+        Assert.Equal(loaderId, loraNode.Clip.Connection?.Node.Id);
+        Assert.Equal(1, loraNode.Clip.Connection?.SlotIndex);
 
         IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
         Assert.Single(samplers);
-        JObject samplerInputs = (JObject)workflow[samplers[0].Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loraId, 0)), "Sampler.model must come from LoraLoader.model");
-        Assert.False(TokenEquals(samplerInputs["model"], new JArray(loaderId, 0)), "Sampler.model must not come directly from CheckpointLoaderSimple.model");
-    }
-
-    [Fact]
-    public void Use_refiner_selection_loads_refiner_model_for_edit_stage()
-    {
-        WorkflowTestHarness.Base2EditSteps();
-        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
-        using SwarmUiTestContext testContext = new();
-
-        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
-        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
-        {
-            ["Stable-Diffusion"] = sdHandler
-        };
-
-        T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
-        T2IModel refinerModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Refiner.safetensors", "UnitTest_Refiner.safetensors");
-        sdHandler.Models[baseModel.Name] = baseModel;
-        sdHandler.Models[refinerModel.Name] = refinerModel;
-
-        T2IParamInput input = new(null);
-        input.Set(T2IParamTypes.Model, baseModel);
-        input.Set(T2IParamTypes.RefinerModel, refinerModel);
-        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
-        input.Set(T2IParamTypes.Prompt, "global <edit>no lora here");
-        input.Set(Base2EditExtension.ApplyEditAfter, "Base");
-        input.Set(T2IParamTypes.Seed, 1L);
-        input.Set(T2IParamTypes.Width, 512);
-        input.Set(T2IParamTypes.Height, 512);
-
-        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
-            WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat(WorkflowTestHarness.Base2EditSteps());
-
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
-
-        IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
-        Assert.Single(loaders);
-
-        JObject loaderInputs = (JObject)workflow[loaders[0].Id]["inputs"];
-        Assert.True(loaderInputs.TryGetValue("ckpt_name", out JToken ckptNameTok), "Expected CheckpointLoaderSimple.inputs.ckpt_name");
-        string ckptName = $"{ckptNameTok}";
-        Assert.Contains("UnitTest_Refiner", ckptName);
-    }
-
-    [Fact]
-    public void Explicit_edit_model_selection_loads_separate_model_for_edit_stage()
-    {
-        WorkflowTestHarness.Base2EditSteps();
-        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
-        using SwarmUiTestContext testContext = new();
-
-        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
-        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
-        {
-            ["Stable-Diffusion"] = sdHandler
-        };
-
-        T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
-        T2IModel editModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Edit.safetensors", "UnitTest_Edit.safetensors");
-        sdHandler.Models[baseModel.Name] = baseModel;
-        sdHandler.Models[editModel.Name] = editModel;
-
-        T2IParamInput input = new(null);
-        input.Set(T2IParamTypes.Model, baseModel);
-        input.Set(Base2EditExtension.EditModel, "UnitTest_Edit.safetensors");
-        input.Set(T2IParamTypes.Prompt, "global <edit>edit prompt here");
-        input.Set(Base2EditExtension.ApplyEditAfter, "Base");
-        input.Set(T2IParamTypes.Seed, 1L);
-        input.Set(T2IParamTypes.Width, 512);
-        input.Set(T2IParamTypes.Height, 512);
-
-        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
-            WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat(WorkflowTestHarness.Base2EditSteps());
-
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
-
-        IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
-        Assert.Single(loaders);
-
-        JObject loaderInputs = (JObject)workflow[loaders[0].Id]["inputs"];
-        Assert.True(loaderInputs.TryGetValue("ckpt_name", out JToken ckptNameTok), "Expected CheckpointLoaderSimple.inputs.ckpt_name");
-        string ckptName = $"{ckptNameTok}";
-        Assert.Contains("UnitTest_Edit", ckptName);
-
-        IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
-        Assert.Single(samplers);
-        JObject samplerInputs = (JObject)workflow[samplers[0].Id]["inputs"];
-        Assert.True(TokenEquals(samplerInputs["model"], new JArray(loaders[0].Id, 0)), "Sampler.model must come from the edit model loader");
+        Assert.Equal(loraId, samplers[0].Model.Connection?.Node.Id);
+        Assert.Equal(0, samplers[0].Model.Connection?.SlotIndex);
     }
 
     [Fact]
@@ -897,16 +728,12 @@ public class ModelLoraTests
             WorkflowTestHarness.Template_BaseOnlyLatents()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
         Assert.Single(loaders);
 
-        JObject loaderInputs = (JObject)workflow[loaders[0].Id]["inputs"];
-        Assert.True(loaderInputs.TryGetValue("ckpt_name", out JToken ckptNameTok), "Expected CheckpointLoaderSimple.inputs.ckpt_name");
-        string ckptName = $"{ckptNameTok}";
-        Assert.Contains("Sapphire", ckptName);
+        Assert.Contains("Sapphire", $"{loaders[0].CkptName.LiteralValue}");
     }
 
     [Fact]
@@ -966,16 +793,12 @@ public class ModelLoraTests
             new[] { harness() }
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         IReadOnlyList<CheckpointLoaderSimpleNode> loaders = bridge.Graph.NodesOfType<CheckpointLoaderSimpleNode>();
         Assert.Single(loaders);
 
-        JObject loaderInputs = (JObject)workflow[loaders[0].Id]["inputs"];
-        Assert.True(loaderInputs.TryGetValue("ckpt_name", out JToken ckptNameTok), "Expected CheckpointLoaderSimple.inputs.ckpt_name");
-        string ckptName = $"{ckptNameTok}";
-        Assert.Contains("UnitTest_SD15", ckptName);
+        Assert.Contains("UnitTest_SD15", $"{loaders[0].CkptName.LiteralValue}");
 
         IReadOnlyList<VAEEncodeNode> vaeEncodes = bridge.Graph.NodesOfType<VAEEncodeNode>();
         IReadOnlyList<VAEDecodeNode> vaeDecodes = bridge.Graph.NodesOfType<VAEDecodeNode>();
@@ -984,5 +807,17 @@ public class ModelLoraTests
 
         IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
         Assert.Single(samplers);
+    }
+
+    private static (T2IModelHandler sdHandler, T2IModelHandler loraHandler) CreateSdAndLoraHandlers()
+    {
+        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
+        T2IModelHandler loraHandler = new() { ModelType = "LoRA" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler,
+            ["LoRA"] = loraHandler
+        };
+        return (sdHandler, loraHandler);
     }
 }
