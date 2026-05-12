@@ -1,4 +1,3 @@
-using System;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Core;
@@ -17,13 +16,6 @@ public static class ModelPrep
         JArray Vae
     );
 
-    /// <summary>
-    /// Resolves the edit stage's model selection string to a T2IModel. Handles "(Use Base)",
-    /// "(Use Refiner)", and explicit model names. Sets mustReencode when the edit model's
-    /// compat class differs from the currently loaded model. Also updates
-    /// FinalLoadedModel/FinalLoadedModelList so downstream SwarmUI code sees the correct
-    /// model for metadata and compatibility checks.
-    /// </summary>
     public static T2IModel TryResolveEditModel(
         WorkflowGenerator g,
         string selection,
@@ -48,38 +40,19 @@ public static class ModelPrep
         return editModel;
     }
 
-    /// <summary>
-    /// Creates a model loader node for the edit model without any LoRAs applied. Temporarily
-    /// strips all LoRA params from UserInput so CreateModelLoader emits a clean checkpoint load,
-    /// then restores the original LoRA state. Apply stage-specific and global LoRAs afterward
-    /// via LoadLorasForConfinement.
-    /// </summary>
     public static ModelRef LoadEditModelWithoutLoras(
         WorkflowGenerator g,
         T2IModel editModel,
         int sectionId)
     {
-        ParamSnapshot snapshot = SnapshotLoraParams(g);
+        using ParamSnapshot snapshot = SnapshotLoraParams(g);
+        snapshot.Remove();
+        (T2IModel _, WGNodeData modelNode, WGNodeData clipNode, WGNodeData vaeNode) =
+            g.CreateModelLoader(editModel, "Edit", sectionId: sectionId);
 
-        try
-        {
-            snapshot.Remove();
-            (T2IModel _, WGNodeData modelNode, WGNodeData clipNode, WGNodeData vaeNode) =
-                g.CreateModelLoader(editModel, "Edit", sectionId: sectionId);
-
-            return new ModelRef(modelNode.Path, clipNode.Path, vaeNode.Path);
-        }
-        finally
-        {
-            snapshot.Reset();
-        }
+        return new ModelRef(modelNode.Path, clipNode.Path, vaeNode.Path);
     }
 
-    /// <summary>
-    /// Maps a model selection string to a T2IModel. Tries in order: "(Use Base)" / "(Use Refiner)"
-    /// keywords, exact match against base/refiner model names, then a full scan of the
-    /// Stable-Diffusion model registry for explicit model names.
-    /// </summary>
     private static T2IModel ResolveEditModel(string selection, T2IModel baseModel, T2IModel refinerModel)
     {
         static bool MatchesSelection(T2IModel model, string sel)
@@ -89,20 +62,20 @@ public static class ModelPrep
                 return false;
             }
 
-            if (string.Equals(model.Name, sel, StringComparison.OrdinalIgnoreCase))
+            if (StringUtils.Equals(model.Name, sel))
             {
                 return true;
             }
 
-            return string.Equals(T2IParamTypes.CleanModelName(model.Name), sel, StringComparison.OrdinalIgnoreCase);
+            return StringUtils.Equals(T2IParamTypes.CleanModelName(model.Name), sel);
         }
 
-        if (string.Equals(selection, UseBase, StringComparison.OrdinalIgnoreCase))
+        if (StringUtils.Equals(selection, UseBase))
         {
             return baseModel;
         }
 
-        if (string.Equals(selection, UseRefiner, StringComparison.OrdinalIgnoreCase))
+        if (StringUtils.Equals(selection, UseRefiner))
         {
             return refinerModel;
         }
@@ -124,7 +97,6 @@ public static class ModelPrep
             return direct;
         }
 
-        // Fallback: match against model name or cleaned display name
         foreach ((string _, T2IModel model) in handler.Models)
         {
             if (MatchesSelection(model, selection))
