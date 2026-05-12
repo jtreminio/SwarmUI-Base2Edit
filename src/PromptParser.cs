@@ -3,13 +3,23 @@ using SwarmUI.Utils;
 
 namespace Base2Edit;
 
-class PromptParser
+internal static class PromptParser
 {
-    private static readonly HashSet<string> SectionEndingTags = [
+    private const string EditTagName = "edit";
+    private const string EditOpenTag = "<edit";
+    private const string EditCidMarker = "//cid=";
+    private const string B2EImageTagName = "b2eimage";
+    private const string B2EImageOpenTag = "<b2eimage";
+    private const string B2EPromptTagName = "b2eprompt";
+    private const string B2EPromptOpenTag = "<b2eprompt";
+    private const int NoMatchCid = -1;
+
+    private static readonly HashSet<string> BuiltInSectionStarters = [
         "base",
         "refiner",
         "video",
         "videoswap",
+        "videoclip",
         "region",
         "segment",
         "object",
@@ -36,7 +46,7 @@ class PromptParser
         );
     }
 
-    public static bool TryExtractTagPrefix(string tag, out string prefixName, out string preData)
+    private static bool TryExtractTagPrefix(string tag, out string prefixName, out string preData)
     {
         prefixName = null;
         preData = null;
@@ -72,9 +82,9 @@ class PromptParser
         return !string.IsNullOrWhiteSpace(prefixName);
     }
 
-    private static bool IsSectionEndingTag(string tagPrefixLower)
+    private static bool IsSectionStartingTag(string tagPrefixLower)
     {
-        if (SectionEndingTags.Contains(tagPrefixLower))
+        if (BuiltInSectionStarters.Contains(tagPrefixLower))
         {
             return true;
         }
@@ -96,7 +106,7 @@ class PromptParser
         promptText ??= "";
         HashSet<string> dedupe = [];
 
-        if (!promptText.Contains("<b2eimage", StringComparison.OrdinalIgnoreCase))
+        if (!promptText.Contains(B2EImageOpenTag, StringComparison.OrdinalIgnoreCase))
         {
             return promptText;
         }
@@ -126,24 +136,12 @@ class PromptParser
 
             string tag = promptText[(open + 1)..close];
             if (TryExtractTagPrefix(tag, out string prefixName, out string preData)
-                && string.Equals(prefixName, "b2eimage", StringComparison.OrdinalIgnoreCase))
+                && StringUtils.Equals(prefixName, B2EImageTagName))
             {
-                StageResolver.ImageReference reference = TryNormalizeImageReference(
-                    preData,
-                    index,
-                    out string warning
-                );
-
-                if (reference is not null)
+                StageResolver.ImageReference reference = NormalizeImageReference(preData, index);
+                if (dedupe.Add(reference.NormalizedTarget))
                 {
-                    if (dedupe.Add(reference.NormalizedTarget))
-                    {
-                        references.Add(reference);
-                    }
-                }
-                else if (!string.IsNullOrWhiteSpace(warning))
-                {
-                    Logs.Warning(warning);
+                    references.Add(reference);
                 }
             }
             else
@@ -157,19 +155,16 @@ class PromptParser
         return output.ToString().Trim();
     }
 
-    private static StageResolver.ImageReference TryNormalizeImageReference(
+    private static StageResolver.ImageReference NormalizeImageReference(
         string preData,
-        int index,
-        out string warning)
+        int index)
     {
-        warning = null;
-        string warningBase = $"Base2Edit: Ignoring <b2eimage[]> in stage {index}";
-
         string raw = string.IsNullOrWhiteSpace(preData) ? "" : preData.Trim();
         if (string.IsNullOrWhiteSpace(raw))
         {
-            warning = $"{warningBase}: expected [base], [refiner], [editN]/[Edit Stage N], or [promptN].";
-            return null;
+            throw new SwarmUserErrorException(
+                $"Base2Edit: Invalid <b2eimage> tag in stage {index}: missing reference target. "
+                + "Expected [base], [refiner], [editN]/[Edit Stage N], or [promptN].");
         }
 
         string lower = raw.ToLowerInvariant();
@@ -197,8 +192,9 @@ class PromptParser
         {
             if (editIndex >= index)
             {
-                warning = $"{warningBase}: edit references must target an earlier stage.";
-                return null;
+                throw new SwarmUserErrorException(
+                    $"Base2Edit: Invalid <b2eimage[{raw}]> tag in stage {index}: "
+                    + "edit references must target an earlier stage.");
             }
 
             return new StageResolver.ImageReference(
@@ -221,61 +217,30 @@ class PromptParser
             );
         }
 
-        warning = $"{warningBase}: expected [base], [refiner], [editN]/[Edit Stage N], or [promptN].";
-        return null;
+        throw new SwarmUserErrorException(
+            $"Base2Edit: Invalid <b2eimage[{raw}]> tag in stage {index}: unrecognized target '{raw}'. "
+            + "Expected [base], [refiner], [editN]/[Edit Stage N], or [promptN].");
     }
 
     public static bool HasAnyEditSectionForStage(string prompt, int stageIndex)
     {
-        if (string.IsNullOrWhiteSpace(prompt) || !prompt.Contains("<edit", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(prompt) || !prompt.Contains(EditOpenTag, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
         int globalCid = Base2EditExtension.SectionID_Edit;
         int stageCid = Base2EditExtension.EditSectionIdForStage(stageIndex);
+        string canonical = CanonicalizeEditBrackets(prompt, stageIndex, globalCid, stageCid);
 
-        foreach (string piece in prompt.Split('<'))
+        foreach (PromptRegion.Part part in new PromptRegion(canonical).Parts)
         {
-            if (string.IsNullOrEmpty(piece))
-            {
-                continue;
-            }
-
-            int end = piece.IndexOf('>');
-            if (end == -1)
-            {
-                continue;
-            }
-
-            string tag = piece[..end];
-
-            if (!TryExtractTagPrefix(tag, out string prefixName, out string preData)
-                || !string.Equals(prefixName, "edit", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            int cidCut = tag.LastIndexOf("//cid=", StringComparison.OrdinalIgnoreCase);
-            if (cidCut != -1 && int.TryParse(tag[(cidCut + "//cid=".Length)..], out int cid))
-            {
-                if (cid == globalCid || cid == stageCid)
-                {
-                    return true;
-                }
-                continue;
-            }
-
-            if (preData is null)
-            {
-                return true;
-            }
-            if (int.TryParse(preData, out int tagStage) && tagStage == stageIndex)
+            if (part.Prefix == EditTagName
+                && (part.ContextID == globalCid || part.ContextID == stageCid))
             {
                 return true;
             }
         }
-
         return false;
     }
 
@@ -290,7 +255,7 @@ class PromptParser
 
         if (!ShouldFallbackForTagOnlyEditSection(prompt, originalPrompt, stageIndex))
         {
-            return (resolved ?? "").Trim();
+            return resolved.Trim();
         }
 
         for (int prevStage = stageIndex - 1; prevStage >= 0; prevStage--)
@@ -317,7 +282,7 @@ class PromptParser
         return fallback ?? "";
     }
 
-    public static bool ShouldFallbackForTagOnlyEditSection(string parsedPrompt, string originalPrompt, int stageIndex)
+    private static bool ShouldFallbackForTagOnlyEditSection(string parsedPrompt, string originalPrompt, int stageIndex)
     {
         if (stageIndex < 0 || !HasAnyEditSectionForStage(parsedPrompt, stageIndex))
         {
@@ -336,7 +301,7 @@ class PromptParser
             return false;
         }
 
-        if (sourceSection.Contains("<b2eimage", StringComparison.OrdinalIgnoreCase))
+        if (sourceSection.Contains(B2EImageOpenTag, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -349,11 +314,15 @@ class PromptParser
         return string.IsNullOrWhiteSpace(StripPromptTags(sourceSection));
     }
 
-    public static string StripPromptTags(string text)
+    private static string StripPromptTags(string text)
     {
-        if (string.IsNullOrWhiteSpace(text) || !text.Contains('<'))
+        if (string.IsNullOrWhiteSpace(text))
         {
-            return text ?? "";
+            return "";
+        }
+        if (!text.Contains('<'))
+        {
+            return text;
         }
 
         StringBuilder cleaned = new(text.Length);
@@ -379,247 +348,251 @@ class PromptParser
         return cleaned.ToString();
     }
 
-    public static string ExtractPromptWithoutB2EPrompt(string prompt, int stageIndex)
+    private static string ExtractPromptWithoutB2EPrompt(string prompt, int stageIndex)
     {
         if (string.IsNullOrWhiteSpace(prompt))
         {
             return "";
         }
-
-        if (!prompt.Contains("<edit", StringComparison.OrdinalIgnoreCase))
+        if (!prompt.Contains(EditOpenTag, StringComparison.OrdinalIgnoreCase))
         {
             return prompt.Trim();
         }
 
         int globalCid = Base2EditExtension.SectionID_Edit;
         int stageCid = Base2EditExtension.EditSectionIdForStage(stageIndex);
+        string canonical = CanonicalizeEditBrackets(prompt, stageIndex, globalCid, stageCid);
 
-        static void AppendWithBoundarySpace(ref string dest, string add)
+        StringBuilder result = new();
+        bool sawRelevant = false;
+        foreach (PromptRegion.Part part in new PromptRegion(canonical).Parts)
         {
-            if (string.IsNullOrEmpty(add))
+            if (part.Prefix != EditTagName)
             {
-                return;
+                continue;
             }
-            if (!string.IsNullOrEmpty(dest)
-                && !char.IsWhiteSpace(dest[^1])
-                && !char.IsWhiteSpace(add[0]))
+            int cid = part.ContextID;
+            if (cid == globalCid || cid == stageCid)
             {
-                dest += " ";
+                sawRelevant = true;
+                AppendWithBoundarySpace(result, part.Prompt);
             }
-            dest += add;
         }
 
-        string RemoveAllEditSections(string fullPrompt)
+        if (sawRelevant)
         {
-            if (string.IsNullOrWhiteSpace(fullPrompt) || !fullPrompt.Contains("<edit", StringComparison.OrdinalIgnoreCase))
-            {
-                return (fullPrompt ?? "").Trim();
-            }
-
-            string resultLocal = "";
-            bool inAnyEditSection = false;
-            string[] piecesLocal = fullPrompt.Split('<');
-            bool isFirstPiece = true;
-
-            foreach (string piece in piecesLocal)
-            {
-                if (isFirstPiece)
-                {
-                    isFirstPiece = false;
-                    if (!inAnyEditSection)
-                    {
-                        resultLocal += piece;
-                    }
-                    continue;
-                }
-
-                if (string.IsNullOrEmpty(piece))
-                {
-                    continue;
-                }
-
-                int end = piece.IndexOf('>');
-                if (end == -1)
-                {
-                    if (!inAnyEditSection)
-                    {
-                        resultLocal += "<" + piece;
-                    }
-                    continue;
-                }
-
-                string tag = piece[..end];
-
-                if (!PromptParser.TryExtractTagPrefix(tag, out string prefixName, out _))
-                {
-                    if (!inAnyEditSection)
-                    {
-                        resultLocal += "<" + piece;
-                    }
-                    continue;
-                }
-
-                string tagPrefixLower = prefixName.ToLowerInvariant();
-                bool isEditTag = tagPrefixLower == "edit";
-
-                if (isEditTag)
-                {
-                    inAnyEditSection = true;
-                    continue;
-                }
-
-                if (inAnyEditSection)
-                {
-                    if (IsSectionEndingTag(tagPrefixLower))
-                    {
-                        inAnyEditSection = false;
-                    }
-                    else
-                    {
-                        continue;
-                    }
-                }
-
-                resultLocal += "<" + piece;
-            }
-
-            return resultLocal.Trim();
+            return result.ToString().Trim();
         }
+        return RemoveAllEditSections(canonical);
+    }
 
-        string result = "";
+    private static string CanonicalizeEditBrackets(
+        string prompt,
+        int stageIndex,
+        int globalCid,
+        int stageCid)
+    {
+        StringBuilder result = new(prompt.Length + 16);
         string[] pieces = prompt.Split('<');
-        bool inWantedSection = false;
-        bool sawRelevantEditTag = false;
-
+        bool first = true;
         foreach (string piece in pieces)
         {
+            if (first)
+            {
+                first = false;
+                result.Append(piece);
+                continue;
+            }
             if (string.IsNullOrEmpty(piece))
             {
                 continue;
             }
-
             int end = piece.IndexOf('>');
             if (end == -1)
             {
-                if (inWantedSection)
-                {
-                    result += "<" + piece;
-                }
+                result.Append('<').Append(piece);
                 continue;
             }
-
             string tag = piece[..end];
             string content = piece[(end + 1)..];
 
-            if (!PromptParser.TryExtractTagPrefix(tag, out string prefixName, out string preData))
+            if (tag.Contains(EditCidMarker, StringComparison.OrdinalIgnoreCase)
+                || !TryParseEditTag(tag, out string preData))
             {
-                if (inWantedSection)
-                {
-                    result += "<" + piece;
-                }
+                result.Append('<').Append(piece);
                 continue;
             }
 
-            string tagPrefixLower = prefixName.ToLowerInvariant();
-            bool isEditTag = tagPrefixLower == "edit";
-            if (isEditTag)
-            {
-                bool wantThisSection = false;
-
-                int cidCut = tag.LastIndexOf("//cid=", StringComparison.OrdinalIgnoreCase);
-                if (cidCut != -1 && int.TryParse(tag[(cidCut + "//cid=".Length)..], out int cid))
-                {
-                    wantThisSection = cid == globalCid || cid == stageCid;
-                }
-                else if (preData is null)
-                {
-                    wantThisSection = true;
-                }
-                else if (int.TryParse(preData, out int tagStage) && tagStage == stageIndex)
-                {
-                    wantThisSection = true;
-                }
-
-                if (wantThisSection)
-                {
-                    sawRelevantEditTag = true;
-                }
-
-                inWantedSection = wantThisSection;
-                if (inWantedSection)
-                {
-                    AppendWithBoundarySpace(ref result, content);
-                }
-            }
-            else if (inWantedSection)
-            {
-                if (IsSectionEndingTag(tagPrefixLower))
-                {
-                    inWantedSection = false;
-                }
-                else
-                {
-                    result += "<" + piece;
-                }
-            }
+            int cid = ResolveBracketCid(preData, stageIndex, globalCid, stageCid);
+            result.Append('<').Append(EditTagName).Append(EditCidMarker).Append(cid)
+                  .Append('>').Append(content);
         }
-
-        if (!sawRelevantEditTag)
-        {
-            return RemoveAllEditSections(prompt);
-        }
-
-        return result.Trim();
+        return result.ToString();
     }
 
-    public static string ResolveB2EPromptTags(string sourcePrompt, string promptText, int stageIndex, HashSet<string> referenceStack)
+    private static bool TryParseEditTag(string tag, out string preData)
     {
-        if (string.IsNullOrWhiteSpace(promptText) || !promptText.Contains("<b2eprompt", StringComparison.OrdinalIgnoreCase))
+        preData = null;
+        int colon = tag.IndexOf(':');
+        string prefix = colon == -1 ? tag : tag[..colon];
+        if (prefix.EndsWith(']') && prefix.Contains('['))
         {
-            return (promptText ?? "").Trim();
+            int open = prefix.LastIndexOf('[');
+            preData = prefix[(open + 1)..^1];
+            prefix = prefix[..open];
+        }
+        return StringUtils.Equals(prefix, EditTagName);
+    }
+
+    private static int ResolveBracketCid(
+        string preData,
+        int stageIndex,
+        int globalCid,
+        int stageCid)
+    {
+        if (string.IsNullOrWhiteSpace(preData))
+        {
+            return globalCid;
+        }
+        return int.TryParse(preData.Trim(), out int tagStage) && tagStage == stageIndex
+            ? stageCid
+            : NoMatchCid;
+    }
+
+    private static string RemoveAllEditSections(string canonicalPrompt)
+    {
+        if (string.IsNullOrWhiteSpace(canonicalPrompt))
+        {
+            return "";
+        }
+        if (!canonicalPrompt.Contains(EditOpenTag, StringComparison.OrdinalIgnoreCase))
+        {
+            return canonicalPrompt.Trim();
         }
 
-        string resolved = "";
+        StringBuilder result = new();
+        bool first = true;
+        bool inEdit = false;
+        foreach (string piece in canonicalPrompt.Split('<'))
+        {
+            if (first)
+            {
+                first = false;
+                result.Append(piece);
+                continue;
+            }
+            if (string.IsNullOrEmpty(piece))
+            {
+                continue;
+            }
+            int end = piece.IndexOf('>');
+            if (end == -1)
+            {
+                if (!inEdit)
+                {
+                    result.Append('<').Append(piece);
+                }
+                continue;
+            }
+            string prefix = ExtractTagPrefixLower(piece[..end]);
+            if (prefix == EditTagName)
+            {
+                inEdit = true;
+                continue;
+            }
+            if (inEdit && !IsSectionStartingTag(prefix))
+            {
+                continue;
+            }
+            inEdit = false;
+            result.Append('<').Append(piece);
+        }
+        return result.ToString().Trim();
+    }
+
+    private static string ExtractTagPrefixLower(string tag)
+    {
+        int colon = tag.IndexOf(':');
+        string prefix = colon == -1 ? tag : tag[..colon];
+        int slash = prefix.IndexOf('/');
+        if (slash != -1)
+        {
+            prefix = prefix[..slash];
+        }
+        if (prefix.EndsWith(']') && prefix.Contains('['))
+        {
+            prefix = prefix[..prefix.LastIndexOf('[')];
+        }
+        return prefix.ToLowerInvariant();
+    }
+
+    private static void AppendWithBoundarySpace(StringBuilder dest, string add)
+    {
+        if (string.IsNullOrEmpty(add))
+        {
+            return;
+        }
+        if (dest.Length > 0
+            && !char.IsWhiteSpace(dest[^1])
+            && !char.IsWhiteSpace(add[0]))
+        {
+            dest.Append(' ');
+        }
+        dest.Append(add);
+    }
+
+    private static string ResolveB2EPromptTags(string sourcePrompt, string promptText, int stageIndex, HashSet<string> referenceStack)
+    {
+        if (string.IsNullOrWhiteSpace(promptText))
+        {
+            return "";
+        }
+        if (!promptText.Contains(B2EPromptOpenTag, StringComparison.OrdinalIgnoreCase))
+        {
+            return promptText.Trim();
+        }
+
+        StringBuilder resolved = new(promptText.Length);
         int cursor = 0;
         while (cursor < promptText.Length)
         {
             int open = promptText.IndexOf('<', cursor);
             if (open == -1)
             {
-                resolved += promptText[cursor..];
+                resolved.Append(promptText[cursor..]);
                 break;
             }
 
             if (open > cursor)
             {
-                resolved += promptText[cursor..open];
+                resolved.Append(promptText[cursor..open]);
             }
 
             int close = promptText.IndexOf('>', open + 1);
             if (close == -1)
             {
-                resolved += promptText[open..];
+                resolved.Append(promptText[open..]);
                 break;
             }
 
             string tag = promptText[(open + 1)..close];
-            if (PromptParser.TryExtractTagPrefix(tag, out string prefixName, out string preData)
-                && string.Equals(prefixName, "b2eprompt", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractTagPrefix(tag, out string prefixName, out string preData)
+                && StringUtils.Equals(prefixName, B2EPromptTagName))
             {
-                resolved += ResolveB2EPromptReference(sourcePrompt, preData, stageIndex, referenceStack);
+                resolved.Append(ResolveB2EPromptReference(sourcePrompt, preData, stageIndex, referenceStack));
             }
             else
             {
-                resolved += promptText[open..(close + 1)];
+                resolved.Append(promptText[open..(close + 1)]);
             }
 
             cursor = close + 1;
         }
 
-        return resolved.Trim();
+        return resolved.ToString().Trim();
     }
 
-    public static string ResolveB2EPromptReference(string sourcePrompt, string preData, int stageIndex, HashSet<string> referenceStack)
+    private static string ResolveB2EPromptReference(string sourcePrompt, string preData, int stageIndex, HashSet<string> referenceStack)
     {
         string target = string.IsNullOrWhiteSpace(preData) ? "global" : preData.Trim();
         string targetLower = target.ToLowerInvariant();
@@ -654,11 +627,12 @@ class PromptParser
             }
         }
 
-        Logs.Warning($"Base2Edit: Invalid <b2eprompt[{target}]> in stage {stageIndex}; using global prompt fallback.");
-        return GetGlobalPromptText(sourcePrompt);
+        throw new SwarmUserErrorException(
+            $"Base2Edit: Invalid <b2eprompt[{target}]> in stage {stageIndex}: unrecognized target. "
+            + "Expected [global], [base], [refiner], or a non-negative stage index.");
     }
 
-    public static string ResolveNamedB2EPromptReference(string sourcePrompt, string targetLower, int stageIndex, HashSet<string> referenceStack)
+    private static string ResolveNamedB2EPromptReference(string sourcePrompt, string targetLower, int stageIndex, HashSet<string> referenceStack)
     {
         string key = $"named:{targetLower}";
         if (!referenceStack.Add(key))
@@ -684,7 +658,7 @@ class PromptParser
         }
     }
 
-    public static string GetGlobalPromptText(string prompt)
+    private static string GetGlobalPromptText(string prompt)
     {
         if (string.IsNullOrWhiteSpace(prompt))
         {

@@ -418,12 +418,23 @@ public class B2EImageReferenceTests
     }
 
     [Fact]
-    public void B2EImage_forward_or_self_edit_references_are_skipped()
+    public void B2EImage_self_edit_reference_throws()
     {
-        T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0 <b2eimage[edit0]> <b2eimage[edit1]>");
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0 <b2eimage[edit0]>");
 
-        Assert.Single(WorkflowQuery.NodesOfType(workflow, "ReferenceLatent"));
+        SwarmUserErrorException ex = Assert.Throws<SwarmUserErrorException>(
+            () => WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
+        Assert.Contains("must target an earlier stage", ex.Message);
+    }
+
+    [Fact]
+    public void B2EImage_forward_edit_reference_throws()
+    {
+        T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0 <b2eimage[edit1]>");
+
+        SwarmUserErrorException ex = Assert.Throws<SwarmUserErrorException>(
+            () => WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
+        Assert.Contains("must target an earlier stage", ex.Message);
     }
 
     [Fact]
