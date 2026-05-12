@@ -15,6 +15,8 @@ public class StageRefStore(WorkflowGenerator g)
     private const string EditStagePrefix = "Edit Stage ";
     private const string EditAliasPrefix = "edit";
 
+    private static readonly string[] StageProperties = ["model", "clip", "media", "vae"];
+
     public enum StageKind
     {
         Base,
@@ -63,19 +65,18 @@ public class StageRefStore(WorkflowGenerator g)
             data.Compat?.ID ?? "");
     }
 
-    private WGNodeData LoadNodeData(string key, string fallbackDataType, WGNodeData fallbackVae = null)
+    private WGNodeData LoadNodeData(WorkflowBridge bridge, string key, string fallbackDataType, WGNodeData fallbackVae = null)
     {
         if (!g.NodeHelpers.TryGetValue(key, out string encoded) || string.IsNullOrWhiteSpace(encoded))
         {
             return null;
         }
         string[] parts = encoded.Split('|');
-        if (parts.Length < 5 || !int.TryParse(parts[1], out int slot))
+        if (parts.Length < 6 || !int.TryParse(parts[1], out int slot))
         {
             return null;
         }
         string nodeId = parts[0];
-        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
         ComfyNode node = bridge.Graph.GetNode(nodeId);
         if (node is null)
         {
@@ -90,8 +91,7 @@ public class StageRefStore(WorkflowGenerator g)
             return null;
         }
         string dataType = !string.IsNullOrEmpty(parts[2]) ? parts[2] : fallbackDataType;
-        string compatId = parts.Length >= 6 ? parts[5] : "";
-        T2IModelCompatClass compat = ResolveCompatFor(dataType, fallbackVae, compatId);
+        T2IModelCompatClass compat = ResolveCompatFor(dataType, fallbackVae, parts[5]);
         return new WGNodeData(WorkflowBridge.ToPath(output), g, dataType, compat)
         {
             Width = Nullable(parts[3]),
@@ -99,16 +99,17 @@ public class StageRefStore(WorkflowGenerator g)
         };
     }
 
-    private bool HasCaptured(StageKind kind, int? index = null) =>
-        g.NodeHelpers.ContainsKey(NodeKey(kind, index, "model"));
+    private StageRef GetIfCaptured(StageKind kind, int? index = null) =>
+        g.NodeHelpers.ContainsKey(NodeKey(kind, index, "model")) ? LoadStageRef(kind, index) : null;
 
     private StageRef LoadStageRef(StageKind kind, int? index = null)
     {
-        WGNodeData vae = LoadNodeData(NodeKey(kind, index, "vae"), WGNodeData.DT_VAE);
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        WGNodeData vae = LoadNodeData(bridge, NodeKey(kind, index, "vae"), WGNodeData.DT_VAE);
         return new(
-            Model: LoadNodeData(NodeKey(kind, index, "model"), WGNodeData.DT_MODEL, vae),
-            TextEnc: LoadNodeData(NodeKey(kind, index, "clip"), WGNodeData.DT_TEXTENC, vae),
-            Media: LoadNodeData(NodeKey(kind, index, "media"), WGNodeData.DT_LATENT_IMAGE, vae),
+            Model: LoadNodeData(bridge, NodeKey(kind, index, "model"), WGNodeData.DT_MODEL, vae),
+            TextEnc: LoadNodeData(bridge, NodeKey(kind, index, "clip"), WGNodeData.DT_TEXTENC, vae),
+            Media: LoadNodeData(bridge, NodeKey(kind, index, "media"), WGNodeData.DT_LATENT_IMAGE, vae),
             Vae: vae
         );
     }
@@ -131,8 +132,8 @@ public class StageRefStore(WorkflowGenerator g)
         return fallbackVae?.Compat ?? g.CurrentVae?.Compat ?? g.CurrentCompat();
     }
 
-    public StageRef Base => HasCaptured(StageKind.Base) ? LoadStageRef(StageKind.Base) : null;
-    public StageRef Refiner => HasCaptured(StageKind.Refiner) ? LoadStageRef(StageKind.Refiner) : null;
+    public StageRef Base => GetIfCaptured(StageKind.Base);
+    public StageRef Refiner => GetIfCaptured(StageKind.Refiner);
 
     public void Capture(StageKind stage, int? index = null)
     {
@@ -145,34 +146,25 @@ public class StageRefStore(WorkflowGenerator g)
 
     public bool TryGetEditRef(int index, out StageRef stageRef)
     {
-        stageRef = null;
-        if (!HasCaptured(StageKind.Edit, index))
-        {
-            return false;
-        }
-
-        stageRef = LoadStageRef(StageKind.Edit, index);
-        return true;
+        stageRef = GetIfCaptured(StageKind.Edit, index);
+        return stageRef is not null;
     }
 
     public bool DiscardEdit(int index)
     {
-        bool removedModel = g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, "model"));
-        bool removedClip = g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, "clip"));
-        bool removedMedia = g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, "media"));
-        bool removedVae = g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, "vae"));
+        bool removed = false;
+        foreach (string property in StageProperties)
+        {
+            removed |= g.NodeHelpers.Remove(NodeKey(StageKind.Edit, index, property));
+        }
         g.NodeHelpers.Remove(PublishedEditNodeKey(index));
-        return removedModel || removedClip || removedMedia || removedVae;
+        return removed;
     }
 
-    public CapturedModelState? GetCapturedModelState(StageKind stageKind)
+    public CapturedModelState GetCapturedModelState(StageKind stageKind)
     {
-        if (!HasCaptured(stageKind))
-        {
-            return null;
-        }
-        StageRef r = LoadStageRef(stageKind);
-        if (r.Model?.Path is not JArray { Count: 2 }
+        if (GetIfCaptured(stageKind) is not { } r
+            || r.Model?.Path is not JArray { Count: 2 }
             || r.TextEnc?.Path is not JArray { Count: 2 }
             || r.Vae?.Path is not JArray { Count: 2 })
         {
