@@ -440,11 +440,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             && altEditVae is not null
             && altEditVae.Name != "Automatic")
         {
-            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
-            VAELoaderNode vaeNode = bridge.AddNode(
-                new VAELoaderNode().With(VaeName: altEditVae.ToString(g.ModelFolderFormat)),
-                id: $"{g.LastID++}");
-            vae = new WGNodeData(WorkflowBridge.ToPath(vaeNode.VAE), g, WGNodeData.DT_VAE, g.CurrentCompat());
+            JArray vaeArray = g.CreateVAELoader(altEditVae.ToString(g.ModelFolderFormat));
+            vae = new WGNodeData(vaeArray, g, WGNodeData.DT_VAE, g.CurrentCompat());
             g.CurrentVae = vae;
             return (vae, true);
         }
