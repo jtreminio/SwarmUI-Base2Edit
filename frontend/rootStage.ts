@@ -1,7 +1,7 @@
 import type { RootStage, Stage } from "./types";
 import { Utils } from "./Utils";
 
-export function getRootStage(): RootStage {
+export const getRootStage = (): RootStage => {
     return {
         refineOnly: Utils.getInputElement(
             "input_refineonly",
@@ -24,9 +24,9 @@ export function getRootStage(): RootStage {
             "input_editscheduler",
         ) as HTMLSelectElement,
     };
-}
+};
 
-export function createStage(applyAfter: string): Stage {
+export const createStage = (applyAfter: string): Stage => {
     const readToggleableRoot = (id: string): string | null => {
         const el = Utils.getInputElement(`input_${id}`);
         if (!el) {
@@ -72,11 +72,11 @@ export function createStage(applyAfter: string): Stage {
         sampler: readToggleableRoot("editsampler"),
         scheduler: readToggleableRoot("editscheduler"),
     };
-}
+};
 
-export function isBase2EditGroupEnabled(): boolean {
+export const isBase2EditGroupEnabled = (): boolean => {
     const toggler = Utils.getInputElement(
         "input_group_content_baseedit_toggle",
     );
     return !toggler || !!toggler.checked;
-}
+};

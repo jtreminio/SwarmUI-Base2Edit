@@ -1,4 +1,4 @@
-export function registerEditPromptPrefix(): void {
+export const registerEditPromptPrefix = (): void => {
     promptTabComplete.registerPrefix(
         "edit",
         "Add a section of prompt text that is only used for Base2Edit edit stages.",
@@ -9,9 +9,9 @@ export function registerEditPromptPrefix(): void {
         ],
         true,
     );
-}
+};
 
-export function registerB2EPromptPrefix(): void {
+export const registerB2EPromptPrefix = (): void => {
     promptTabComplete.registerPrefix(
         "b2eprompt",
         "Use a Base2Edit prompt reference by stage: global, base, refiner, or edit stage number.",
@@ -46,9 +46,9 @@ export function registerB2EPromptPrefix(): void {
         ],
         true,
     );
-}
+};
 
-export function registerB2EImagePrefix(): void {
+export const registerB2EImagePrefix = (): void => {
     promptTabComplete.registerPrefix(
         "b2eimage",
         "Use an image reference from an earlier stage inside an <edit> section.",
@@ -88,4 +88,4 @@ export function registerB2EImagePrefix(): void {
         () => ['\nInserts "<b2eimage[prompt0]>"'],
         true,
     );
-}
+};

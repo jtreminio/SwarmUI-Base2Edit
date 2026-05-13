@@ -12,7 +12,7 @@ export type GenerateWrapDeps = {
     serializeStagesFromUi: () => void;
 };
 
-export function createGenerateWrap(deps: GenerateWrapDeps): GenerateWrapApi {
+export const createGenerateWrap = (deps: GenerateWrapDeps): GenerateWrapApi => {
     let genButtonWrapped = false;
     let genWrapInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -78,4 +78,4 @@ export function createGenerateWrap(deps: GenerateWrapDeps): GenerateWrapApi {
         tryWrap,
         startRetry,
     };
-}
+};

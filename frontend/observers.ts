@@ -16,7 +16,7 @@ export type ObserversApi = {
     markPersisted: (json: string, enabled: boolean) => void;
 };
 
-export function createObservers(deps: ObserversDeps): ObserversApi {
+export const createObservers = (deps: ObserversDeps): ObserversApi => {
     const stageSyncTimers = new Map<number, ReturnType<typeof setTimeout>>();
     let stagesInputSyncInterval: ReturnType<typeof setInterval> | null = null;
     let lastKnownStagesJson = "";
@@ -194,4 +194,4 @@ export function createObservers(deps: ObserversDeps): ObserversApi {
         publishStageAvailability,
         markPersisted,
     };
-}
+};

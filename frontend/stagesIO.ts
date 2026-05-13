@@ -6,16 +6,19 @@ export type StagesIOSaveDeps = {
     onAfterSave: (json: string) => void;
 };
 
-export function getStages(): Stage[] {
+export const getStages = (): Stage[] => {
     try {
         const stages = Utils.getInputElement("input_editstages");
         return JSON.parse(stages?.value ?? "[]");
     } catch {
         return [];
     }
-}
+};
 
-export function saveStages(newStages: Stage[], deps: StagesIOSaveDeps): void {
+export const saveStages = (
+    newStages: Stage[],
+    deps: StagesIOSaveDeps,
+): void => {
     const stages = Utils.getInputElement(
         "input_editstages",
     ) as HTMLInputElement;
@@ -24,9 +27,9 @@ export function saveStages(newStages: Stage[], deps: StagesIOSaveDeps): void {
         triggerChangeFor(stages);
     }
     deps.onAfterSave(stages.value);
-}
+};
 
-export function updateStageFromUi(prefix: string, stage: Stage): void {
+export const updateStageFromUi = (prefix: string, stage: Stage): void => {
     const val = (
         id: string,
         isBool = false,
@@ -66,9 +69,9 @@ export function updateStageFromUi(prefix: string, stage: Stage): void {
     stage.scheduler = isEnabled("editscheduler")
         ? `${val("editscheduler") || stage.scheduler}`
         : null;
-}
+};
 
-export function serializeStagesFromUi(deps: StagesIOSaveDeps): void {
+export const serializeStagesFromUi = (deps: StagesIOSaveDeps): void => {
     const stages = getStages();
 
     for (let i = 0; i < stages.length; i++) {
@@ -78,4 +81,4 @@ export function serializeStagesFromUi(deps: StagesIOSaveDeps): void {
     }
 
     saveStages(stages, deps);
-}
+};

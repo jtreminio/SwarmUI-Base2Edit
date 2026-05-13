@@ -16,7 +16,7 @@ export interface StageEditorApi {
     startGenerateWrapRetry: (intervalMs?: number) => void;
 }
 
-export function stageEditor(): StageEditorApi {
+export const stageEditor = (): StageEditorApi => {
     let editor: HTMLElement | null = null;
     let observers!: ObserversApi;
 
@@ -89,4 +89,4 @@ export function stageEditor(): StageEditorApi {
         init,
         startGenerateWrapRetry,
     };
-}
+};

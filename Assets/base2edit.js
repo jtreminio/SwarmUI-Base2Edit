@@ -1,7 +1,7 @@
 "use strict";
 (() => {
   // frontend/imageButtons.ts
-  function createImageButtons() {
+  var createImageButtons = () => {
     const BUTTON_LABEL = "Base2Edit";
     const BUTTON_TITLE = "Runs an edit-only Base2Edit pass on this image";
     let wrapped = false;
@@ -45,10 +45,10 @@
       }, 100);
     };
     return { init, waitFor };
-  }
+  };
 
   // frontend/promptPrefixes.ts
-  function registerEditPromptPrefix() {
+  var registerEditPromptPrefix = () => {
     promptTabComplete.registerPrefix(
       "edit",
       "Add a section of prompt text that is only used for Base2Edit edit stages.",
@@ -59,8 +59,8 @@
       ],
       true
     );
-  }
-  function registerB2EPromptPrefix() {
+  };
+  var registerB2EPromptPrefix = () => {
     promptTabComplete.registerPrefix(
       "b2eprompt",
       "Use a Base2Edit prompt reference by stage: global, base, refiner, or edit stage number.",
@@ -92,8 +92,8 @@
       ],
       true
     );
-  }
-  function registerB2EImagePrefix() {
+  };
+  var registerB2EImagePrefix = () => {
     promptTabComplete.registerPrefix(
       "b2eimage",
       "Use an image reference from an earlier stage inside an <edit> section.",
@@ -129,10 +129,10 @@
       () => ['\nInserts "<b2eimage[prompt0]>"'],
       true
     );
-  }
+  };
 
   // frontend/runEditOnly.ts
-  function runEditOnlyFromImage(src) {
+  var runEditOnlyFromImage = (src) => {
     if (!src) {
       showError("Cannot run Base2Edit: no image selected.");
       return;
@@ -163,7 +163,7 @@
       toDataURL(src, runWithUrl);
     };
     tmpImg.src = src;
-  }
+  };
 
   // frontend/Utils.ts
   var Utils = {
@@ -179,7 +179,7 @@
   };
 
   // frontend/rootStage.ts
-  function getRootStage() {
+  var getRootStage = () => {
     return {
       refineOnly: Utils.getInputElement(
         "input_refineonly"
@@ -202,8 +202,8 @@
         "input_editscheduler"
       )
     };
-  }
-  function createStage(applyAfter) {
+  };
+  var createStage = (applyAfter) => {
     const readToggleableRoot = (id) => {
       const el = Utils.getInputElement(`input_${id}`);
       if (!el) {
@@ -236,23 +236,23 @@
       sampler: readToggleableRoot("editsampler"),
       scheduler: readToggleableRoot("editscheduler")
     };
-  }
-  function isBase2EditGroupEnabled() {
+  };
+  var isBase2EditGroupEnabled = () => {
     const toggler = Utils.getInputElement(
       "input_group_content_baseedit_toggle"
     );
     return !toggler || !!toggler.checked;
-  }
+  };
 
   // frontend/validation.ts
-  function isMissingStageRef(applyAfter, stageIds) {
+  var isMissingStageRef = (applyAfter, stageIds) => {
     const m = applyAfter.match(/^Edit Stage (\d+)$/);
     if (!m) {
       return false;
     }
     return !stageIds.includes(parseInt(m[1], 10));
-  }
-  function validateStages(stages) {
+  };
+  var validateStages = (stages) => {
     const errors = [];
     for (let i = 0; i < stages.length; i++) {
       const stage = stages[i];
@@ -269,8 +269,8 @@
       }
     }
     return errors;
-  }
-  function buildApplyAfterList(stageIds, stageId, currentVal) {
+  };
+  var buildApplyAfterList = (stageIds, stageId, currentVal) => {
     const values = ["Refiner"];
     const refs = [...stageIds].filter((id) => id < stageId).sort((a, b) => a - b).map((id) => `Edit Stage ${id}`);
     values.push(...refs);
@@ -278,8 +278,8 @@
       values.unshift(currentVal);
     }
     return values;
-  }
-  function cleanApplyAfterOptions(applyElem, stageIds, stageId) {
+  };
+  var cleanApplyAfterOptions = (applyElem, stageIds, stageId) => {
     const selectedVal = `${applyElem.value}`;
     const isValid = (val) => {
       if (val === "Refiner") {
@@ -305,8 +305,8 @@
         opt.remove();
       }
     }
-  }
-  function validateApplyAfter(prefix, stageIds, stageId) {
+  };
+  var validateApplyAfter = (prefix, stageIds, stageId) => {
     const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
     if (!applyElem) {
       return;
@@ -325,10 +325,10 @@
     err.style.marginTop = "4px";
     err.innerText = "Invalid Apply After: Dependency chain has changed! Adjust the apply after stage.";
     findParentOfClass(applyElem, "auto-input").appendChild(err);
-  }
+  };
 
   // frontend/generateWrap.ts
-  function createGenerateWrap(deps) {
+  var createGenerateWrap = (deps) => {
     let genButtonWrapped = false;
     let genWrapInterval = null;
     const tryWrap = () => {
@@ -380,10 +380,10 @@
       tryWrap,
       startRetry
     };
-  }
+  };
 
   // frontend/observers.ts
-  function createObservers(deps) {
+  var createObservers = (deps) => {
     const stageSyncTimers = /* @__PURE__ */ new Map();
     let stagesInputSyncInterval = null;
     let lastKnownStagesJson = "";
@@ -524,20 +524,20 @@
       publishStageAvailability,
       markPersisted
     };
-  }
+  };
 
   // frontend/renderStages.ts
-  function applyFullWidthLayout(elem) {
+  var applyFullWidthLayout = (elem) => {
     elem.style.width = "100%";
     elem.style.maxWidth = "100%";
     elem.style.minWidth = "0";
-  }
-  function applyEditorLayout(editor2) {
+  };
+  var applyEditorLayout = (editor2) => {
     applyFullWidthLayout(editor2);
     editor2.style.flex = "1 1 100%";
     editor2.style.overflow = "visible";
-  }
-  function buildFieldsForStage(stage, prefix, applyValues) {
+  };
+  var buildFieldsForStage = (stage, prefix, applyValues) => {
     const rootStage = getRootStage();
     const parts = [];
     parts.push(
@@ -753,8 +753,8 @@
       )
     );
     return parts;
-  }
-  function showStages(editor2, deps) {
+  };
+  var showStages = (editor2, deps) => {
     const stages = deps.getStages();
     const stageIds = [0, ...stages.map((_, idx) => idx + 1)];
     const list = document.createElement("div");
@@ -834,8 +834,8 @@
       showStages(editor2, deps);
     });
     editor2.appendChild(addBtn);
-  }
-  function addRemoveBtnListener(list, deps) {
+  };
+  var addRemoveBtnListener = (list, deps) => {
     list.addEventListener("click", (e) => {
       const btn = e.target.closest(
         'button[data-base2edit-action="remove-stage"]'
@@ -859,18 +859,18 @@
       deps.saveStages(stages);
       showStages(list.parentElement, deps);
     });
-  }
+  };
 
   // frontend/stagesIO.ts
-  function getStages() {
+  var getStages = () => {
     try {
       const stages = Utils.getInputElement("input_editstages");
       return JSON.parse(stages?.value ?? "[]");
     } catch {
       return [];
     }
-  }
-  function saveStages(newStages, deps) {
+  };
+  var saveStages = (newStages, deps) => {
     const stages = Utils.getInputElement(
       "input_editstages"
     );
@@ -879,8 +879,8 @@
       triggerChangeFor(stages);
     }
     deps.onAfterSave(stages.value);
-  }
-  function updateStageFromUi(prefix, stage) {
+  };
+  var updateStageFromUi = (prefix, stage) => {
     const val = (id, isBool = false) => {
       const el = Utils.getInputElement(`${prefix}${id}`);
       if (!el) {
@@ -907,8 +907,8 @@
     stage.cfgScale = isEnabled("editcfgscale") ? parseFloat(String(val("editcfgscale") ?? stage.cfgScale)) : null;
     stage.sampler = isEnabled("editsampler") ? `${val("editsampler") || stage.sampler}` : null;
     stage.scheduler = isEnabled("editscheduler") ? `${val("editscheduler") || stage.scheduler}` : null;
-  }
-  function serializeStagesFromUi(deps) {
+  };
+  var serializeStagesFromUi = (deps) => {
     const stages = getStages();
     for (let i = 0; i < stages.length; i++) {
       const stageId = i + 1;
@@ -916,10 +916,10 @@
       updateStageFromUi(prefix, stages[i]);
     }
     saveStages(stages, deps);
-  }
+  };
 
   // frontend/stageEditor.ts
-  function stageEditor() {
+  var stageEditor = () => {
     let editor2 = null;
     let observers;
     const createEditorElem = () => {
@@ -980,7 +980,7 @@
       init,
       startGenerateWrapRetry
     };
-  }
+  };
 
   // frontend/main.ts
   var editor = stageEditor();

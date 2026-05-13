@@ -1,4 +1,4 @@
-export function runEditOnlyFromImage(src: string): void {
+export const runEditOnlyFromImage = (src: string): void => {
     if (!src) {
         showError("Cannot run Base2Edit: no image selected.");
         return;
@@ -33,4 +33,4 @@ export function runEditOnlyFromImage(src: string): void {
         toDataURL(src, runWithUrl);
     };
     tmpImg.src = src;
-}
+};

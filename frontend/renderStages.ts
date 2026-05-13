@@ -13,23 +13,23 @@ export type RenderDeps = {
     serializeStagesFromUi: () => void;
 };
 
-export function applyFullWidthLayout(elem: HTMLElement): void {
+export const applyFullWidthLayout = (elem: HTMLElement): void => {
     elem.style.width = "100%";
     elem.style.maxWidth = "100%";
     elem.style.minWidth = "0";
-}
+};
 
-export function applyEditorLayout(editor: HTMLElement): void {
+export const applyEditorLayout = (editor: HTMLElement): void => {
     applyFullWidthLayout(editor);
     editor.style.flex = "1 1 100%";
     editor.style.overflow = "visible";
-}
+};
 
-export function buildFieldsForStage(
+export const buildFieldsForStage = (
     stage: Stage,
     prefix: string,
     applyValues: string[],
-): Array<{ html: string; runnable: () => void }> {
+): Array<{ html: string; runnable: () => void }> => {
     const rootStage = getRootStage();
     const parts: Array<{ html: string; runnable: () => void }> = [];
 
@@ -254,9 +254,9 @@ export function buildFieldsForStage(
     );
 
     return parts;
-}
+};
 
-export function showStages(editor: HTMLElement, deps: RenderDeps): void {
+export const showStages = (editor: HTMLElement, deps: RenderDeps): void => {
     const stages = deps.getStages();
     const stageIds = [0, ...stages.map((_, idx) => idx + 1)];
     const list = document.createElement("div");
@@ -351,12 +351,12 @@ export function showStages(editor: HTMLElement, deps: RenderDeps): void {
         showStages(editor, deps);
     });
     editor.appendChild(addBtn);
-}
+};
 
-export function addRemoveBtnListener(
+export const addRemoveBtnListener = (
     list: HTMLElement,
     deps: RenderDeps,
-): void {
+): void => {
     list.addEventListener("click", (e) => {
         const btn = (e.target as Element).closest(
             'button[data-base2edit-action="remove-stage"]',
@@ -382,4 +382,4 @@ export function addRemoveBtnListener(
         deps.saveStages(stages);
         showStages(list.parentElement as HTMLElement, deps);
     });
-}
+};

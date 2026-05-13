@@ -3,7 +3,7 @@ export interface ImageButtonsApi {
     waitFor: (onRun: (src: string) => void) => void;
 }
 
-export function createImageButtons(): ImageButtonsApi {
+export const createImageButtons = (): ImageButtonsApi => {
     const BUTTON_LABEL = "Base2Edit";
     const BUTTON_TITLE = "Runs an edit-only Base2Edit pass on this image";
 
@@ -60,4 +60,4 @@ export function createImageButtons(): ImageButtonsApi {
     };
 
     return { init, waitFor };
-}
+};

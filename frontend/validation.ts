@@ -1,19 +1,19 @@
 import type { Stage } from "./types";
 import { Utils } from "./Utils";
 
-export function isMissingStageRef(
+export const isMissingStageRef = (
     applyAfter: string,
     stageIds: number[],
-): boolean {
+): boolean => {
     const m = applyAfter.match(/^Edit Stage (\d+)$/);
     if (!m) {
         return false;
     }
 
     return !stageIds.includes(parseInt(m[1], 10));
-}
+};
 
-export function validateStages(stages: Stage[]): string[] {
+export const validateStages = (stages: Stage[]): string[] => {
     const errors: string[] = [];
 
     for (let i = 0; i < stages.length; i++) {
@@ -33,13 +33,13 @@ export function validateStages(stages: Stage[]): string[] {
     }
 
     return errors;
-}
+};
 
-export function buildApplyAfterList(
+export const buildApplyAfterList = (
     stageIds: number[],
     stageId: number,
     currentVal: string,
-): string[] {
+): string[] => {
     const values = ["Refiner"];
     const refs = [...stageIds]
         .filter((id) => id < stageId)
@@ -52,13 +52,13 @@ export function buildApplyAfterList(
     }
 
     return values;
-}
+};
 
-export function cleanApplyAfterOptions(
+export const cleanApplyAfterOptions = (
     applyElem: HTMLSelectElement,
     stageIds: number[],
     stageId: number,
-): void {
+): void => {
     const selectedVal = `${applyElem.value}`;
     const isValid = (val: string) => {
         if (val === "Refiner") {
@@ -88,13 +88,13 @@ export function cleanApplyAfterOptions(
             opt.remove();
         }
     }
-}
+};
 
-export function validateApplyAfter(
+export const validateApplyAfter = (
     prefix: string,
     stageIds: number[],
     stageId: number,
-): void {
+): void => {
     const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
     if (!applyElem) {
         return;
@@ -123,4 +123,4 @@ export function validateApplyAfter(
         "Invalid Apply After: Dependency chain has changed! Adjust the apply after stage.";
 
     findParentOfClass(applyElem, "auto-input").appendChild(err);
-}
+};
