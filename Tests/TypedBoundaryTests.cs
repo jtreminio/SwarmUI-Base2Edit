@@ -161,7 +161,7 @@ public class TypedBoundaryTests
         foreach (KSamplerAdvancedNode sampler in samplers)
         {
             bool reachesAnyRefLatent = refLatents.Any(r =>
-                TypedWorkflowAssertions.ReachesUpstream(bridge, sampler, r.Id));
+                sampler.Id == r.Id || bridge.Graph.IsReachableUpstream(sampler, r.Id));
             Assert.True(reachesAnyRefLatent, $"Sampler {sampler.Id} should reach some ReferenceLatent");
         }
     }

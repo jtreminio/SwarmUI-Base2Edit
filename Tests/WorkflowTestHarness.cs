@@ -6,10 +6,6 @@ using SwarmUI.Text2Image;
 
 namespace Base2Edit.Tests;
 
-/// <summary>
-/// Minimal harness to run only the Base2Edit workflow steps (not the full SwarmUI workflow pipeline),
-/// and to assert on the generated ComfyUI workflow JSON (a node graph JObject).
-/// </summary>
 internal static class WorkflowTestHarness
 {
     private static readonly object LockObj = new();
@@ -113,14 +109,10 @@ internal static class WorkflowTestHarness
         }
     }
 
-    /// <summary>
-    /// Step that seeds a minimal, valid-enough workflow graph and generator state for Base2Edit to operate.
-    /// It avoids model loading / Program.* dependencies by leaving Model null.
-    /// </summary>
     public static WorkflowGenerator.WorkflowGenStep MinimalGraphSeedStep() =>
         new(g =>
         {
-            using var bridge = BridgeSync.For(g);
+            using SyncingWorkflowBridge bridge = BridgeSync.For(g);
             UnknownNode model = bridge.AddStub("UnitTest_Model", "4")
                 .WithOutputs(WGNodeData.DT_MODEL, "CLIP", WGNodeData.DT_VAE);
             UnknownNode latent = bridge.AddStub("UnitTest_Latent", "10")
@@ -134,10 +126,6 @@ internal static class WorkflowTestHarness
             g.FinalLoadedModelList = g.FinalLoadedModel is null ? [] : [g.FinalLoadedModel];
         }, -1000);
 
-    /// <summary>
-    /// Seed step for "edit-only" style flows: an input image exists but there are no latents yet.
-    /// This forces Base2Edit to VAE-encode before sampling.
-    /// </summary>
     public static WorkflowGenerator.WorkflowGenStep ImageOnlySeedStep() =>
         new(g =>
         {
@@ -146,10 +134,6 @@ internal static class WorkflowTestHarness
             g.BasicInputImage = new WGNodeData([imageNode, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
         }, -900);
 
-    /// <summary>
-    /// Adds a decode node to produce an image output for the current samples+VAE.
-    /// Useful for "base-only image" templates (latents already exist).
-    /// </summary>
     public static WorkflowGenerator.WorkflowGenStep DecodeSamplesToImageStep() =>
         new(g =>
         {
@@ -162,49 +146,43 @@ internal static class WorkflowTestHarness
             g.BasicInputImage = decoded;
         }, -950);
 
-    /// <summary>Common workflow templates for tests.</summary>
     public static IEnumerable<WorkflowGenerator.WorkflowGenStep> Template_BaseOnlyLatents() =>
-        new[] { MinimalGraphSeedStep() };
+        [MinimalGraphSeedStep()];
 
     public static IEnumerable<WorkflowGenerator.WorkflowGenStep> Template_BaseOnlyImage() =>
-        new[] { MinimalGraphSeedStep(), DecodeSamplesToImageStep() };
+        [MinimalGraphSeedStep(), DecodeSamplesToImageStep()];
 
     public static IEnumerable<WorkflowGenerator.WorkflowGenStep> Template_EditOnly() =>
-        new[] { MinimalGraphSeedStep(), ImageOnlySeedStep() };
+        [MinimalGraphSeedStep(), ImageOnlySeedStep()];
 
     public static IEnumerable<WorkflowGenerator.WorkflowGenStep> Template_BaseThenUpscale() =>
-        new WorkflowGenerator.WorkflowGenStep[]
-        {
+        [
             MinimalGraphSeedStep(),
             DecodeSamplesToImageStep(),
             new(g =>
             {
-                // Minimal stub: "upscale" produces a new latent and clears FinalImageOut (as many pipelines do).
                 string upLatent = g.CreateNode("UnitTest_UpscaleLatent", [], idMandatory: false);
                 g.CurrentMedia = new WGNodeData([upLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             }, -500)
-        };
+        ];
 
     public static IEnumerable<WorkflowGenerator.WorkflowGenStep> Template_BaseThenRefiner() =>
-        new WorkflowGenerator.WorkflowGenStep[]
-        {
+        [
             MinimalGraphSeedStep(),
             DecodeSamplesToImageStep(),
             new(g =>
             {
-                // Minimal stub: mark refiner stage and advance to a new latent.
                 g.IsRefinerStage = true;
                 string refLatent = g.CreateNode("UnitTest_RefinerLatent", [], idMandatory: false);
                 g.CurrentMedia = new WGNodeData([refLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             }, -400),
             DecodeSamplesToImageStep()
-        };
+        ];
 
     public static IEnumerable<WorkflowGenerator.WorkflowGenStep> Template_BaseThenUpscaleThenRefiner() =>
         Template_BaseThenUpscale()
             .Concat(
-                new WorkflowGenerator.WorkflowGenStep[]
-                {
+                [
                     new(g =>
                     {
                         g.IsRefinerStage = true;
@@ -212,7 +190,7 @@ internal static class WorkflowTestHarness
                         g.CurrentMedia = new WGNodeData([refLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
                     }, -400),
                     DecodeSamplesToImageStep()
-                });
+                ]);
 
     public static IEnumerable<WorkflowGenerator.WorkflowGenStep> Template_BaseThenSegments(int segmentCount = 1) =>
         new[]
@@ -223,7 +201,6 @@ internal static class WorkflowTestHarness
             .Concat(Enumerable.Range(0, Math.Max(1, segmentCount)).Select(i =>
                 new WorkflowGenerator.WorkflowGenStep(g =>
                 {
-                    // Minimal stub: create "segment" nodes and set FinalMask reference.
                     string seg = g.CreateNode($"UnitTest_Segment_{i}", [], idMandatory: false);
                     g.FinalMask = [seg, 0];
                 }, -300 + i)));
@@ -233,10 +210,9 @@ internal static class WorkflowTestHarness
             .Concat(Template_BaseThenSegments(segmentCount).Where(s => s.Priority > -950));
 
     public static WorkflowGenerator.WorkflowGenStep PostBaseLatentStep() =>
-        new WorkflowGenerator.WorkflowGenStep(g =>
+        new(g =>
         {
             string postBaseLatent = g.CreateNode("UnitTest_PostBaseLatent", [], id: "2100", idMandatory: false);
             g.CurrentMedia = new WGNodeData([postBaseLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
         }, 2);
-
 }
