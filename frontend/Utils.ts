@@ -1,4 +1,4 @@
-const Utils = {
+export const Utils = {
     getInputElement: (id: string): HTMLInputElement | null => {
         return document.getElementById(id) as HTMLInputElement | null;
     },
@@ -8,4 +8,4 @@ const Utils = {
     getButtonElement: (id: string): HTMLButtonElement | null => {
         return document.getElementById(id) as HTMLButtonElement | null;
     },
-}
+};

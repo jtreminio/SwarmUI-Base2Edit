@@ -1,782 +1,1003 @@
 "use strict";
-class StageEditor {
-    editor;
-    genButtonWrapped = false;
-    genWrapInterval = null;
-    changeListenerElem = null;
-    stageSyncTimers = new Map();
-    stagesInputSyncInterval = null;
-    lastKnownStagesJson = "";
-    lastKnownBase2EditEnabled = false;
-    init() {
-        this.createEditor();
-        this.wrapGenerateWithValidation();
-        this.showStages();
-        this.installStageChangeListener();
-        this.startPublishedStageSync();
-        this.publishStageAvailability();
+(() => {
+  // frontend/imageButtons.ts
+  var BUTTON_LABEL = "Base2Edit";
+  var BUTTON_TITLE = "Runs an edit-only Base2Edit pass on this image";
+  var imageButtonsWrapped = false;
+  function isMediaSupported(src) {
+    return !(typeof isVideoExt === "function" && isVideoExt(src)) && !(typeof isAudioExt === "function" && isAudioExt(src));
+  }
+  function addButton(buttons, src, onRun) {
+    if (!isMediaSupported(src)) {
+      return;
     }
-    applyFullWidthLayout(elem) {
-        elem.style.width = "100%";
-        elem.style.maxWidth = "100%";
-        elem.style.minWidth = "0";
+    buttons.push({
+      label: BUTTON_LABEL,
+      title: BUTTON_TITLE,
+      onclick: () => onRun(src)
+    });
+  }
+  function initImageButtons(onRun) {
+    if (imageButtonsWrapped) {
+      return true;
     }
-    applyEditorLayout(editor) {
-        this.applyFullWidthLayout(editor);
-        editor.style.flex = "1 1 100%";
-        editor.style.overflow = "visible";
+    if (typeof buttonsForImage !== "function") {
+      return false;
     }
-    startGenerateWrapRetry(intervalMs = 250) {
-        if (this.genWrapInterval) {
-            return;
-        }
-        const tryWrap = () => {
-            try {
-                this.wrapGenerateWithValidation();
-                if (typeof mainGenHandler !== "undefined"
-                    && mainGenHandler
-                    && typeof mainGenHandler.doGenerate === "function"
-                    && mainGenHandler.doGenerate.__base2editWrapped) {
-                    clearInterval(this.genWrapInterval);
-                    this.genWrapInterval = null;
-                }
-            }
-            catch { }
-        };
-        tryWrap();
-        this.genWrapInterval = setInterval(tryWrap, intervalMs);
+    const originalButtonsForImage = buttonsForImage;
+    buttonsForImage = (fullsrc, src, metadata) => {
+      const buttons = originalButtonsForImage(fullsrc, src, metadata);
+      if (typeof window.base2editRunEditOnlyFromImage === "function") {
+        addButton(buttons, src, onRun);
+      }
+      return buttons;
+    };
+    imageButtonsWrapped = true;
+    return true;
+  }
+  function waitForButtons(onRun) {
+    const checkInterval = setInterval(() => {
+      if (!initImageButtons(onRun)) {
+        return;
+      }
+      clearInterval(checkInterval);
+    }, 100);
+  }
+
+  // frontend/promptPrefixes.ts
+  function registerEditPromptPrefix() {
+    promptTabComplete.registerPrefix(
+      "edit",
+      "Add a section of prompt text that is only used for Base2Edit edit stages.",
+      () => [
+        '\nUse "<edit>..." to apply to ALL Base2Edit edit stages (including LoRAs inside the section).',
+        '\nUse "<edit[0]>..." to apply only to edit stage 0, "<edit[1]>..." for stage 1, etc.',
+        '\nIf no "<edit>" / "<edit[0]>" section exists for a stage, Base2Edit falls back to the global prompt.'
+      ],
+      true
+    );
+  }
+  function registerB2EPromptPrefix() {
+    promptTabComplete.registerPrefix(
+      "b2eprompt",
+      "Use a Base2Edit prompt reference by stage: global, base, refiner, or edit stage number.",
+      () => [
+        '\nUse "<b2eprompt[global]>" to reuse the final global prompt.',
+        '\nUse "<b2eprompt[base]>" / "<b2eprompt[refiner]>" to reuse that stage prompt (fallback to global if missing).',
+        '\nUse "<b2eprompt[0]>", "<b2eprompt[1]>", etc. for edit stage index 0+ (0-indexed, fallback to global if undefined).'
+      ],
+      false
+    );
+    promptTabComplete.registerPrefix(
+      "b2eprompt[global]",
+      "Base2Edit prompt reference: final global prompt text.",
+      () => ['\nInserts "<b2eprompt[global]>"'],
+      true
+    );
+    promptTabComplete.registerPrefix(
+      "b2eprompt[base]",
+      "Base2Edit prompt reference: base prompt text (fallback to global if missing).",
+      () => ['\nInserts "<b2eprompt[base]>"'],
+      true
+    );
+    promptTabComplete.registerPrefix(
+      "b2eprompt[refiner]",
+      "Base2Edit prompt reference: refiner prompt text (fallback to global if missing).",
+      () => [
+        '\nInserts "<b2eprompt[refiner]>"',
+        '\nFor edit stages, use numeric index 0+ (example: "<b2eprompt[0]>").'
+      ],
+      true
+    );
+  }
+  function registerB2EImagePrefix() {
+    promptTabComplete.registerPrefix(
+      "b2eimage",
+      "Use an image reference from an earlier stage inside an <edit> section.",
+      () => [
+        '\nUse "<b2eimage[base]>" to reference the base-stage image.',
+        '\nUse "<b2eimage[refiner]>" to reference the refiner-stage image (only available in final-stage edits).',
+        '\nUse "<b2eimage[edit0]>" for earlier edit stages.',
+        '\nUse "<b2eimage[prompt0]>" for prompt image index 0.'
+      ],
+      false
+    );
+    promptTabComplete.registerPrefix(
+      "b2eimage[base]",
+      "Base2Edit image reference: base stage image.",
+      () => ['\nInserts "<b2eimage[base]>"'],
+      true
+    );
+    promptTabComplete.registerPrefix(
+      "b2eimage[refiner]",
+      "Base2Edit image reference: refiner stage image.",
+      () => ['\nInserts "<b2eimage[refiner]>"'],
+      true
+    );
+    promptTabComplete.registerPrefix(
+      "b2eimage[edit0]",
+      "Base2Edit image reference: edit stage 0 output image.",
+      () => ['\nInserts "<b2eimage[edit0]>"'],
+      true
+    );
+    promptTabComplete.registerPrefix(
+      "b2eimage[prompt0]",
+      "Base2Edit image reference: prompt image 0.",
+      () => ['\nInserts "<b2eimage[prompt0]>"'],
+      true
+    );
+  }
+
+  // frontend/runEditOnly.ts
+  function runEditOnlyFromImage(src) {
+    if (!src) {
+      showError("Cannot run Base2Edit: no image selected.");
+      return;
     }
-    createEditor() {
-        let editor = document.getElementById("base2edit_stage_editor");
-        if (!editor) {
-            editor = document.createElement("div");
-            editor.id = "base2edit_stage_editor";
-            editor.className = "base2edit-stage-editor keep_group_visible";
-            document.getElementById("input_group_content_baseedit").appendChild(editor);
-        }
-        this.applyEditorLayout(editor);
-        this.editor = editor;
-    }
-    getRootStage() {
-        return {
-            refineOnly: Utils.getInputElement("input_refineonly"),
-            control: Utils.getInputElement("input_editcontrol"),
-            upscale: Utils.getInputElement("input_editupscale"),
-            upscaleMethod: Utils.getSelectElement("input_editupscalemethod"),
-            model: Utils.getSelectElement("input_editmodel"),
-            vae: Utils.getSelectElement("input_editvae"),
-            steps: Utils.getInputElement("input_editsteps"),
-            cfgScale: Utils.getInputElement("input_editcfgscale"),
-            sampler: Utils.getSelectElement("input_editsampler"),
-            scheduler: Utils.getSelectElement("input_editscheduler"),
-        };
-    }
-    createStage(applyAfter) {
-        const readToggleableRoot = (id) => {
-            const el = Utils.getInputElement(`input_${id}`);
-            if (!el) {
-                return null;
-            }
-            const t = Utils.getInputElement(`input_${id}_toggle`);
-            if (t && !t.checked) {
-                return null;
-            }
-            return el.value;
-        };
-        return {
-            keepPreEditImage: Utils.getInputElement("input_keeppreeditimage").checked,
-            refineOnly: Utils.getInputElement("input_refineonly").checked,
-            applyAfter: applyAfter,
-            control: parseFloat(Utils.getInputElement("input_editcontrol").value),
-            upscale: parseFloat(Utils.getInputElement("input_editupscale").value),
-            upscaleMethod: Utils.getInputElement("input_editupscalemethod").value,
-            model: Utils.getInputElement("input_editmodel").value,
-            vae: readToggleableRoot("editvae"),
-            steps: parseInt(Utils.getInputElement("input_editsteps").value),
-            cfgScale: parseFloat(readToggleableRoot("editcfgscale")),
-            sampler: readToggleableRoot("editsampler"),
-            scheduler: readToggleableRoot("editscheduler")
-        };
-    }
-    getStages() {
-        try {
-            const stages = Utils.getInputElement("input_editstages");
-            return JSON.parse(stages?.value ?? "[]");
-        }
-        catch {
-            return [];
-        }
-    }
-    saveStages(newStages) {
-        const stages = Utils.getInputElement("input_editstages");
-        stages.value = JSON.stringify(newStages);
-        this.lastKnownStagesJson = stages.value;
-        this.lastKnownBase2EditEnabled = this.isBase2EditGroupEnabled();
-        if (this.isBase2EditGroupEnabled()) {
-            triggerChangeFor(stages);
-        }
-        this.publishStageAvailability();
-    }
-    buildStageSnapshot() {
-        const enabled = this.isBase2EditGroupEnabled();
-        const stageCount = enabled ? this.getStages().length + 1 : 0;
-        const refs = [];
-        for (let i = 0; i < stageCount; i++) {
-            refs.push(`edit${i}`);
-        }
-        return {
-            enabled,
-            stageCount,
-            refs,
-        };
-    }
-    cloneStageSnapshot(snapshot) {
-        return {
-            enabled: snapshot.enabled,
-            stageCount: snapshot.stageCount,
-            refs: [...snapshot.refs],
-        };
-    }
-    ensureStageRegistry() {
-        const getSnapshot = () => this.cloneStageSnapshot(this.buildStageSnapshot());
-        if (!window.base2editStageRegistry) {
-            window.base2editStageRegistry = { getSnapshot };
-            return;
-        }
-        window.base2editStageRegistry.getSnapshot = getSnapshot;
-    }
-    publishStageAvailability() {
-        this.ensureStageRegistry();
-        const snapshot = this.cloneStageSnapshot(this.buildStageSnapshot());
-        document.dispatchEvent(new CustomEvent("base2edit:stages-changed", {
-            detail: snapshot
-        }));
-    }
-    startPublishedStageSync() {
-        if (this.stagesInputSyncInterval) {
-            return;
-        }
-        this.lastKnownStagesJson = Utils.getInputElement("input_editstages")?.value ?? "";
-        this.lastKnownBase2EditEnabled = this.isBase2EditGroupEnabled();
-        this.stagesInputSyncInterval = setInterval(() => {
-            const currentStagesJson = Utils.getInputElement("input_editstages")?.value ?? "";
-            const base2EditEnabled = this.isBase2EditGroupEnabled();
-            if (currentStagesJson == this.lastKnownStagesJson
-                && base2EditEnabled == this.lastKnownBase2EditEnabled) {
-                return;
-            }
-            this.lastKnownStagesJson = currentStagesJson;
-            this.lastKnownBase2EditEnabled = base2EditEnabled;
-            this.publishStageAvailability();
-        }, 150);
-    }
-    isMissingStageRef(applyAfter, stageIds) {
-        const m = applyAfter.match(/^Edit Stage (\d+)$/);
-        if (!m) {
-            return false;
-        }
-        return !stageIds.includes(parseInt(m[1]));
-    }
-    validateStages() {
-        const stages = this.getStages();
-        const errors = [];
-        for (let i = 0; i < stages.length; i++) {
-            const stage = stages[i];
-            const stageId = i + 1;
-            const a = stage.applyAfter;
-            const m = `${a}`.match(/^Edit Stage (\d+)$/);
-            if (m) {
-                const refId = parseInt(m[1]);
-                if (refId >= stageId) {
-                    errors.push(`Base2Edit: Edit Stage ${stageId} cannot Apply After "${a}" (must reference an earlier stage).`);
-                }
-            }
-        }
-        return errors;
-    }
-    isBase2EditGroupEnabled() {
-        const toggler = Utils.getInputElement("input_group_content_baseedit_toggle");
-        return !toggler || !!toggler.checked;
-    }
-    wrapGenerateWithValidation() {
-        if (this.genButtonWrapped) {
-            return;
-        }
-        const original = mainGenHandler.doGenerate.bind(mainGenHandler);
-        const stageEditor = this;
-        mainGenHandler.doGenerate = function (...args) {
-            if (!stageEditor.isBase2EditGroupEnabled()) {
-                return original(...args);
-            }
-            stageEditor.serializeStagesFromUi();
-            const errs = stageEditor.validateStages();
-            if (errs.length > 0) {
-                showError(errs[0]);
-                return;
-            }
-            return original(...args);
-        };
-        mainGenHandler.doGenerate.__base2editWrapped = true;
-        this.genButtonWrapped = true;
-    }
-    installStageChangeListener() {
-        if (this.changeListenerElem === this.editor) {
-            return;
-        }
-        const handler = (e) => {
-            try {
-                const target = e.target;
-                if (!target) {
-                    return;
-                }
-                const stageWrap = target.closest("[data-base2edit-stage-id]");
-                if (!stageWrap) {
-                    return;
-                }
-                const stageId = parseInt(stageWrap.dataset.base2editStageId ?? "0");
-                if (stageId < 1) {
-                    return;
-                }
-                if (target.closest('button[data-base2edit-action="remove-stage"]')) {
-                    return;
-                }
-                const isApplyAfter = !!target.closest(`#base2edit_stage_${stageId}_applyafter`);
-                this.scheduleStageSyncFromUi(stageId, isApplyAfter);
-            }
-            catch { }
-        };
-        this.editor.addEventListener("input", handler, true);
-        this.editor.addEventListener("change", handler, true);
-        this.changeListenerElem = this.editor;
-    }
-    scheduleStageSyncFromUi(stageId, validateApplyAfter = false) {
-        const existing = this.stageSyncTimers.get(stageId);
-        if (existing) {
-            clearTimeout(existing);
-        }
-        const t = setTimeout(() => {
-            try {
-                this.syncSingleStageFromUi(stageId, validateApplyAfter);
-            }
-            catch { }
-        }, 125);
-        this.stageSyncTimers.set(stageId, t);
-    }
-    syncSingleStageFromUi(stageId, validateApplyAfter) {
-        const stages = this.getStages();
-        const idx = stageId - 1;
-        if (idx < 0 || idx >= stages.length) {
-            return;
-        }
-        const prefix = `base2edit_stage_${stageId}_`;
-        this.updateStageFromUi(prefix, stages[idx]);
-        this.saveStages(stages);
-        if (!validateApplyAfter) {
-            return;
-        }
-        const stageIds = [0, ...stages.map((_, i) => i + 1)];
-        const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
-        if (applyElem) {
-            this.cleanApplyAfterOptions(applyElem, stageIds, stageId);
-            this.validateApplyAfter(prefix, stageIds, stageId);
-        }
-    }
-    serializeStagesFromUi() {
-        const stages = this.getStages();
-        for (let i = 0; i < stages.length; i++) {
-            const stageId = i + 1;
-            const prefix = `base2edit_stage_${stageId}_`;
-            this.updateStageFromUi(prefix, stages[i]);
-        }
-        this.saveStages(stages);
-    }
-    showStages() {
-        const stages = this.getStages();
-        const stageIds = [0, ...stages.map((_, idx) => idx + 1)];
-        const list = document.createElement("div");
-        list.className = "base2edit-stage-list";
-        this.applyFullWidthLayout(list);
-        this.editor.innerHTML = "";
-        this.editor.appendChild(list);
-        this.addRemoveBtnListener(list);
-        stages.forEach((stage, idx) => {
-            const stageId = idx + 1;
-            const wrap = document.createElement("div");
-            wrap.className = "input-group input-group-open base2edit-stage-wrap";
-            wrap.classList.add("border", "rounded", "p-2", "mb-2");
-            wrap.id = `base2edit_stage_${stageId}`;
-            wrap.dataset.base2editStageId = `${stageId}`;
-            this.applyFullWidthLayout(wrap);
-            const header = document.createElement("span");
-            header.className = "input-group-header input-group-noshrink";
-            header.innerHTML =
-                `<span class="header-label-wrap">`
-                    + `<span class="header-label">Edit Stage ${stageId}</span>`
-                    + `<span class="header-label-spacer"></span>`
-                    + `<button class="interrupt-button" title="Remove stage" data-base2edit-action="remove-stage" id="base2edit_remove_stage_${stageId}">×</button>`
-                    + `</span>`;
-            wrap.appendChild(header);
-            const content = document.createElement("div");
-            content.className = "input-group-content base2edit-stage-content";
-            this.applyFullWidthLayout(content);
-            wrap.appendChild(content);
-            list.appendChild(wrap);
-            const prefix = `base2edit_stage_${stageId}_`;
-            const applyAfter = this.buildApplyAfterList(stageIds, stageId, stage.applyAfter);
-            const parts = this.buildFieldsForStage(stage, prefix, applyAfter);
-            content.insertAdjacentHTML("beforeend", parts.map(p => p.html).join(""));
-            for (const p of parts) {
-                try {
-                    p.runnable();
-                }
-                catch { }
-            }
-            const setToggle = (id, enabled) => {
-                const el = document.getElementById(`${prefix}${id}`);
-                const t = Utils.getInputElement(`${prefix}${id}_toggle`);
-                if (!el || !t) {
-                    return;
-                }
-                t.checked = !!enabled;
-                doToggleEnable(`${prefix}${id}`);
-            };
-            setToggle("editcfgscale", stage.cfgScale != null);
-            setToggle("editsampler", stage.sampler != null && `${stage.sampler}` !== "");
-            setToggle("editscheduler", stage.scheduler != null && `${stage.scheduler}` !== "");
-            setToggle("editvae", stage.vae != null && `${stage.vae}` !== "");
-            const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
-            if (applyElem) {
-                this.cleanApplyAfterOptions(applyElem, stageIds, stageId);
-                this.validateApplyAfter(prefix, stageIds, stageId);
-            }
+    const tmpImg = new Image();
+    tmpImg.crossOrigin = "Anonymous";
+    tmpImg.onerror = () => showError("Cannot run Base2Edit: failed to load image.");
+    tmpImg.onload = () => {
+      const runWithUrl = (url) => {
+        mainGenHandler.doGenerate({
+          initimage: url,
+          initimagecreativity: 0,
+          images: 1,
+          steps: 0,
+          aspectratio: "Custom",
+          width: tmpImg.naturalWidth,
+          height: tmpImg.naturalHeight,
+          applyeditafter: "Base",
+          refinermethod: null,
+          refinercontrolpercentage: null,
+          refinerupscale: null
         });
-        const addBtn = document.createElement("button");
-        addBtn.className = "basic-button";
-        addBtn.innerText = "+ Add Edit Stage";
-        addBtn.addEventListener("click", (e) => {
-            e.preventDefault();
-            this.serializeStagesFromUi();
-            const current = this.getStages();
-            const newStage = this.createStage(`Edit Stage ${current.length}`);
-            this.saveStages([...current, newStage]);
-            this.showStages();
-        });
-        this.editor.appendChild(addBtn);
-    }
-    addRemoveBtnListener(list) {
-        list.addEventListener("click", (e) => {
-            const btn = e.target.closest('button[data-base2edit-action="remove-stage"]');
-            if (!btn) {
-                return;
-            }
-            e.preventDefault();
-            e.stopPropagation();
-            this.serializeStagesFromUi();
-            const stageId = parseInt(btn.closest("[data-base2edit-stage-id]").dataset.base2editStageId);
-            const stages = this.getStages();
-            stages.splice(stageId - 1, 1);
-            this.saveStages(stages);
-            this.showStages();
-        });
-    }
-    buildApplyAfterList(stageIds, stageId, currentVal) {
-        const values = ["Refiner"];
-        const refs = [...stageIds]
-            .filter(id => id < stageId)
-            .sort((a, b) => a - b)
-            .map(id => `Edit Stage ${id}`);
-        values.push(...refs);
-        if (currentVal && !values.includes(currentVal)) {
-            values.unshift(currentVal);
-        }
-        return values;
-    }
-    cleanApplyAfterOptions(applyElem, stageIds, stageId) {
-        const selectedVal = `${applyElem.value}`;
-        const isValid = (val) => {
-            if (val === "Refiner") {
-                return true;
-            }
-            const m = `${val}`.match(/^Edit Stage (\d+)$/);
-            if (!m) {
-                return false;
-            }
-            const refId = parseInt(m[1]);
-            return stageIds.includes(refId) && refId < stageId;
-        };
-        for (const opt of Array.from(applyElem.options)) {
-            if (isValid(opt.value)) {
-                opt.hidden = false;
-                opt.disabled = false;
-                continue;
-            }
-            if (opt.value === selectedVal) {
-                opt.hidden = true;
-                opt.disabled = true;
-            }
-            else {
-                opt.remove();
-            }
-        }
-    }
-    buildFieldsForStage(stage, prefix, applyValues) {
-        const rootStage = this.getRootStage();
-        const parts = [];
-        parts.push(getHtmlForParam({
-            id: "keeppreeditimage",
-            name: "Keep Pre-Edit Image",
-            description: "When enabled, saves the image immediately before this edit stage begins.",
-            type: "boolean",
-            default: `${stage.keepPreEditImage}`,
-            toggleable: false,
-            view_type: "normal",
-            feature_flag: null,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editrefineonly",
-            name: "Refine Only",
-            description: "When enabled, this stage skips ReferenceLatent and runs as a plain refinement pass.",
-            type: "boolean",
-            default: `${stage.refineOnly ?? rootStage.refineOnly.checked}`,
-            toggleable: false,
-            view_type: "normal",
-            feature_flag: null,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "applyafter",
-            name: "Apply After",
-            description: "",
-            type: "dropdown",
-            values: applyValues,
-            default: applyValues.includes(stage.applyAfter) ? stage.applyAfter : applyValues[0],
-            toggleable: false,
-            view_type: "normal",
-            feature_flag: null,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editcontrol",
-            name: "Edit Control",
-            description: "Controls how much of the edit sampling is applied.",
-            type: "decimal",
-            default: `${stage.control}`,
-            min: rootStage.control.min,
-            max: rootStage.control.max,
-            step: rootStage.control.step,
-            view_min: rootStage.control.min,
-            view_max: rootStage.control.max,
-            view_type: "slider",
-            toggleable: false,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editupscale",
-            name: "Edit Upscale",
-            description: "Optional upscale of the image before this edit stage. 1 disables upscaling.",
-            type: "decimal",
-            default: `${stage.upscale ?? parseFloat(rootStage.upscale.value || "1")}`,
-            min: rootStage.upscale.min,
-            max: rootStage.upscale.max,
-            step: rootStage.upscale.step,
-            view_min: 0.25,
-            view_max: 4,
-            view_type: "slider",
-            toggleable: false,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editupscalemethod",
-            name: "Edit Upscale Method",
-            description: "How to upscale this edit stage image when Edit Upscale is enabled.",
-            type: "dropdown",
-            values: Array.from(rootStage.upscaleMethod.options).map((o) => o.value),
-            value_names: Array.from(rootStage.upscaleMethod.options).map((o) => o.label),
-            default: stage.upscaleMethod ?? rootStage.upscaleMethod.value,
-            toggleable: false,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editmodel",
-            name: "Edit Model",
-            description: "The model to use for this edit stage.",
-            type: "model",
-            subtype: "Stable-Diffusion",
-            values: Array.from(rootStage.model.options).map((o) => o.value),
-            default: stage.model,
-            toggleable: false,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editvae",
-            name: "Edit VAE",
-            description: "VAE to use for this edit stage.",
-            type: "model",
-            subtype: "VAE",
-            values: Array.from(rootStage.vae.options).map((o) => o.value),
-            value_names: Array.from(rootStage.vae.options).map((o) => o.label),
-            default: stage.vae ?? rootStage.vae.value,
-            toggleable: true,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editsteps",
-            name: "Edit Steps",
-            description: "Number of steps for this edit stage.",
-            type: "integer",
-            default: `${stage.steps}`,
-            min: rootStage.steps.min,
-            max: rootStage.steps.max,
-            step: rootStage.steps.step,
-            view_min: 1,
-            view_max: 100,
-            view_type: "slider",
-            toggleable: false,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editcfgscale",
-            name: "Edit CFG Scale",
-            description: "CFG Scale for this edit stage.",
-            type: "decimal",
-            default: `${stage.cfgScale ?? rootStage.cfgScale.value}`,
-            min: rootStage.cfgScale.min,
-            max: rootStage.cfgScale.max,
-            step: rootStage.cfgScale.step,
-            view_min: 1,
-            view_max: 20,
-            view_type: "slider",
-            toggleable: true,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editsampler",
-            name: "Edit Sampler",
-            description: "Sampler to use for this edit stage.",
-            type: "dropdown",
-            values: Array.from(rootStage.sampler.options).map((o) => o.value),
-            value_names: Array.from(rootStage.sampler.options).map((o) => o.label),
-            default: stage.sampler ?? rootStage.sampler.value,
-            toggleable: true,
-        }, prefix));
-        parts.push(getHtmlForParam({
-            id: "editscheduler",
-            name: "Edit Scheduler",
-            description: "Scheduler to use for this edit stage.",
-            type: "dropdown",
-            values: Array.from(rootStage.scheduler.options).map((o) => o.value),
-            value_names: Array.from(rootStage.scheduler.options).map((o) => o.label),
-            default: stage.scheduler ?? rootStage.scheduler.value,
-            toggleable: true,
-        }, prefix));
-        return parts;
-    }
-    validateApplyAfter(prefix, stageIds, stageId) {
-        const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
-        if (!applyElem) {
-            return;
-        }
-        applyElem.classList.remove("is-invalid");
-        document.getElementById(`${prefix}applyafter_error`)?.remove();
-        const val = `${applyElem.value}`;
-        const applyInvalid = this.isMissingStageRef(val, stageIds)
-            || (/^Edit Stage \d+$/.test(val) && parseInt(val.split(" ")[2]) >= stageId);
-        if (!applyInvalid) {
-            return;
-        }
-        applyElem.classList.add("is-invalid");
-        const err = document.createElement("div");
-        err.id = `${prefix}applyafter_error`;
-        err.className = "text-danger";
-        err.style.marginTop = "4px";
-        err.innerText = "Invalid Apply After: Dependency chain has changed! Adjust the apply after stage.";
-        findParentOfClass(applyElem, "auto-input").appendChild(err);
-    }
-    updateStageFromUi(prefix, stage) {
-        const val = (id, isBool = false) => {
-            const el = Utils.getInputElement(`${prefix}${id}`);
-            if (!el) {
-                return null;
-            }
-            if (isBool) {
-                return !!el.checked;
-            }
-            return el.value;
-        };
-        const isEnabled = (id) => {
-            const t = Utils.getInputElement(`${prefix}${id}_toggle`);
-            return !t || !!t.checked;
-        };
-        stage.keepPreEditImage = !!val("keeppreeditimage", true);
-        stage.refineOnly = !!val("editrefineonly", true);
-        stage.applyAfter = `${val("applyafter") || stage.applyAfter}`;
-        stage.control = parseFloat(String(val("editcontrol") ?? stage.control));
-        stage.upscale = parseFloat(String(val("editupscale") ?? stage.upscale));
-        stage.upscaleMethod = `${val("editupscalemethod") || stage.upscaleMethod}`;
-        stage.model = `${val("editmodel") || stage.model}`;
-        stage.vae = isEnabled("editvae") ? `${val("editvae") || stage.vae}` : null;
-        stage.steps = parseInt(String(val("editsteps") || stage.steps), 10);
-        stage.cfgScale = isEnabled("editcfgscale") ? parseFloat(String(val("editcfgscale") ?? stage.cfgScale)) : null;
-        stage.sampler = isEnabled("editsampler") ? `${val("editsampler") || stage.sampler}` : null;
-        stage.scheduler = isEnabled("editscheduler") ? `${val("editscheduler") || stage.scheduler}` : null;
-    }
-    ;
-}
-/// <reference path="./StageEditor.ts" />
-class Base2Edit {
-    base2editButtonLabel = "Base2Edit";
-    base2editButtonTitle = "Runs an edit-only Base2Edit pass on this image";
-    stageEditor;
-    imageButtonsWrapped = false;
-    constructor(stageEditor) {
-        this.stageEditor = stageEditor;
-        this.registerEditPromptPrefix();
-        this.registerB2EPromptPrefix();
-        this.registerB2EImagePrefix();
-        window.base2editRunEditOnlyFromImage = this.runEditOnlyFromImage.bind(this);
-        this.waitForButtons();
-        if (!this.tryRegisterStageEditor()) {
-            const interval = setInterval(() => {
-                if (this.tryRegisterStageEditor()) {
-                    clearInterval(interval);
-                }
-            }, 200);
-        }
-        this.stageEditor.startGenerateWrapRetry();
-    }
-    runEditOnlyFromImage(src) {
-        if (!src) {
-            showError("Cannot run Base2Edit: no image selected.");
-            return;
-        }
-        const tmpImg = new Image();
-        tmpImg.crossOrigin = "Anonymous";
-        tmpImg.onerror = () => showError("Cannot run Base2Edit: failed to load image.");
-        tmpImg.onload = () => {
-            const runWithUrl = (url) => {
-                mainGenHandler.doGenerate({
-                    initimage: url,
-                    initimagecreativity: 0,
-                    images: 1,
-                    steps: 0,
-                    aspectratio: "Custom",
-                    width: tmpImg.naturalWidth,
-                    height: tmpImg.naturalHeight,
-                    applyeditafter: "Base",
-                    refinermethod: null,
-                    refinercontrolpercentage: null,
-                    refinerupscale: null
-                });
-            };
-            if (src.startsWith("data:")) {
-                runWithUrl(src);
-                return;
-            }
-            toDataURL(src, runWithUrl);
-        };
-        tmpImg.src = src;
-    }
-    registerEditPromptPrefix() {
-        promptTabComplete.registerPrefix("edit", "Add a section of prompt text that is only used for Base2Edit edit stages.", () => [
-            '\nUse "<edit>..." to apply to ALL Base2Edit edit stages (including LoRAs inside the section).',
-            '\nUse "<edit[0]>..." to apply only to edit stage 0, "<edit[1]>..." for stage 1, etc.',
-            '\nIf no "<edit>" / "<edit[0]>" section exists for a stage, Base2Edit falls back to the global prompt.'
-        ], true);
-    }
-    registerB2EPromptPrefix() {
-        promptTabComplete.registerPrefix("b2eprompt", "Use a Base2Edit prompt reference by stage: global, base, refiner, or edit stage number.", () => [
-            '\nUse "<b2eprompt[global]>" to reuse the final global prompt.',
-            '\nUse "<b2eprompt[base]>" / "<b2eprompt[refiner]>" to reuse that stage prompt (fallback to global if missing).',
-            '\nUse "<b2eprompt[0]>", "<b2eprompt[1]>", etc. for edit stage index 0+ (0-indexed, fallback to global if undefined).'
-        ], false);
-        promptTabComplete.registerPrefix("b2eprompt[global]", 'Base2Edit prompt reference: final global prompt text.', () => [
-            '\nInserts "<b2eprompt[global]>"'
-        ], true);
-        promptTabComplete.registerPrefix("b2eprompt[base]", 'Base2Edit prompt reference: base prompt text (fallback to global if missing).', () => [
-            '\nInserts "<b2eprompt[base]>"'
-        ], true);
-        promptTabComplete.registerPrefix("b2eprompt[refiner]", 'Base2Edit prompt reference: refiner prompt text (fallback to global if missing).', () => [
-            '\nInserts "<b2eprompt[refiner]>"',
-            '\nFor edit stages, use numeric index 0+ (example: "<b2eprompt[0]>").'
-        ], true);
-    }
-    registerB2EImagePrefix() {
-        promptTabComplete.registerPrefix("b2eimage", "Use an image reference from an earlier stage inside an <edit> section.", () => [
-            '\nUse "<b2eimage[base]>" to reference the base-stage image.',
-            '\nUse "<b2eimage[refiner]>" to reference the refiner-stage image (only available in final-stage edits).',
-            '\nUse "<b2eimage[edit0]>" for earlier edit stages.',
-            '\nUse "<b2eimage[prompt0]>" for prompt image index 0.'
-        ], false);
-        promptTabComplete.registerPrefix("b2eimage[base]", "Base2Edit image reference: base stage image.", () => [
-            '\nInserts "<b2eimage[base]>"'
-        ], true);
-        promptTabComplete.registerPrefix("b2eimage[refiner]", "Base2Edit image reference: refiner stage image.", () => [
-            '\nInserts "<b2eimage[refiner]>"'
-        ], true);
-        promptTabComplete.registerPrefix("b2eimage[edit0]", "Base2Edit image reference: edit stage 0 output image.", () => [
-            '\nInserts "<b2eimage[edit0]>"'
-        ], true);
-        promptTabComplete.registerPrefix("b2eimage[prompt0]", "Base2Edit image reference: prompt image 0.", () => [
-            '\nInserts "<b2eimage[prompt0]>"'
-        ], true);
-    }
-    isMediaSupported(src) {
-        return !(typeof isVideoExt === "function" && isVideoExt(src))
-            && !(typeof isAudioExt === "function" && isAudioExt(src));
-    }
-    addButton(buttons, src) {
-        if (!this.isMediaSupported(src)) {
-            return;
-        }
-        buttons.push({
-            label: this.base2editButtonLabel,
-            title: this.base2editButtonTitle,
-            onclick: () => this.runEditOnlyFromImage(src),
-        });
-    }
-    initImageButtons() {
-        if (this.imageButtonsWrapped) {
-            return true;
-        }
-        if (typeof buttonsForImage !== "function") {
-            return false;
-        }
-        const originalButtonsForImage = buttonsForImage;
-        const self = this;
-        buttonsForImage = function (fullsrc, src, metadata) {
-            const buttons = originalButtonsForImage(fullsrc, src, metadata);
-            if (typeof window.base2editRunEditOnlyFromImage === "function") {
-                self.addButton(buttons, src);
-            }
-            return buttons;
-        };
-        this.imageButtonsWrapped = true;
-        return true;
-    }
-    waitForButtons() {
-        const checkInterval = setInterval(() => {
-            if (!this.initImageButtons()) {
-                return;
-            }
-            clearInterval(checkInterval);
-        }, 100);
-    }
-    tryRegisterStageEditor() {
-        if (typeof postParamBuildSteps === "undefined" || !Array.isArray(postParamBuildSteps)) {
-            return false;
-        }
-        postParamBuildSteps.push(() => {
-            try {
-                this.stageEditor.init();
-            }
-            catch (e) {
-                console.log("Base2Edit: failed to build stage editor", e);
-            }
-        });
-        return true;
-    }
-}
-new Base2Edit(new StageEditor());
-const Utils = {
+      };
+      if (src.startsWith("data:")) {
+        runWithUrl(src);
+        return;
+      }
+      toDataURL(src, runWithUrl);
+    };
+    tmpImg.src = src;
+  }
+
+  // frontend/Utils.ts
+  var Utils = {
     getInputElement: (id) => {
-        return document.getElementById(id);
+      return document.getElementById(id);
     },
     getSelectElement: (id) => {
-        return document.getElementById(id);
+      return document.getElementById(id);
     },
     getButtonElement: (id) => {
-        return document.getElementById(id);
-    },
-};
+      return document.getElementById(id);
+    }
+  };
+
+  // frontend/rootStage.ts
+  function getRootStage() {
+    return {
+      refineOnly: Utils.getInputElement(
+        "input_refineonly"
+      ),
+      control: Utils.getInputElement("input_editcontrol"),
+      upscale: Utils.getInputElement("input_editupscale"),
+      upscaleMethod: Utils.getSelectElement(
+        "input_editupscalemethod"
+      ),
+      model: Utils.getSelectElement("input_editmodel"),
+      vae: Utils.getSelectElement("input_editvae"),
+      steps: Utils.getInputElement("input_editsteps"),
+      cfgScale: Utils.getInputElement(
+        "input_editcfgscale"
+      ),
+      sampler: Utils.getSelectElement(
+        "input_editsampler"
+      ),
+      scheduler: Utils.getSelectElement(
+        "input_editscheduler"
+      )
+    };
+  }
+  function createStage(applyAfter) {
+    const readToggleableRoot = (id) => {
+      const el = Utils.getInputElement(`input_${id}`);
+      if (!el) {
+        return null;
+      }
+      const t = Utils.getInputElement(`input_${id}_toggle`);
+      if (t && !t.checked) {
+        return null;
+      }
+      return el.value;
+    };
+    return {
+      keepPreEditImage: Utils.getInputElement("input_keeppreeditimage").checked,
+      refineOnly: Utils.getInputElement("input_refineonly").checked,
+      applyAfter,
+      control: parseFloat(
+        Utils.getInputElement("input_editcontrol").value
+      ),
+      upscale: parseFloat(
+        Utils.getInputElement("input_editupscale").value
+      ),
+      upscaleMethod: Utils.getInputElement("input_editupscalemethod").value,
+      model: Utils.getInputElement("input_editmodel").value,
+      vae: readToggleableRoot("editvae"),
+      steps: parseInt(
+        Utils.getInputElement("input_editsteps").value,
+        10
+      ),
+      cfgScale: parseFloat(readToggleableRoot("editcfgscale") ?? ""),
+      sampler: readToggleableRoot("editsampler"),
+      scheduler: readToggleableRoot("editscheduler")
+    };
+  }
+  function isBase2EditGroupEnabled() {
+    const toggler = Utils.getInputElement(
+      "input_group_content_baseedit_toggle"
+    );
+    return !toggler || !!toggler.checked;
+  }
+
+  // frontend/validation.ts
+  function isMissingStageRef(applyAfter, stageIds) {
+    const m = applyAfter.match(/^Edit Stage (\d+)$/);
+    if (!m) {
+      return false;
+    }
+    return !stageIds.includes(parseInt(m[1], 10));
+  }
+  function validateStages(stages) {
+    const errors = [];
+    for (let i = 0; i < stages.length; i++) {
+      const stage = stages[i];
+      const stageId = i + 1;
+      const a = stage.applyAfter;
+      const m = `${a}`.match(/^Edit Stage (\d+)$/);
+      if (m) {
+        const refId = parseInt(m[1], 10);
+        if (refId >= stageId) {
+          errors.push(
+            `Base2Edit: Edit Stage ${stageId} cannot Apply After "${a}" (must reference an earlier stage).`
+          );
+        }
+      }
+    }
+    return errors;
+  }
+  function buildApplyAfterList(stageIds, stageId, currentVal) {
+    const values = ["Refiner"];
+    const refs = [...stageIds].filter((id) => id < stageId).sort((a, b) => a - b).map((id) => `Edit Stage ${id}`);
+    values.push(...refs);
+    if (currentVal && !values.includes(currentVal)) {
+      values.unshift(currentVal);
+    }
+    return values;
+  }
+  function cleanApplyAfterOptions(applyElem, stageIds, stageId) {
+    const selectedVal = `${applyElem.value}`;
+    const isValid = (val) => {
+      if (val === "Refiner") {
+        return true;
+      }
+      const m = `${val}`.match(/^Edit Stage (\d+)$/);
+      if (!m) {
+        return false;
+      }
+      const refId = parseInt(m[1], 10);
+      return stageIds.includes(refId) && refId < stageId;
+    };
+    for (const opt of Array.from(applyElem.options)) {
+      if (isValid(opt.value)) {
+        opt.hidden = false;
+        opt.disabled = false;
+        continue;
+      }
+      if (opt.value === selectedVal) {
+        opt.hidden = true;
+        opt.disabled = true;
+      } else {
+        opt.remove();
+      }
+    }
+  }
+  function validateApplyAfter(prefix, stageIds, stageId) {
+    const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+    if (!applyElem) {
+      return;
+    }
+    applyElem.classList.remove("is-invalid");
+    document.getElementById(`${prefix}applyafter_error`)?.remove();
+    const val = `${applyElem.value}`;
+    const applyInvalid = isMissingStageRef(val, stageIds) || /^Edit Stage \d+$/.test(val) && parseInt(val.split(" ")[2], 10) >= stageId;
+    if (!applyInvalid) {
+      return;
+    }
+    applyElem.classList.add("is-invalid");
+    const err = document.createElement("div");
+    err.id = `${prefix}applyafter_error`;
+    err.className = "text-danger";
+    err.style.marginTop = "4px";
+    err.innerText = "Invalid Apply After: Dependency chain has changed! Adjust the apply after stage.";
+    findParentOfClass(applyElem, "auto-input").appendChild(err);
+  }
+
+  // frontend/generateWrap.ts
+  function createGenerateWrap(deps) {
+    let genButtonWrapped = false;
+    let genWrapInterval = null;
+    const tryWrap = () => {
+      if (genButtonWrapped) {
+        return;
+      }
+      const original = mainGenHandler.doGenerate.bind(mainGenHandler);
+      mainGenHandler.doGenerate = (...args) => {
+        if (!isBase2EditGroupEnabled()) {
+          return original(...args);
+        }
+        deps.serializeStagesFromUi();
+        const errs = validateStages(deps.getStages());
+        if (errs.length > 0) {
+          showError(errs[0]);
+          return;
+        }
+        return original(...args);
+      };
+      mainGenHandler.doGenerate.__base2editWrapped = true;
+      genButtonWrapped = true;
+    };
+    const startRetry = (intervalMs = 250) => {
+      if (genWrapInterval) {
+        return;
+      }
+      const check = () => {
+        try {
+          tryWrap();
+          if (typeof mainGenHandler !== "undefined" && mainGenHandler && typeof mainGenHandler.doGenerate === "function" && mainGenHandler.doGenerate.__base2editWrapped) {
+            if (genWrapInterval) {
+              clearInterval(genWrapInterval);
+              genWrapInterval = null;
+            }
+          }
+        } catch {
+        }
+      };
+      check();
+      genWrapInterval = setInterval(check, intervalMs);
+    };
+    return {
+      tryWrap,
+      startRetry
+    };
+  }
+
+  // frontend/observers.ts
+  function createObservers(deps) {
+    const stageSyncTimers = /* @__PURE__ */ new Map();
+    let stagesInputSyncInterval = null;
+    let lastKnownStagesJson = "";
+    let lastKnownBase2EditEnabled = false;
+    let changeListenerElem = null;
+    const buildStageSnapshot = () => {
+      const enabled = isBase2EditGroupEnabled();
+      const stageCount = enabled ? deps.getStages().length + 1 : 0;
+      const refs = [];
+      for (let i = 0; i < stageCount; i++) {
+        refs.push(`edit${i}`);
+      }
+      return {
+        enabled,
+        stageCount,
+        refs
+      };
+    };
+    const cloneStageSnapshot = (snapshot) => {
+      return {
+        enabled: snapshot.enabled,
+        stageCount: snapshot.stageCount,
+        refs: [...snapshot.refs]
+      };
+    };
+    const ensureStageRegistry = () => {
+      const getSnapshot = () => cloneStageSnapshot(buildStageSnapshot());
+      if (!window.base2editStageRegistry) {
+        window.base2editStageRegistry = { getSnapshot };
+        return;
+      }
+      window.base2editStageRegistry.getSnapshot = getSnapshot;
+    };
+    const publishStageAvailability = () => {
+      ensureStageRegistry();
+      const snapshot = cloneStageSnapshot(buildStageSnapshot());
+      document.dispatchEvent(
+        new CustomEvent("base2edit:stages-changed", {
+          detail: snapshot
+        })
+      );
+    };
+    const startPublishedStageSync = () => {
+      if (stagesInputSyncInterval) {
+        return;
+      }
+      lastKnownStagesJson = Utils.getInputElement("input_editstages")?.value ?? "";
+      lastKnownBase2EditEnabled = isBase2EditGroupEnabled();
+      stagesInputSyncInterval = setInterval(() => {
+        const currentStagesJson = Utils.getInputElement("input_editstages")?.value ?? "";
+        const base2EditEnabled = isBase2EditGroupEnabled();
+        if (currentStagesJson === lastKnownStagesJson && base2EditEnabled === lastKnownBase2EditEnabled) {
+          return;
+        }
+        lastKnownStagesJson = currentStagesJson;
+        lastKnownBase2EditEnabled = base2EditEnabled;
+        publishStageAvailability();
+      }, 150);
+    };
+    const scheduleStageSyncFromUi = (stageId, validateApplyAfter2 = false) => {
+      const existing = stageSyncTimers.get(stageId);
+      if (existing) {
+        clearTimeout(existing);
+      }
+      const t = setTimeout(() => {
+        try {
+          syncSingleStageFromUi(stageId, validateApplyAfter2);
+        } catch {
+        }
+      }, 125);
+      stageSyncTimers.set(stageId, t);
+    };
+    const syncSingleStageFromUi = (stageId, validateApplyAfterFlag) => {
+      const stages = deps.getStages();
+      const idx = stageId - 1;
+      if (idx < 0 || idx >= stages.length) {
+        return;
+      }
+      const prefix = `base2edit_stage_${stageId}_`;
+      deps.updateStageFromUi(prefix, stages[idx]);
+      deps.saveStages(stages);
+      if (!validateApplyAfterFlag) {
+        return;
+      }
+      const stageIds = [0, ...stages.map((_, i) => i + 1)];
+      const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+      if (applyElem) {
+        cleanApplyAfterOptions(applyElem, stageIds, stageId);
+        validateApplyAfter(prefix, stageIds, stageId);
+      }
+    };
+    const installStageChangeListener = (editor2) => {
+      if (changeListenerElem === editor2) {
+        return;
+      }
+      const handler = (e) => {
+        try {
+          const target = e.target;
+          if (!target) {
+            return;
+          }
+          const stageWrap = target.closest(
+            "[data-base2edit-stage-id]"
+          );
+          if (!stageWrap) {
+            return;
+          }
+          const stageId = parseInt(
+            stageWrap.dataset.base2editStageId ?? "0",
+            10
+          );
+          if (stageId < 1) {
+            return;
+          }
+          if (target.closest(
+            'button[data-base2edit-action="remove-stage"]'
+          )) {
+            return;
+          }
+          const isApplyAfter = !!target.closest(
+            `#base2edit_stage_${stageId}_applyafter`
+          );
+          scheduleStageSyncFromUi(stageId, isApplyAfter);
+        } catch {
+        }
+      };
+      editor2.addEventListener("input", handler, true);
+      editor2.addEventListener("change", handler, true);
+      changeListenerElem = editor2;
+    };
+    const markPersisted = (json) => {
+      lastKnownStagesJson = json;
+    };
+    return {
+      startPublishedStageSync,
+      installStageChangeListener,
+      publishStageAvailability,
+      markPersisted
+    };
+  }
+
+  // frontend/renderStages.ts
+  function applyFullWidthLayout(elem) {
+    elem.style.width = "100%";
+    elem.style.maxWidth = "100%";
+    elem.style.minWidth = "0";
+  }
+  function applyEditorLayout(editor2) {
+    applyFullWidthLayout(editor2);
+    editor2.style.flex = "1 1 100%";
+    editor2.style.overflow = "visible";
+  }
+  function buildFieldsForStage(stage, prefix, applyValues) {
+    const rootStage = getRootStage();
+    const parts = [];
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "keeppreeditimage",
+          name: "Keep Pre-Edit Image",
+          description: "When enabled, saves the image immediately before this edit stage begins.",
+          type: "boolean",
+          default: `${stage.keepPreEditImage}`,
+          toggleable: false,
+          view_type: "normal",
+          feature_flag: null
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editrefineonly",
+          name: "Refine Only",
+          description: "When enabled, this stage skips ReferenceLatent and runs as a plain refinement pass.",
+          type: "boolean",
+          default: `${stage.refineOnly ?? rootStage.refineOnly.checked}`,
+          toggleable: false,
+          view_type: "normal",
+          feature_flag: null
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "applyafter",
+          name: "Apply After",
+          description: "",
+          type: "dropdown",
+          values: applyValues,
+          default: applyValues.includes(stage.applyAfter) ? stage.applyAfter : applyValues[0],
+          toggleable: false,
+          view_type: "normal",
+          feature_flag: null
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editcontrol",
+          name: "Edit Control",
+          description: "Controls how much of the edit sampling is applied.",
+          type: "decimal",
+          default: `${stage.control}`,
+          min: rootStage.control.min,
+          max: rootStage.control.max,
+          step: rootStage.control.step,
+          view_min: rootStage.control.min,
+          view_max: rootStage.control.max,
+          view_type: "slider",
+          toggleable: false
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editupscale",
+          name: "Edit Upscale",
+          description: "Optional upscale of the image before this edit stage. 1 disables upscaling.",
+          type: "decimal",
+          default: `${stage.upscale ?? parseFloat(rootStage.upscale.value || "1")}`,
+          min: rootStage.upscale.min,
+          max: rootStage.upscale.max,
+          step: rootStage.upscale.step,
+          view_min: 0.25,
+          view_max: 4,
+          view_type: "slider",
+          toggleable: false
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editupscalemethod",
+          name: "Edit Upscale Method",
+          description: "How to upscale this edit stage image when Edit Upscale is enabled.",
+          type: "dropdown",
+          values: Array.from(rootStage.upscaleMethod.options).map(
+            (o) => o.value
+          ),
+          value_names: Array.from(rootStage.upscaleMethod.options).map(
+            (o) => o.label
+          ),
+          default: stage.upscaleMethod ?? rootStage.upscaleMethod.value,
+          toggleable: false
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editmodel",
+          name: "Edit Model",
+          description: "The model to use for this edit stage.",
+          type: "model",
+          subtype: "Stable-Diffusion",
+          values: Array.from(rootStage.model.options).map((o) => o.value),
+          default: stage.model,
+          toggleable: false
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editvae",
+          name: "Edit VAE",
+          description: "VAE to use for this edit stage.",
+          type: "model",
+          subtype: "VAE",
+          values: Array.from(rootStage.vae.options).map((o) => o.value),
+          value_names: Array.from(rootStage.vae.options).map(
+            (o) => o.label
+          ),
+          default: stage.vae ?? rootStage.vae.value,
+          toggleable: true
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editsteps",
+          name: "Edit Steps",
+          description: "Number of steps for this edit stage.",
+          type: "integer",
+          default: `${stage.steps}`,
+          min: rootStage.steps.min,
+          max: rootStage.steps.max,
+          step: rootStage.steps.step,
+          view_min: 1,
+          view_max: 100,
+          view_type: "slider",
+          toggleable: false
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editcfgscale",
+          name: "Edit CFG Scale",
+          description: "CFG Scale for this edit stage.",
+          type: "decimal",
+          default: `${stage.cfgScale ?? rootStage.cfgScale.value}`,
+          min: rootStage.cfgScale.min,
+          max: rootStage.cfgScale.max,
+          step: rootStage.cfgScale.step,
+          view_min: 1,
+          view_max: 20,
+          view_type: "slider",
+          toggleable: true
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editsampler",
+          name: "Edit Sampler",
+          description: "Sampler to use for this edit stage.",
+          type: "dropdown",
+          values: Array.from(rootStage.sampler.options).map(
+            (o) => o.value
+          ),
+          value_names: Array.from(rootStage.sampler.options).map(
+            (o) => o.label
+          ),
+          default: stage.sampler ?? rootStage.sampler.value,
+          toggleable: true
+        },
+        prefix
+      )
+    );
+    parts.push(
+      getHtmlForParam(
+        {
+          id: "editscheduler",
+          name: "Edit Scheduler",
+          description: "Scheduler to use for this edit stage.",
+          type: "dropdown",
+          values: Array.from(rootStage.scheduler.options).map(
+            (o) => o.value
+          ),
+          value_names: Array.from(rootStage.scheduler.options).map(
+            (o) => o.label
+          ),
+          default: stage.scheduler ?? rootStage.scheduler.value,
+          toggleable: true
+        },
+        prefix
+      )
+    );
+    return parts;
+  }
+  function showStages(editor2, deps) {
+    const stages = deps.getStages();
+    const stageIds = [0, ...stages.map((_, idx) => idx + 1)];
+    const list = document.createElement("div");
+    list.className = "base2edit-stage-list";
+    applyFullWidthLayout(list);
+    editor2.innerHTML = "";
+    editor2.appendChild(list);
+    addRemoveBtnListener(list, deps);
+    stages.forEach((stage, idx) => {
+      const stageId = idx + 1;
+      const wrap = document.createElement("div");
+      wrap.className = "input-group input-group-open base2edit-stage-wrap";
+      wrap.classList.add("border", "rounded", "p-2", "mb-2");
+      wrap.id = `base2edit_stage_${stageId}`;
+      wrap.dataset.base2editStageId = `${stageId}`;
+      applyFullWidthLayout(wrap);
+      const header = document.createElement("span");
+      header.className = "input-group-header input-group-noshrink";
+      header.innerHTML = `<span class="header-label-wrap"><span class="header-label">Edit Stage ${stageId}</span><span class="header-label-spacer"></span><button class="interrupt-button" title="Remove stage" data-base2edit-action="remove-stage" id="base2edit_remove_stage_${stageId}">×</button></span>`;
+      wrap.appendChild(header);
+      const content = document.createElement("div");
+      content.className = "input-group-content base2edit-stage-content";
+      applyFullWidthLayout(content);
+      wrap.appendChild(content);
+      list.appendChild(wrap);
+      const prefix = `base2edit_stage_${stageId}_`;
+      const applyAfter = buildApplyAfterList(
+        stageIds,
+        stageId,
+        stage.applyAfter
+      );
+      const parts = buildFieldsForStage(stage, prefix, applyAfter);
+      content.insertAdjacentHTML(
+        "beforeend",
+        parts.map((p) => p.html).join("")
+      );
+      for (const p of parts) {
+        try {
+          p.runnable();
+        } catch {
+        }
+      }
+      const setToggle = (id, enabled) => {
+        const el = document.getElementById(`${prefix}${id}`);
+        const t = Utils.getInputElement(`${prefix}${id}_toggle`);
+        if (!el || !t) {
+          return;
+        }
+        t.checked = !!enabled;
+        doToggleEnable(`${prefix}${id}`);
+      };
+      setToggle("editcfgscale", stage.cfgScale != null);
+      setToggle(
+        "editsampler",
+        stage.sampler != null && `${stage.sampler}` !== ""
+      );
+      setToggle(
+        "editscheduler",
+        stage.scheduler != null && `${stage.scheduler}` !== ""
+      );
+      setToggle("editvae", stage.vae != null && `${stage.vae}` !== "");
+      const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+      if (applyElem) {
+        cleanApplyAfterOptions(applyElem, stageIds, stageId);
+        validateApplyAfter(prefix, stageIds, stageId);
+      }
+    });
+    const addBtn = document.createElement("button");
+    addBtn.className = "basic-button";
+    addBtn.innerText = "+ Add Edit Stage";
+    addBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      deps.serializeStagesFromUi();
+      const current = deps.getStages();
+      const newStage = createStage(`Edit Stage ${current.length}`);
+      deps.saveStages([...current, newStage]);
+      showStages(editor2, deps);
+    });
+    editor2.appendChild(addBtn);
+  }
+  function addRemoveBtnListener(list, deps) {
+    list.addEventListener("click", (e) => {
+      const btn = e.target.closest(
+        'button[data-base2edit-action="remove-stage"]'
+      );
+      if (!btn) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      deps.serializeStagesFromUi();
+      const stageEl = btn.closest(
+        "[data-base2edit-stage-id]"
+      );
+      const rawId = stageEl?.dataset.base2editStageId;
+      if (!rawId) {
+        return;
+      }
+      const stageId = parseInt(rawId, 10);
+      const stages = deps.getStages();
+      stages.splice(stageId - 1, 1);
+      deps.saveStages(stages);
+      showStages(list.parentElement, deps);
+    });
+  }
+
+  // frontend/stagesIO.ts
+  function getStages() {
+    try {
+      const stages = Utils.getInputElement("input_editstages");
+      return JSON.parse(stages?.value ?? "[]");
+    } catch {
+      return [];
+    }
+  }
+  function saveStages(newStages, deps) {
+    const stages = Utils.getInputElement(
+      "input_editstages"
+    );
+    stages.value = JSON.stringify(newStages);
+    if (deps.getIsEnabled()) {
+      triggerChangeFor(stages);
+    }
+    deps.onAfterSave(stages.value);
+  }
+  function updateStageFromUi(prefix, stage) {
+    const val = (id, isBool = false) => {
+      const el = Utils.getInputElement(`${prefix}${id}`);
+      if (!el) {
+        return null;
+      }
+      if (isBool) {
+        return !!el.checked;
+      }
+      return el.value;
+    };
+    const isEnabled = (id) => {
+      const t = Utils.getInputElement(`${prefix}${id}_toggle`);
+      return !t || !!t.checked;
+    };
+    stage.keepPreEditImage = !!val("keeppreeditimage", true);
+    stage.refineOnly = !!val("editrefineonly", true);
+    stage.applyAfter = `${val("applyafter") || stage.applyAfter}`;
+    stage.control = parseFloat(String(val("editcontrol") ?? stage.control));
+    stage.upscale = parseFloat(String(val("editupscale") ?? stage.upscale));
+    stage.upscaleMethod = `${val("editupscalemethod") || stage.upscaleMethod}`;
+    stage.model = `${val("editmodel") || stage.model}`;
+    stage.vae = isEnabled("editvae") ? `${val("editvae") || stage.vae}` : null;
+    stage.steps = parseInt(String(val("editsteps") || stage.steps), 10);
+    stage.cfgScale = isEnabled("editcfgscale") ? parseFloat(String(val("editcfgscale") ?? stage.cfgScale)) : null;
+    stage.sampler = isEnabled("editsampler") ? `${val("editsampler") || stage.sampler}` : null;
+    stage.scheduler = isEnabled("editscheduler") ? `${val("editscheduler") || stage.scheduler}` : null;
+  }
+  function serializeStagesFromUi(deps) {
+    const stages = getStages();
+    for (let i = 0; i < stages.length; i++) {
+      const stageId = i + 1;
+      const prefix = `base2edit_stage_${stageId}_`;
+      updateStageFromUi(prefix, stages[i]);
+    }
+    saveStages(stages, deps);
+  }
+
+  // frontend/stageEditor.ts
+  function stageEditor() {
+    let editor2 = null;
+    const createEditorElem = () => {
+      let elem = document.getElementById("base2edit_stage_editor");
+      if (!elem) {
+        elem = document.createElement("div");
+        elem.id = "base2edit_stage_editor";
+        elem.className = "base2edit-stage-editor keep_group_visible";
+        document.getElementById("input_group_content_baseedit")?.appendChild(elem);
+      }
+      applyEditorLayout(elem);
+      editor2 = elem;
+    };
+    const saveDeps = {
+      getIsEnabled: isBase2EditGroupEnabled,
+      onAfterSave: (json) => {
+        observers.markPersisted(json);
+        observers.publishStageAvailability();
+      }
+    };
+    const saveStagesWired = (stages) => saveStages(stages, saveDeps);
+    const serializeFromUi = () => serializeStagesFromUi(saveDeps);
+    const observers = createObservers({
+      getStages,
+      saveStages: saveStagesWired,
+      updateStageFromUi
+    });
+    const generateWrap = createGenerateWrap({
+      getStages,
+      serializeStagesFromUi: serializeFromUi
+    });
+    const doShowStages = () => {
+      if (!editor2) return;
+      showStages(editor2, {
+        getStages,
+        saveStages: saveStagesWired,
+        serializeStagesFromUi: serializeFromUi
+      });
+    };
+    const init = () => {
+      createEditorElem();
+      generateWrap.tryWrap();
+      doShowStages();
+      if (editor2) {
+        observers.installStageChangeListener(editor2);
+      }
+      observers.startPublishedStageSync();
+      observers.publishStageAvailability();
+    };
+    const startGenerateWrapRetry = (intervalMs) => {
+      if (intervalMs !== void 0) {
+        generateWrap.startRetry(intervalMs);
+      } else {
+        generateWrap.startRetry();
+      }
+    };
+    return {
+      init,
+      startGenerateWrapRetry
+    };
+  }
+
+  // frontend/main.ts
+  var editor = stageEditor();
+  window.base2editRunEditOnlyFromImage = runEditOnlyFromImage;
+  registerEditPromptPrefix();
+  registerB2EPromptPrefix();
+  registerB2EImagePrefix();
+  waitForButtons(runEditOnlyFromImage);
+  var tryRegisterStageEditor = () => {
+    if (typeof postParamBuildSteps === "undefined" || !Array.isArray(postParamBuildSteps)) {
+      return false;
+    }
+    postParamBuildSteps.push(() => {
+      try {
+        editor.init();
+      } catch (e) {
+        console.log("Base2Edit: failed to build stage editor", e);
+      }
+    });
+    return true;
+  };
+  if (!tryRegisterStageEditor()) {
+    const interval = setInterval(() => {
+      if (tryRegisterStageEditor()) {
+        clearInterval(interval);
+      }
+    }, 200);
+  }
+  editor.startGenerateWrapRetry();
+})();
 //# sourceMappingURL=base2edit.js.map
