@@ -1,47 +1,50 @@
 "use strict";
 (() => {
   // frontend/imageButtons.ts
-  var BUTTON_LABEL = "Base2Edit";
-  var BUTTON_TITLE = "Runs an edit-only Base2Edit pass on this image";
-  var imageButtonsWrapped = false;
-  function isMediaSupported(src) {
-    return !(typeof isVideoExt === "function" && isVideoExt(src)) && !(typeof isAudioExt === "function" && isAudioExt(src));
-  }
-  function addButton(buttons, src, onRun) {
-    if (!isMediaSupported(src)) {
-      return;
-    }
-    buttons.push({
-      label: BUTTON_LABEL,
-      title: BUTTON_TITLE,
-      onclick: () => onRun(src)
-    });
-  }
-  function initImageButtons(onRun) {
-    if (imageButtonsWrapped) {
-      return true;
-    }
-    if (typeof buttonsForImage !== "function") {
-      return false;
-    }
-    const originalButtonsForImage = buttonsForImage;
-    buttonsForImage = (fullsrc, src, metadata) => {
-      const buttons = originalButtonsForImage(fullsrc, src, metadata);
-      if (typeof window.base2editRunEditOnlyFromImage === "function") {
-        addButton(buttons, src, onRun);
-      }
-      return buttons;
+  function createImageButtons() {
+    const BUTTON_LABEL = "Base2Edit";
+    const BUTTON_TITLE = "Runs an edit-only Base2Edit pass on this image";
+    let wrapped = false;
+    const isMediaSupported = (src) => {
+      return !(typeof isVideoExt === "function" && isVideoExt(src)) && !(typeof isAudioExt === "function" && isAudioExt(src));
     };
-    imageButtonsWrapped = true;
-    return true;
-  }
-  function waitForButtons(onRun) {
-    const checkInterval = setInterval(() => {
-      if (!initImageButtons(onRun)) {
+    const addButton = (buttons, src, onRun) => {
+      if (!isMediaSupported(src)) {
         return;
       }
-      clearInterval(checkInterval);
-    }, 100);
+      buttons.push({
+        label: BUTTON_LABEL,
+        title: BUTTON_TITLE,
+        onclick: () => onRun(src)
+      });
+    };
+    const init = (onRun) => {
+      if (wrapped) {
+        return true;
+      }
+      if (typeof buttonsForImage !== "function") {
+        return false;
+      }
+      const originalButtonsForImage = buttonsForImage;
+      buttonsForImage = (fullsrc, src, metadata) => {
+        const buttons = originalButtonsForImage(fullsrc, src, metadata);
+        if (typeof window.base2editRunEditOnlyFromImage === "function") {
+          addButton(buttons, src, onRun);
+        }
+        return buttons;
+      };
+      wrapped = true;
+      return true;
+    };
+    const waitFor = (onRun) => {
+      const interval = setInterval(() => {
+        if (!init(onRun)) {
+          return;
+        }
+        clearInterval(interval);
+      }, 100);
+    };
+    return { init, waitFor };
   }
 
   // frontend/promptPrefixes.ts
@@ -332,6 +335,12 @@
       if (genButtonWrapped) {
         return;
       }
+      if (typeof mainGenHandler === "undefined" || !mainGenHandler) {
+        return;
+      }
+      if (typeof mainGenHandler.doGenerate !== "function") {
+        return;
+      }
       const original = mainGenHandler.doGenerate.bind(mainGenHandler);
       mainGenHandler.doGenerate = (...args) => {
         if (!isBase2EditGroupEnabled()) {
@@ -505,8 +514,9 @@
       editor2.addEventListener("change", handler, true);
       changeListenerElem = editor2;
     };
-    const markPersisted = (json) => {
+    const markPersisted = (json, enabled) => {
       lastKnownStagesJson = json;
+      lastKnownBase2EditEnabled = enabled;
     };
     return {
       startPublishedStageSync,
@@ -911,6 +921,7 @@
   // frontend/stageEditor.ts
   function stageEditor() {
     let editor2 = null;
+    let observers;
     const createEditorElem = () => {
       let elem = document.getElementById("base2edit_stage_editor");
       if (!elem) {
@@ -925,13 +936,13 @@
     const saveDeps = {
       getIsEnabled: isBase2EditGroupEnabled,
       onAfterSave: (json) => {
-        observers.markPersisted(json);
+        observers.markPersisted(json, isBase2EditGroupEnabled());
         observers.publishStageAvailability();
       }
     };
     const saveStagesWired = (stages) => saveStages(stages, saveDeps);
     const serializeFromUi = () => serializeStagesFromUi(saveDeps);
-    const observers = createObservers({
+    observers = createObservers({
       getStages,
       saveStages: saveStagesWired,
       updateStageFromUi
@@ -977,7 +988,8 @@
   registerEditPromptPrefix();
   registerB2EPromptPrefix();
   registerB2EImagePrefix();
-  waitForButtons(runEditOnlyFromImage);
+  var imageButtons = createImageButtons();
+  imageButtons.waitFor(runEditOnlyFromImage);
   var tryRegisterStageEditor = () => {
     if (typeof postParamBuildSteps === "undefined" || !Array.isArray(postParamBuildSteps)) {
       return false;
