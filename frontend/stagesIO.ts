@@ -1,5 +1,5 @@
 import type { Stage } from "./types";
-import { Utils } from "./Utils";
+import { utils } from "./utils";
 
 export type StagesIOSaveDeps = {
     getIsEnabled: () => boolean;
@@ -8,7 +8,7 @@ export type StagesIOSaveDeps = {
 
 export const getStages = (): Stage[] => {
     try {
-        const stages = Utils.getInputElement("input_editstages");
+        const stages = utils.getInputElement("input_editstages");
         return JSON.parse(stages?.value ?? "[]");
     } catch {
         return [];
@@ -19,7 +19,7 @@ export const saveStages = (
     newStages: Stage[],
     deps: StagesIOSaveDeps,
 ): void => {
-    const stages = Utils.getInputElement(
+    const stages = utils.getInputElement(
         "input_editstages",
     ) as HTMLInputElement;
     stages.value = JSON.stringify(newStages);
@@ -34,7 +34,7 @@ export const updateStageFromUi = (prefix: string, stage: Stage): void => {
         id: string,
         isBool = false,
     ): string | number | boolean | null => {
-        const el = Utils.getInputElement(`${prefix}${id}`);
+        const el = utils.getInputElement(`${prefix}${id}`);
         if (!el) {
             return null;
         }
@@ -47,7 +47,7 @@ export const updateStageFromUi = (prefix: string, stage: Stage): void => {
     };
 
     const isEnabled = (id: string) => {
-        const t = Utils.getInputElement(`${prefix}${id}_toggle`);
+        const t = utils.getInputElement(`${prefix}${id}_toggle`);
         return !t || !!t.checked;
     };
 

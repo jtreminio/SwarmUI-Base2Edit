@@ -1,6 +1,6 @@
 import { isBase2EditGroupEnabled } from "./rootStage";
 import type { Stage } from "./types";
-import { Utils } from "./Utils";
+import { utils } from "./utils";
 import { cleanApplyAfterOptions, validateApplyAfter } from "./validation";
 
 export type ObserversDeps = {
@@ -73,11 +73,11 @@ export const createObservers = (deps: ObserversDeps): ObserversApi => {
         }
 
         lastKnownStagesJson =
-            Utils.getInputElement("input_editstages")?.value ?? "";
+            utils.getInputElement("input_editstages")?.value ?? "";
         lastKnownBase2EditEnabled = isBase2EditGroupEnabled();
         stagesInputSyncInterval = setInterval(() => {
             const currentStagesJson =
-                Utils.getInputElement("input_editstages")?.value ?? "";
+                utils.getInputElement("input_editstages")?.value ?? "";
             const base2EditEnabled = isBase2EditGroupEnabled();
             if (
                 currentStagesJson === lastKnownStagesJson &&
@@ -129,7 +129,7 @@ export const createObservers = (deps: ObserversDeps): ObserversApi => {
         }
 
         const stageIds = [0, ...stages.map((_, i) => i + 1)];
-        const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+        const applyElem = utils.getSelectElement(`${prefix}applyafter`);
         if (applyElem) {
             cleanApplyAfterOptions(applyElem, stageIds, stageId);
             validateApplyAfter(prefix, stageIds, stageId);

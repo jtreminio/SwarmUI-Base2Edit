@@ -1,26 +1,26 @@
 import type { RootStage, Stage } from "./types";
-import { Utils } from "./Utils";
+import { utils } from "./utils";
 
 export const getRootStage = (): RootStage => {
     return {
-        refineOnly: Utils.getInputElement(
+        refineOnly: utils.getInputElement(
             "input_refineonly",
         ) as HTMLInputElement,
-        control: Utils.getInputElement("input_editcontrol") as HTMLInputElement,
-        upscale: Utils.getInputElement("input_editupscale") as HTMLInputElement,
-        upscaleMethod: Utils.getSelectElement(
+        control: utils.getInputElement("input_editcontrol") as HTMLInputElement,
+        upscale: utils.getInputElement("input_editupscale") as HTMLInputElement,
+        upscaleMethod: utils.getSelectElement(
             "input_editupscalemethod",
         ) as HTMLSelectElement,
-        model: Utils.getSelectElement("input_editmodel") as HTMLSelectElement,
-        vae: Utils.getSelectElement("input_editvae") as HTMLSelectElement,
-        steps: Utils.getInputElement("input_editsteps") as HTMLInputElement,
-        cfgScale: Utils.getInputElement(
+        model: utils.getSelectElement("input_editmodel") as HTMLSelectElement,
+        vae: utils.getSelectElement("input_editvae") as HTMLSelectElement,
+        steps: utils.getInputElement("input_editsteps") as HTMLInputElement,
+        cfgScale: utils.getInputElement(
             "input_editcfgscale",
         ) as HTMLInputElement,
-        sampler: Utils.getSelectElement(
+        sampler: utils.getSelectElement(
             "input_editsampler",
         ) as HTMLSelectElement,
-        scheduler: Utils.getSelectElement(
+        scheduler: utils.getSelectElement(
             "input_editscheduler",
         ) as HTMLSelectElement,
     };
@@ -28,12 +28,12 @@ export const getRootStage = (): RootStage => {
 
 export const createStage = (applyAfter: string): Stage => {
     const readToggleableRoot = (id: string): string | null => {
-        const el = Utils.getInputElement(`input_${id}`);
+        const el = utils.getInputElement(`input_${id}`);
         if (!el) {
             return null;
         }
 
-        const t = Utils.getInputElement(`input_${id}_toggle`);
+        const t = utils.getInputElement(`input_${id}_toggle`);
         if (t && !t.checked) {
             return null;
         }
@@ -43,28 +43,28 @@ export const createStage = (applyAfter: string): Stage => {
 
     return {
         keepPreEditImage: (
-            Utils.getInputElement("input_keeppreeditimage") as HTMLInputElement
+            utils.getInputElement("input_keeppreeditimage") as HTMLInputElement
         ).checked,
         refineOnly: (
-            Utils.getInputElement("input_refineonly") as HTMLInputElement
+            utils.getInputElement("input_refineonly") as HTMLInputElement
         ).checked,
         applyAfter: applyAfter,
         control: parseFloat(
-            (Utils.getInputElement("input_editcontrol") as HTMLInputElement)
+            (utils.getInputElement("input_editcontrol") as HTMLInputElement)
                 .value,
         ),
         upscale: parseFloat(
-            (Utils.getInputElement("input_editupscale") as HTMLInputElement)
+            (utils.getInputElement("input_editupscale") as HTMLInputElement)
                 .value,
         ),
         upscaleMethod: (
-            Utils.getInputElement("input_editupscalemethod") as HTMLInputElement
+            utils.getInputElement("input_editupscalemethod") as HTMLInputElement
         ).value,
-        model: (Utils.getInputElement("input_editmodel") as HTMLInputElement)
+        model: (utils.getInputElement("input_editmodel") as HTMLInputElement)
             .value,
         vae: readToggleableRoot("editvae"),
         steps: parseInt(
-            (Utils.getInputElement("input_editsteps") as HTMLInputElement)
+            (utils.getInputElement("input_editsteps") as HTMLInputElement)
                 .value,
             10,
         ),
@@ -75,7 +75,7 @@ export const createStage = (applyAfter: string): Stage => {
 };
 
 export const isBase2EditGroupEnabled = (): boolean => {
-    const toggler = Utils.getInputElement(
+    const toggler = utils.getInputElement(
         "input_group_content_baseedit_toggle",
     );
     return !toggler || !!toggler.checked;

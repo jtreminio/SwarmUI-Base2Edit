@@ -17,13 +17,12 @@ export const createGenerateWrap = (deps: GenerateWrapDeps): GenerateWrapApi => {
     let genWrapInterval: ReturnType<typeof setInterval> | null = null;
 
     const tryWrap = () => {
-        if (genButtonWrapped) {
-            return;
-        }
-        if (typeof mainGenHandler === "undefined" || !mainGenHandler) {
-            return;
-        }
-        if (typeof mainGenHandler.doGenerate !== "function") {
+        if (
+            genButtonWrapped ||
+            typeof mainGenHandler === "undefined" ||
+            !mainGenHandler ||
+            typeof mainGenHandler.doGenerate !== "function"
+        ) {
             return;
         }
 
@@ -60,12 +59,11 @@ export const createGenerateWrap = (deps: GenerateWrapDeps): GenerateWrapApi => {
                     typeof mainGenHandler !== "undefined" &&
                     mainGenHandler &&
                     typeof mainGenHandler.doGenerate === "function" &&
-                    mainGenHandler.doGenerate.__base2editWrapped
+                    mainGenHandler.doGenerate.__base2editWrapped &&
+                    genWrapInterval
                 ) {
-                    if (genWrapInterval) {
-                        clearInterval(genWrapInterval);
-                        genWrapInterval = null;
-                    }
+                    clearInterval(genWrapInterval);
+                    genWrapInterval = null;
                 }
             } catch {}
         };

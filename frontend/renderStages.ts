@@ -1,6 +1,6 @@
 import { createStage, getRootStage } from "./rootStage";
 import type { Stage } from "./types";
-import { Utils } from "./Utils";
+import { utils } from "./utils";
 import {
     buildApplyAfterList,
     cleanApplyAfterOptions,
@@ -313,7 +313,7 @@ export const showStages = (editor: HTMLElement, deps: RenderDeps): void => {
 
         const setToggle = (id: string, enabled: boolean) => {
             const el = document.getElementById(`${prefix}${id}`);
-            const t = Utils.getInputElement(`${prefix}${id}_toggle`);
+            const t = utils.getInputElement(`${prefix}${id}_toggle`);
             if (!el || !t) {
                 return;
             }
@@ -332,7 +332,7 @@ export const showStages = (editor: HTMLElement, deps: RenderDeps): void => {
         );
         setToggle("editvae", stage.vae != null && `${stage.vae}` !== "");
 
-        const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+        const applyElem = utils.getSelectElement(`${prefix}applyafter`);
         if (applyElem) {
             cleanApplyAfterOptions(applyElem, stageIds, stageId);
             validateApplyAfter(prefix, stageIds, stageId);

@@ -1,5 +1,5 @@
 import type { Stage } from "./types";
-import { Utils } from "./Utils";
+import { utils } from "./utils";
 
 export const isMissingStageRef = (
     applyAfter: string,
@@ -95,7 +95,7 @@ export const validateApplyAfter = (
     stageIds: number[],
     stageId: number,
 ): void => {
-    const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+    const applyElem = utils.getSelectElement(`${prefix}applyafter`);
     if (!applyElem) {
         return;
     }

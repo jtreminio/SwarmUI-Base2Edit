@@ -10,25 +10,7 @@ export const createImageButtons = (): ImageButtonsApi => {
     let wrapped = false;
 
     const isMediaSupported = (src: string): boolean => {
-        return (
-            !(typeof isVideoExt === "function" && isVideoExt(src)) &&
-            !(typeof isAudioExt === "function" && isAudioExt(src))
-        );
-    };
-
-    const addButton = (
-        buttons: Array<{ label: string; title: string; onclick: () => void }>,
-        src: string,
-        onRun: (src: string) => void,
-    ): void => {
-        if (!isMediaSupported(src)) {
-            return;
-        }
-        buttons.push({
-            label: BUTTON_LABEL,
-            title: BUTTON_TITLE,
-            onclick: () => onRun(src),
-        });
+        return !isVideoExt(src) && !isAudioExt(src);
     };
 
     const init = (onRun: (src: string) => void): boolean => {
@@ -41,9 +23,17 @@ export const createImageButtons = (): ImageButtonsApi => {
         const originalButtonsForImage = buttonsForImage;
         buttonsForImage = (fullsrc: string, src: string, metadata: unknown) => {
             const buttons = originalButtonsForImage(fullsrc, src, metadata);
-            if (typeof window.base2editRunEditOnlyFromImage === "function") {
-                addButton(buttons, src, onRun);
+            if (
+                typeof window.base2editRunEditOnlyFromImage !== "function" ||
+                !isMediaSupported(src)
+            ) {
+                return buttons;
             }
+            buttons.push({
+                label: BUTTON_LABEL,
+                title: BUTTON_TITLE,
+                onclick: () => onRun(src),
+            });
             return buttons;
         };
         wrapped = true;

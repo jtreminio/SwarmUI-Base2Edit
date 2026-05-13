@@ -85,6 +85,11 @@ describe("tryRegisterStageEditor", () => {
         const cb = (
             (globalThis as any).postParamBuildSteps as Array<() => void>
         )[0];
-        expect(() => cb()).not.toThrow();
+        const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+        try {
+            expect(() => cb()).not.toThrow();
+        } finally {
+            logSpy.mockRestore();
+        }
     });
 });

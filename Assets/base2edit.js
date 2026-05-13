@@ -6,17 +6,7 @@
     const BUTTON_TITLE = "Runs an edit-only Base2Edit pass on this image";
     let wrapped = false;
     const isMediaSupported = (src) => {
-      return !(typeof isVideoExt === "function" && isVideoExt(src)) && !(typeof isAudioExt === "function" && isAudioExt(src));
-    };
-    const addButton = (buttons, src, onRun) => {
-      if (!isMediaSupported(src)) {
-        return;
-      }
-      buttons.push({
-        label: BUTTON_LABEL,
-        title: BUTTON_TITLE,
-        onclick: () => onRun(src)
-      });
+      return !isVideoExt(src) && !isAudioExt(src);
     };
     const init = (onRun) => {
       if (wrapped) {
@@ -28,9 +18,14 @@
       const originalButtonsForImage = buttonsForImage;
       buttonsForImage = (fullsrc, src, metadata) => {
         const buttons = originalButtonsForImage(fullsrc, src, metadata);
-        if (typeof window.base2editRunEditOnlyFromImage === "function") {
-          addButton(buttons, src, onRun);
+        if (typeof window.base2editRunEditOnlyFromImage !== "function" || !isMediaSupported(src)) {
+          return buttons;
         }
+        buttons.push({
+          label: BUTTON_LABEL,
+          title: BUTTON_TITLE,
+          onclick: () => onRun(src)
+        });
         return buttons;
       };
       wrapped = true;
@@ -165,8 +160,8 @@
     tmpImg.src = src;
   };
 
-  // frontend/Utils.ts
-  var Utils = {
+  // frontend/utils.ts
+  var utils = {
     getInputElement: (id) => {
       return document.getElementById(id);
     },
@@ -181,55 +176,55 @@
   // frontend/rootStage.ts
   var getRootStage = () => {
     return {
-      refineOnly: Utils.getInputElement(
+      refineOnly: utils.getInputElement(
         "input_refineonly"
       ),
-      control: Utils.getInputElement("input_editcontrol"),
-      upscale: Utils.getInputElement("input_editupscale"),
-      upscaleMethod: Utils.getSelectElement(
+      control: utils.getInputElement("input_editcontrol"),
+      upscale: utils.getInputElement("input_editupscale"),
+      upscaleMethod: utils.getSelectElement(
         "input_editupscalemethod"
       ),
-      model: Utils.getSelectElement("input_editmodel"),
-      vae: Utils.getSelectElement("input_editvae"),
-      steps: Utils.getInputElement("input_editsteps"),
-      cfgScale: Utils.getInputElement(
+      model: utils.getSelectElement("input_editmodel"),
+      vae: utils.getSelectElement("input_editvae"),
+      steps: utils.getInputElement("input_editsteps"),
+      cfgScale: utils.getInputElement(
         "input_editcfgscale"
       ),
-      sampler: Utils.getSelectElement(
+      sampler: utils.getSelectElement(
         "input_editsampler"
       ),
-      scheduler: Utils.getSelectElement(
+      scheduler: utils.getSelectElement(
         "input_editscheduler"
       )
     };
   };
   var createStage = (applyAfter) => {
     const readToggleableRoot = (id) => {
-      const el = Utils.getInputElement(`input_${id}`);
+      const el = utils.getInputElement(`input_${id}`);
       if (!el) {
         return null;
       }
-      const t = Utils.getInputElement(`input_${id}_toggle`);
+      const t = utils.getInputElement(`input_${id}_toggle`);
       if (t && !t.checked) {
         return null;
       }
       return el.value;
     };
     return {
-      keepPreEditImage: Utils.getInputElement("input_keeppreeditimage").checked,
-      refineOnly: Utils.getInputElement("input_refineonly").checked,
+      keepPreEditImage: utils.getInputElement("input_keeppreeditimage").checked,
+      refineOnly: utils.getInputElement("input_refineonly").checked,
       applyAfter,
       control: parseFloat(
-        Utils.getInputElement("input_editcontrol").value
+        utils.getInputElement("input_editcontrol").value
       ),
       upscale: parseFloat(
-        Utils.getInputElement("input_editupscale").value
+        utils.getInputElement("input_editupscale").value
       ),
-      upscaleMethod: Utils.getInputElement("input_editupscalemethod").value,
-      model: Utils.getInputElement("input_editmodel").value,
+      upscaleMethod: utils.getInputElement("input_editupscalemethod").value,
+      model: utils.getInputElement("input_editmodel").value,
       vae: readToggleableRoot("editvae"),
       steps: parseInt(
-        Utils.getInputElement("input_editsteps").value,
+        utils.getInputElement("input_editsteps").value,
         10
       ),
       cfgScale: parseFloat(readToggleableRoot("editcfgscale") ?? ""),
@@ -238,7 +233,7 @@
     };
   };
   var isBase2EditGroupEnabled = () => {
-    const toggler = Utils.getInputElement(
+    const toggler = utils.getInputElement(
       "input_group_content_baseedit_toggle"
     );
     return !toggler || !!toggler.checked;
@@ -307,7 +302,7 @@
     }
   };
   var validateApplyAfter = (prefix, stageIds, stageId) => {
-    const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+    const applyElem = utils.getSelectElement(`${prefix}applyafter`);
     if (!applyElem) {
       return;
     }
@@ -332,13 +327,7 @@
     let genButtonWrapped = false;
     let genWrapInterval = null;
     const tryWrap = () => {
-      if (genButtonWrapped) {
-        return;
-      }
-      if (typeof mainGenHandler === "undefined" || !mainGenHandler) {
-        return;
-      }
-      if (typeof mainGenHandler.doGenerate !== "function") {
+      if (genButtonWrapped || typeof mainGenHandler === "undefined" || !mainGenHandler || typeof mainGenHandler.doGenerate !== "function") {
         return;
       }
       const original = mainGenHandler.doGenerate.bind(mainGenHandler);
@@ -364,11 +353,9 @@
       const check = () => {
         try {
           tryWrap();
-          if (typeof mainGenHandler !== "undefined" && mainGenHandler && typeof mainGenHandler.doGenerate === "function" && mainGenHandler.doGenerate.__base2editWrapped) {
-            if (genWrapInterval) {
-              clearInterval(genWrapInterval);
-              genWrapInterval = null;
-            }
+          if (typeof mainGenHandler !== "undefined" && mainGenHandler && typeof mainGenHandler.doGenerate === "function" && mainGenHandler.doGenerate.__base2editWrapped && genWrapInterval) {
+            clearInterval(genWrapInterval);
+            genWrapInterval = null;
           }
         } catch {
         }
@@ -430,10 +417,10 @@
       if (stagesInputSyncInterval) {
         return;
       }
-      lastKnownStagesJson = Utils.getInputElement("input_editstages")?.value ?? "";
+      lastKnownStagesJson = utils.getInputElement("input_editstages")?.value ?? "";
       lastKnownBase2EditEnabled = isBase2EditGroupEnabled();
       stagesInputSyncInterval = setInterval(() => {
-        const currentStagesJson = Utils.getInputElement("input_editstages")?.value ?? "";
+        const currentStagesJson = utils.getInputElement("input_editstages")?.value ?? "";
         const base2EditEnabled = isBase2EditGroupEnabled();
         if (currentStagesJson === lastKnownStagesJson && base2EditEnabled === lastKnownBase2EditEnabled) {
           return;
@@ -469,7 +456,7 @@
         return;
       }
       const stageIds = [0, ...stages.map((_, i) => i + 1)];
-      const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+      const applyElem = utils.getSelectElement(`${prefix}applyafter`);
       if (applyElem) {
         cleanApplyAfterOptions(applyElem, stageIds, stageId);
         validateApplyAfter(prefix, stageIds, stageId);
@@ -799,7 +786,7 @@
       }
       const setToggle = (id, enabled) => {
         const el = document.getElementById(`${prefix}${id}`);
-        const t = Utils.getInputElement(`${prefix}${id}_toggle`);
+        const t = utils.getInputElement(`${prefix}${id}_toggle`);
         if (!el || !t) {
           return;
         }
@@ -816,7 +803,7 @@
         stage.scheduler != null && `${stage.scheduler}` !== ""
       );
       setToggle("editvae", stage.vae != null && `${stage.vae}` !== "");
-      const applyElem = Utils.getSelectElement(`${prefix}applyafter`);
+      const applyElem = utils.getSelectElement(`${prefix}applyafter`);
       if (applyElem) {
         cleanApplyAfterOptions(applyElem, stageIds, stageId);
         validateApplyAfter(prefix, stageIds, stageId);
@@ -864,14 +851,14 @@
   // frontend/stagesIO.ts
   var getStages = () => {
     try {
-      const stages = Utils.getInputElement("input_editstages");
+      const stages = utils.getInputElement("input_editstages");
       return JSON.parse(stages?.value ?? "[]");
     } catch {
       return [];
     }
   };
   var saveStages = (newStages, deps) => {
-    const stages = Utils.getInputElement(
+    const stages = utils.getInputElement(
       "input_editstages"
     );
     stages.value = JSON.stringify(newStages);
@@ -882,7 +869,7 @@
   };
   var updateStageFromUi = (prefix, stage) => {
     const val = (id, isBool = false) => {
-      const el = Utils.getInputElement(`${prefix}${id}`);
+      const el = utils.getInputElement(`${prefix}${id}`);
       if (!el) {
         return null;
       }
@@ -892,7 +879,7 @@
       return el.value;
     };
     const isEnabled = (id) => {
-      const t = Utils.getInputElement(`${prefix}${id}_toggle`);
+      const t = utils.getInputElement(`${prefix}${id}_toggle`);
       return !t || !!t.checked;
     };
     stage.keepPreEditImage = !!val("keeppreeditimage", true);
