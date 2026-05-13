@@ -1,6 +1,5 @@
 using ComfyTyped.Core;
 using ComfyTyped.Generated;
-using ComfyTyped.SwarmUI;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
@@ -68,21 +67,12 @@ public class TypedBoundaryTests
     }
 
     [Fact]
-    public void WorkflowBridge_CanWrap_ManuallyConstructedWorkflow()
-    {
-        JObject workflow = BuildBase2EditWorkflow();
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
-
-        Assert.NotEmpty(bridge.Graph.Nodes);
-    }
-
-    [Fact]
     public void Bridge_CanQueryTypedReferenceLatentNode()
     {
         JObject workflow = BuildBase2EditWorkflow();
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        var refLatents = bridge.Graph.NodesOfType<ReferenceLatentNode>();
+        IReadOnlyList<ReferenceLatentNode> refLatents = bridge.Graph.NodesOfType<ReferenceLatentNode>();
         Assert.Single(refLatents);
         Assert.Equal("20", refLatents[0].Id);
     }
@@ -94,7 +84,7 @@ public class TypedBoundaryTests
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
         ReferenceLatentNode refLatent = bridge.Graph.NodesOfType<ReferenceLatentNode>().Single();
-        INodeOutput expectedOutput = bridge.ResolvePath(new JArray("10", 0));
+        INodeOutput expectedOutput = bridge.Graph.GetNode("10").Outputs[0];
 
         Assert.NotNull(refLatent.Latent.Connection);
         Assert.Equal(expectedOutput, refLatent.Latent.Connection);
@@ -108,10 +98,9 @@ public class TypedBoundaryTests
 
         ReferenceLatentNode refLatent = bridge.Graph.NodesOfType<ReferenceLatentNode>().Single();
         INodeOutput refOutput = refLatent.Outputs[0];
-        var consumers = bridge.Graph.FindInputsConnectedTo(refOutput).ToList();
+        List<(ComfyNode Node, INodeInput Input)> consumers = [.. bridge.Graph.FindInputsConnectedTo(refOutput)];
 
-        Assert.NotEmpty(consumers);
-        Assert.True(consumers.Any(c => c.Node is KSamplerAdvancedNode));
+        Assert.Contains(consumers, c => c.Node is KSamplerAdvancedNode);
     }
 
     [Fact]
@@ -121,7 +110,7 @@ public class TypedBoundaryTests
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
         VAEDecodeNode decode = bridge.Graph.NodesOfType<VAEDecodeNode>().Single();
-        var sampler = bridge.Graph.NodesOfType<KSamplerAdvancedNode>().Single();
+        KSamplerAdvancedNode sampler = bridge.Graph.NodesOfType<KSamplerAdvancedNode>().Single();
 
         Assert.NotNull(decode.Samples.Connection);
         Assert.Equal(sampler.Id, decode.Samples.Connection.Node.Id);
@@ -139,50 +128,33 @@ public class TypedBoundaryTests
         Assert.Equal("4", decode.Vae.Connection.Node.Id);
     }
 
-    [Fact]
-    public void HarnessGeneratedWorkflow_ContainsTypedReferenceLatent()
+    private static (T2IParamInput Input, IEnumerable<WorkflowGenerator.WorkflowGenStep> Steps) BuildHarnessFixture()
     {
         WorkflowTestHarness.Base2EditSteps();
         T2IParamInput input = new(null);
         input.Set(T2IParamTypes.Prompt, "global <edit>do the edit");
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         input.Set(Base2EditExtension.ApplyEditAfter, "Base");
-        input.Set(T2IParamTypes.Seed, 1L);
+        input.Set(T2IParamTypes.Seed, 1);
         input.Set(T2IParamTypes.Width, 512);
         input.Set(T2IParamTypes.Height, 512);
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
-            input,
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
             WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat(WorkflowTestHarness.Base2EditSteps()));
+                .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
-
-        var refLatents = bridge.Graph.NodesOfType<ReferenceLatentNode>();
-        Assert.NotEmpty(refLatents);
+        return (input, steps);
     }
 
     [Fact]
     public void HarnessGeneratedWorkflow_EditSamplerReachesUpstreamReferenceLatent()
     {
-        WorkflowTestHarness.Base2EditSteps();
-        T2IParamInput input = new(null);
-        input.Set(T2IParamTypes.Prompt, "global <edit>do the edit");
-        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
-        input.Set(Base2EditExtension.ApplyEditAfter, "Base");
-        input.Set(T2IParamTypes.Seed, 1L);
-        input.Set(T2IParamTypes.Width, 512);
-        input.Set(T2IParamTypes.Height, 512);
+        (T2IParamInput input, IEnumerable<WorkflowGenerator.WorkflowGenStep> steps) = BuildHarnessFixture();
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
-            input,
-            WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat(WorkflowTestHarness.Base2EditSteps()));
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
-
-        var refLatents = bridge.Graph.NodesOfType<ReferenceLatentNode>();
-        var samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
+        IReadOnlyList<ReferenceLatentNode> refLatents = bridge.Graph.NodesOfType<ReferenceLatentNode>();
+        IReadOnlyList<KSamplerAdvancedNode> samplers = bridge.Graph.NodesOfType<KSamplerAdvancedNode>();
         Assert.NotEmpty(refLatents);
         Assert.NotEmpty(samplers);
 
@@ -195,32 +167,9 @@ public class TypedBoundaryTests
     }
 
     [Fact]
-    public void HarnessGeneratedWorkflow_ContainsVAEDecodeAfterEditSampler()
-    {
-        WorkflowTestHarness.Base2EditSteps();
-        T2IParamInput input = new(null);
-        input.Set(T2IParamTypes.Prompt, "global <edit>do the edit");
-        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
-        input.Set(Base2EditExtension.ApplyEditAfter, "Base");
-        input.Set(T2IParamTypes.Seed, 1L);
-        input.Set(T2IParamTypes.Width, 512);
-        input.Set(T2IParamTypes.Height, 512);
-
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
-            input,
-            WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat(WorkflowTestHarness.Base2EditSteps()));
-
-        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
-
-        var decodes = bridge.Graph.NodesOfType<VAEDecodeNode>();
-        Assert.NotEmpty(decodes);
-    }
-
-    [Fact]
     public void MinimalGraphSeedStep_RegistersStubNodes()
     {
-        (JObject workflow, WorkflowGenerator gen) = WorkflowTestHarness.GenerateWithStepsAndState(
+        (JObject workflow, WorkflowGenerator _) = WorkflowTestHarness.GenerateWithStepsAndState(
             new T2IParamInput(null),
             [WorkflowTestHarness.MinimalGraphSeedStep()]);
 
@@ -233,7 +182,7 @@ public class TypedBoundaryTests
     [Fact]
     public void MinimalGraphSeedStep_AdvancesLastId()
     {
-        (JObject workflow, WorkflowGenerator gen) = WorkflowTestHarness.GenerateWithStepsAndState(
+        (JObject _, WorkflowGenerator gen) = WorkflowTestHarness.GenerateWithStepsAndState(
             new T2IParamInput(null),
             [WorkflowTestHarness.MinimalGraphSeedStep()]);
 
