@@ -18,7 +18,7 @@ registerB2EImagePrefix();
 const imageButtons = createImageButtons();
 imageButtons.waitFor(runEditOnlyFromImage);
 
-const tryRegisterStageEditor = (): boolean => {
+export const tryRegisterStageEditor = (): boolean => {
     if (
         typeof postParamBuildSteps === "undefined" ||
         !Array.isArray(postParamBuildSteps)
