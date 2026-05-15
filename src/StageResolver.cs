@@ -77,6 +77,57 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
         return resolved;
     }
 
+    public List<JArray> ResolveImagePixels(
+        IReadOnlyList<ImageReference> references,
+        int? index = null)
+    {
+        List<JArray> resolved = [];
+
+        if (references is null || references.Count == 0)
+        {
+            return resolved;
+        }
+
+        foreach (ImageReference reference in references)
+        {
+            if (!TryResolveSource(reference, index, out WGNodeData media, out WGNodeData sourceVae, out string warning))
+            {
+                if (!string.IsNullOrEmpty(warning))
+                {
+                    LogWarn(reference, index, warning);
+                }
+                continue;
+            }
+
+            JArray resolvedPixels = MediaToPixels(media, sourceVae, out warning);
+            if (resolvedPixels is null)
+            {
+                if (!string.IsNullOrEmpty(warning))
+                {
+                    LogWarn(reference, index, warning);
+                }
+                continue;
+            }
+
+            bool alreadyAdded = false;
+            foreach (JArray existing in resolved)
+            {
+                if (JToken.DeepEquals(existing, resolvedPixels))
+                {
+                    alreadyAdded = true;
+                    break;
+                }
+            }
+
+            if (!alreadyAdded)
+            {
+                resolved.Add(resolvedPixels);
+            }
+        }
+
+        return resolved;
+    }
+
     private bool TryResolveSource(
         ImageReference reference,
         int? currentIndex,
@@ -197,14 +248,76 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
         return CloneNodeRef(pixels.AsLatentImage(targetVae).Path);
     }
 
-    private WGNodeData ToPixels(WGNodeData latent, WGNodeData vae)
+    private JArray MediaToPixels(WGNodeData media, WGNodeData sourceVae, out string warning)
     {
-        if (VaeNodeReuse.ReuseVaeDecodeForSamplesAndVae(g, latent.Path, vae.Path, out INodeOutput reusedImage))
+        warning = "";
+
+        if (!media.IsLatentData)
         {
-            return latent.WithPath(WorkflowBridge.ToPath(reusedImage), WGNodeData.DT_IMAGE);
+            return CloneNodeRef(media.Path);
         }
 
-        return latent.AsRawImage(vae);
+        if (sourceVae is null)
+        {
+            warning = "cannot decode the referenced stage output (no source VAE).";
+            return null;
+        }
+
+        return CloneNodeRef(ToPixels(media, sourceVae).Path);
+    }
+
+    private WGNodeData ToPixels(WGNodeData latent, WGNodeData vae) =>
+        TryFindExistingImageNode(g, latent) ?? latent.AsRawImage(vae);
+
+    public static JArray TryFindExistingImage(WorkflowGenerator g, WGNodeData media)
+    {
+        if (media is null)
+        {
+            return null;
+        }
+        if (media.IsRawMedia)
+        {
+            return media.Path;
+        }
+        if (!media.IsLatentData || media.Path is null || media.Path.Count != 2)
+        {
+            return null;
+        }
+
+        if (g.Workflow[$"{media.Path[0]}"] is JObject latentNode
+            && (string)latentNode["class_type"] is string ct
+            && (ct == "VAEEncode" || ct == "VAEEncodeTiled")
+            && latentNode["inputs"] is JObject latentInputs
+            && latentInputs["pixels"] is JArray pixels
+            && pixels.Count == 2)
+        {
+            return (JArray)pixels.DeepClone();
+        }
+
+        if (VaeNodeReuse.ReuseVaeDecodeForSamples(g, media.Path, out INodeOutput reusedImage))
+        {
+            return WorkflowBridge.ToPath(reusedImage);
+        }
+
+        return null;
+    }
+
+    public static WGNodeData TryFindExistingImageNode(WorkflowGenerator g, WGNodeData media)
+    {
+        JArray path = TryFindExistingImage(g, media);
+        if (path is null)
+        {
+            return null;
+        }
+        if (media is not null && JToken.DeepEquals(path, media.Path))
+        {
+            return media;
+        }
+        return new WGNodeData(path, g, WGNodeData.DT_IMAGE, g.CurrentCompat())
+        {
+            Width = media?.Width,
+            Height = media?.Height
+        };
     }
 
     private static void LogWarn(ImageReference reference, int? index, string warning)

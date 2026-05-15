@@ -509,4 +509,252 @@ public class B2EImageReferenceTests
         Assert.Same(stage0Sampler.Outputs[0], prependedRef.Latent.Connection);
         Assert.NotSame(stage0Sampler.Outputs[0], finalRef.Latent.Connection);
     }
+
+    [Fact]
+    public void B2EImage_hidream_o1_emits_single_reference_images_node_for_pos_and_neg()
+    {
+        using SwarmUiTestContext _ = new();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler
+        };
+
+        T2IModelClass hidreamClass = new()
+        {
+            ID = "unit-test-hidream-o1",
+            Name = "UnitTest HiDream O1",
+            CompatClass = T2IModelClassSorter.CompatHiDreamO1,
+            StandardWidth = 1024,
+            StandardHeight = 1024
+        };
+        T2IModel hidreamModel = new(sdHandler, "/tmp", "/tmp/UnitTest_HiDreamO1.safetensors", "UnitTest_HiDreamO1.safetensors")
+        {
+            ModelClass = hidreamClass
+        };
+        sdHandler.Models[hidreamModel.Name] = hidreamModel;
+
+        T2IParamInput input = BuildInput(
+            "Base",
+            "global <edit[0]>stage0 <b2eimage[base]>"
+        );
+        input.Set(T2IParamTypes.Model, hidreamModel);
+        input.Set(T2IParamTypes.RefinerModel, hidreamModel);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+
+        WorkflowGenerator.WorkflowGenStep hidreamSeedStep = new(g =>
+        {
+            g.CreateNode("UnitTest_Model", [], id: "4", idMandatory: false);
+            g.CreateNode("UnitTest_Latent", [], id: "10", idMandatory: false);
+            string baseImage = g.CreateNode("UnitTest_Image", [], id: "11", idMandatory: false);
+
+            g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
+            g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
+            g.CurrentMedia = new WGNodeData([baseImage, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+            g.BasicInputImage = new WGNodeData([baseImage, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+            g.FinalLoadedModel = hidreamModel;
+            g.FinalLoadedModelList = [hidreamModel];
+        }, -1000);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+            input,
+            new[] { hidreamSeedStep }.Concat(WorkflowTestHarness.Base2EditSteps())
+        );
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        Assert.Empty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
+
+        HiDreamO1ReferenceImagesNode refNode = Assert.Single(bridge.Graph.NodesOfType<HiDreamO1ReferenceImagesNode>());
+
+        KSamplerAdvancedNode editSampler = Assert.IsType<KSamplerAdvancedNode>(WorkflowQuery.Samplers(bridge).Last());
+
+        Assert.Same(refNode.Outputs[0], editSampler.Positive.Connection);
+        Assert.Same(refNode.Outputs[1], editSampler.Negative.Connection);
+
+        Assert.IsType<SwarmClipTextEncodeAdvancedNode>(refNode.PositiveInput.Connection?.Node);
+        Assert.IsType<SwarmClipTextEncodeAdvancedNode>(refNode.NegativeInput.Connection?.Node);
+
+        Assert.NotEmpty(refNode.Images.Items);
+
+        JObject refInputs = (JObject)workflow[refNode.Id]["inputs"];
+        JArray imageRef = Assert.IsType<JArray>(refInputs["images.image_1"]);
+        Assert.Equal(2, imageRef.Count);
+        ComfyNode imageSource = bridge.Graph.GetNode((string)imageRef[0]);
+        Assert.NotNull(imageSource);
+    }
+
+    [Fact]
+    public void B2EImage_auto_anchors_latent_current_media_through_vae_decode()
+    {
+        using SwarmUiTestContext _ = new();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler
+        };
+
+        T2IModelClass hidreamClass = new()
+        {
+            ID = "unit-test-hidream-o1",
+            Name = "UnitTest HiDream O1",
+            CompatClass = T2IModelClassSorter.CompatHiDreamO1,
+            StandardWidth = 1024,
+            StandardHeight = 1024
+        };
+        T2IModel hidreamModel = new(sdHandler, "/tmp", "/tmp/UnitTest_HiDreamO1.safetensors", "UnitTest_HiDreamO1.safetensors")
+        {
+            ModelClass = hidreamClass
+        };
+        sdHandler.Models[hidreamModel.Name] = hidreamModel;
+
+        T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0");
+        input.Set(T2IParamTypes.Model, hidreamModel);
+        input.Set(T2IParamTypes.RefinerModel, hidreamModel);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+
+        WorkflowGenerator.WorkflowGenStep hidreamSeedStep = new(g =>
+        {
+            g.CreateNode("UnitTest_Model", [], id: "4", idMandatory: false);
+            string baseLatent = g.CreateNode("UnitTest_Latent", [], id: "10", idMandatory: false);
+
+            g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
+            g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
+            g.CurrentMedia = new WGNodeData([baseLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+            g.FinalLoadedModel = hidreamModel;
+            g.FinalLoadedModelList = [hidreamModel];
+        }, -1000);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+            input,
+            new[] { hidreamSeedStep }.Concat(WorkflowTestHarness.Base2EditSteps())
+        );
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        HiDreamO1ReferenceImagesNode refNode = Assert.Single(bridge.Graph.NodesOfType<HiDreamO1ReferenceImagesNode>());
+
+        JObject refInputs = (JObject)workflow[refNode.Id]["inputs"];
+        JArray imageRef = Assert.IsType<JArray>(refInputs["images.image_1"]);
+        Assert.Equal(2, imageRef.Count);
+        ComfyNode imageSource = bridge.Graph.GetNode((string)imageRef[0]);
+        Assert.NotNull(imageSource);
+        Assert.IsType<VAEDecodeNode>(imageSource);
+    }
+
+    [Fact]
+    public void B2EImage_reuses_upstream_image_skipping_vae_round_trip()
+    {
+        using SwarmUiTestContext _ = new();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler
+        };
+
+        T2IModelClass hidreamClass = new()
+        {
+            ID = "unit-test-hidream-o1",
+            Name = "UnitTest HiDream O1",
+            CompatClass = T2IModelClassSorter.CompatHiDreamO1,
+            StandardWidth = 1024,
+            StandardHeight = 1024
+        };
+        T2IModel hidreamModel = new(sdHandler, "/tmp", "/tmp/UnitTest_HiDreamO1.safetensors", "UnitTest_HiDreamO1.safetensors")
+        {
+            ModelClass = hidreamClass
+        };
+        sdHandler.Models[hidreamModel.Name] = hidreamModel;
+
+        T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0");
+        input.Set(T2IParamTypes.Model, hidreamModel);
+        input.Set(T2IParamTypes.RefinerModel, hidreamModel);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+
+        WorkflowGenerator.WorkflowGenStep hidreamSeedStep = new(g =>
+        {
+            g.CreateNode("UnitTest_Model", [], id: "4", idMandatory: false);
+            string sourceImage = g.CreateNode("UnitTest_Image", [], id: "11", idMandatory: false);
+            string reEncoded = g.CreateNode("VAEEncode", new JObject
+            {
+                ["pixels"] = new JArray(sourceImage, 0),
+                ["vae"] = new JArray("4", 2)
+            }, id: "12", idMandatory: false);
+
+            g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
+            g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
+            g.CurrentMedia = new WGNodeData([reEncoded, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+            g.FinalLoadedModel = hidreamModel;
+            g.FinalLoadedModelList = [hidreamModel];
+        }, -1000);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+            input,
+            new[] { hidreamSeedStep }.Concat(WorkflowTestHarness.Base2EditSteps())
+        );
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        HiDreamO1ReferenceImagesNode refNode = Assert.Single(bridge.Graph.NodesOfType<HiDreamO1ReferenceImagesNode>());
+
+        JObject refInputs = (JObject)workflow[refNode.Id]["inputs"];
+        JArray imageRef = Assert.IsType<JArray>(refInputs["images.image_1"]);
+        Assert.Equal("11", (string)imageRef[0]);
+        Assert.Equal(0, (int)imageRef[1]);
+    }
+
+    [Fact]
+    public void PreEditSave_reuses_upstream_image_when_current_media_is_vae_encoded_latent()
+    {
+        using SwarmUiTestContext _ = new();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        T2IParamInput input = BuildInput("Base", "global <edit[0]>stage0");
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.KeepPreEditImage, true);
+
+        WorkflowGenerator.WorkflowGenStep vaeEncodedSeed = new(g =>
+        {
+            g.CreateNode("UnitTest_Model", [], id: "4", idMandatory: false);
+            string srcImage = g.CreateNode("UnitTest_Image", [], id: "11", idMandatory: false);
+            string reEncoded = g.CreateNode("VAEEncode", new JObject
+            {
+                ["pixels"] = new JArray(srcImage, 0),
+                ["vae"] = new JArray("4", 2)
+            }, id: "12", idMandatory: false);
+
+            g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
+            g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
+            g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
+            g.CurrentMedia = new WGNodeData([reEncoded, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
+            g.FinalLoadedModel = g.UserInput.Get(T2IParamTypes.Model, null);
+            g.FinalLoadedModelList = g.FinalLoadedModel is null ? [] : [g.FinalLoadedModel];
+        }, -1000);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+            input,
+            new[] { vaeEncodedSeed }.Concat(WorkflowTestHarness.Base2EditSteps())
+        );
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        SaveImageNode save = Assert.Single(bridge.Graph.NodesOfType<SaveImageNode>());
+        INodeOutput images = save.Images.Connection;
+        Assert.NotNull(images);
+        Assert.Equal("11", images.Node.Id);
+        Assert.Equal(0, images.SlotIndex);
+
+        Assert.DoesNotContain(
+            bridge.Graph.NodesOfType<VAEDecodeNode>(),
+            n => n.Samples.Connection?.Node.Id == "12");
+    }
 }

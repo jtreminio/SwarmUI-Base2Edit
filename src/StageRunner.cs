@@ -484,13 +484,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return;
         }
 
-        WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
-        if (currentSamples is not null && VaeNodeReuse.ReuseVaeDecodeForSamples(g, currentSamples.Path, out INodeOutput reusedImage))
+        if (StageResolver.TryFindExistingImageNode(g, g.CurrentMedia) is WGNodeData existing)
         {
-            g.CurrentMedia = new WGNodeData(WorkflowBridge.ToPath(reusedImage), g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+            g.CurrentMedia = existing;
             return;
         }
 
+        WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         if (currentSamples is null)
         {
             return;
@@ -520,7 +520,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     private void ReencodeIfNeeded(EditStageContext ctx, ReencodeOptions options = default)
     {
         ModelState modelState = ctx.ModelState;
-        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
+        WGNodeData currentImageOut = StageResolver.TryFindExistingImageNode(g, g.CurrentMedia)
+            ?? g.CurrentMedia?.AsRawImage(g.CurrentVae);
         if (options.ForceFromCurrentImage && currentImageOut is not null)
         {
             if (VaeNodeReuse.ReuseVaeEncodeForImage(g, currentImageOut.Path, modelState.Vae.Path, out INodeOutput imageTailSamples))
@@ -603,6 +604,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         PromptParser.EditPrompts cleanedPrompts = imageRefs.Prompts;
         StageResolver resolver = new(g, store);
 
+        if (g.IsHiDreamO1())
+        {
+            return CreateHiDreamO1Conditioning(ctx, cleanedPrompts, imageRefs, resolver);
+        }
+
         List<JArray> referencedLatents = !editParams.RefineOnly
             ? resolver.ResolveImageLatents(imageRefs.References, currentStageVae.Path, stageIndex)
             : [];
@@ -634,6 +640,58 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         return new Conditioning(positiveConditioning, [BuildPromptEncoder(bridge, clip, cleanedPrompts.Negative, editParams), 0]);
+    }
+
+    private Conditioning CreateHiDreamO1Conditioning(
+        EditStageContext ctx,
+        PromptParser.EditPrompts cleanedPrompts,
+        PromptParser.ImagePromptParseResult imageRefs,
+        StageResolver resolver)
+    {
+        WGNodeData clip = ctx.ModelState.Clip;
+        Parameters editParams = ctx.Parameters;
+        int stageIndex = ctx.Stage.Id;
+
+        WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        JArray positiveConditioning = [BuildPromptEncoder(bridge, clip, cleanedPrompts.Positive, editParams), 0];
+        JArray negativeConditioning = [BuildPromptEncoder(bridge, clip, cleanedPrompts.Negative, editParams), 0];
+
+        if (editParams.RefineOnly)
+        {
+            if (imageRefs.References.Count > 0)
+            {
+                Logs.Warning($"Base2Edit: Ignoring <b2eimage[...]> in stage {stageIndex}: Refine Only is enabled.");
+            }
+            return new Conditioning(positiveConditioning, negativeConditioning);
+        }
+
+        List<JArray> refImages = resolver.ResolveImagePixels(imageRefs.References, stageIndex);
+        JArray currentStageImage = StageResolver.TryFindExistingImage(g, g.CurrentMedia)
+            ?? g.CurrentMedia?.AsRawImage(g.CurrentVae)?.Path;
+        if (currentStageImage is not null && !refImages.Any(r => JToken.DeepEquals(r, currentStageImage)))
+        {
+            refImages.Add(currentStageImage);
+        }
+
+        if (refImages.Count == 0)
+        {
+            Logs.Warning($"Base2Edit: Stage {stageIndex} has no image anchor; skipping HiDreamO1ReferenceImages.");
+            return new Conditioning(positiveConditioning, negativeConditioning);
+        }
+
+        HiDreamO1ReferenceImagesNode refNode = bridge.AddNode(new HiDreamO1ReferenceImagesNode(), id: $"{g.LastID++}");
+        refNode.PositiveInput.ConnectFromPath(bridge, positiveConditioning);
+        refNode.NegativeInput.ConnectFromPath(bridge, negativeConditioning);
+        int slotCount = Math.Min(refImages.Count, 10);
+        for (int i = 0; i < slotCount; i++)
+        {
+            INodeOutput imageOutput = bridge.ResolvePath(refImages[i]);
+            if (imageOutput is not null)
+            {
+                refNode.Images.AddFromUntyped(imageOutput);
+            }
+        }
+        return new Conditioning([refNode.Id, 0], [refNode.Id, 1]);
     }
 
     private string BuildPromptEncoder(
@@ -674,6 +732,14 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             g.UserInput.Remove(T2IParamTypes.PromptImages);
         }
+        bool clearArchInputs = g.IsHiDreamO1();
+        WGNodeData savedBasicInputImage = clearArchInputs ? g.BasicInputImage : null;
+        WorkflowGenerator.ImageMaskCropData savedMaskShrunkInfo = clearArchInputs ? g.MaskShrunkInfo : null;
+        if (clearArchInputs)
+        {
+            g.BasicInputImage = null;
+            g.MaskShrunkInfo = null;
+        }
 
         try
         {
@@ -709,6 +775,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             {
                 g.UserInput.Set(T2IParamTypes.PromptImages, promptImages);
             }
+            if (clearArchInputs)
+            {
+                g.BasicInputImage = savedBasicInputImage;
+                g.MaskShrunkInfo = savedMaskShrunkInfo;
+            }
         }
     }
 
@@ -722,7 +793,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WGNodeData vae = ctx.ModelState.Vae;
         bool allowFinalDecodeRetarget = options.AllowFinalDecodeRetarget;
 
-        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
+        WGNodeData currentImageOut = StageResolver.TryFindExistingImageNode(g, g.CurrentMedia)
+            ?? g.CurrentMedia?.AsRawImage(g.CurrentVae);
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         if (allowFinalDecodeRetarget &&
             currentImageOut is not null &&
