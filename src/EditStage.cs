@@ -110,7 +110,7 @@ public class EditStage
                         TrackResolvedModelForMetadata: false,
                         AllowFinalDecodeRetarget: false,
                         ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
-                        RewireFinalConsumers: !preferCurrentImageAnchor
+                        RewireFinalConsumers: false
                     )
                 );
                 store.Capture(StageRefStore.StageKind.Edit, branch.Id);

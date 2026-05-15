@@ -509,7 +509,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         if (shouldSave && currentImageOut is not null)
         {
             string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
-            if (!g.Workflow.ContainsKey(preEditSaveNodeId))
+            if (!g.Workflow.ContainsKey(preEditSaveNodeId)
+                && !VaeNodeReuse.HasSaveForImage(g, currentImageOut.Path))
             {
                 new WGNodeData(currentImageOut.Path, g, WGNodeData.DT_IMAGE, g.CurrentCompat()).SaveOutput(null, null, id: preEditSaveNodeId);
             }

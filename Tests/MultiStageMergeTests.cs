@@ -666,6 +666,67 @@ public class MultiStageMergeTests
     }
 
     [Fact]
+    public void Parallel_refiner_branches_do_not_retarget_primary_chain()
+    {
+        using SwarmUiTestContext _ = new();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        (T2IModelHandler sdHandler, T2IModelHandler vaeHandler) = RegisterSdAndVaeHandlers();
+        T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+        sdHandler.Models[baseModel.Name] = baseModel;
+        T2IModel stage0Vae = new(vaeHandler, "/tmp", "/tmp/UnitTest_Stage0Vae.safetensors", "UnitTest_Stage0Vae.safetensors");
+        T2IModel stage1Vae = new(vaeHandler, "/tmp", "/tmp/UnitTest_Stage1Vae.safetensors", "UnitTest_Stage1Vae.safetensors");
+        vaeHandler.Models[stage0Vae.Name] = stage0Vae;
+        vaeHandler.Models[stage1Vae.Name] = stage1Vae;
+
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.Model, baseModel);
+        input.Set(T2IParamTypes.RefinerModel, baseModel);
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditVAE, stage0Vae);
+        input.Set(Base2EditExtension.EditUpscale, 2.0);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+        input.Set(Base2EditExtension.EditSteps, 7);
+
+        JArray stages = new(
+            new JObject
+            {
+                ["applyAfter"]    = "Refiner",
+                ["model"]         = ModelPrep.UseBase,
+                ["vae"]           = stage1Vae.Name,
+                ["upscale"]       = 2.0,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["control"]       = 1.0,
+                ["steps"]         = 11,
+                ["cfgScale"]      = 7.0
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
+
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
+        Assert.Equal(2, samplers.Count);
+        HashSet<string> samplerIds = [.. samplers.Select(s => s.Id)];
+
+        IReadOnlyList<ImageScaleNode> scales = bridge.Graph.NodesOfType<ImageScaleNode>();
+        Assert.Equal(2, scales.Count);
+
+        foreach (ImageScaleNode scale in scales)
+        {
+            VAEDecodeNode decode = Assert.IsType<VAEDecodeNode>(scale.Image.Connection?.Node);
+            ComfyNode samplesSource = decode.Samples.Connection?.Node;
+            Assert.NotNull(samplesSource);
+            Assert.DoesNotContain(samplesSource.Id, samplerIds);
+        }
+    }
+
+    [Fact]
     public void Primary_child_can_chain_while_sibling_branch_stays_leaf()
     {
         T2IParamInput input = BuildInputWithStage0("Refiner");
