@@ -17,35 +17,11 @@ internal static class Base2EditSpecParser
     private const double DefaultControl = 1.0;
     private const double DefaultCfgScale = 7.0;
 
-    private sealed record StageDefaults(
-        T2IModel Model,
-        ModelSource ModelSource,
-        T2IModel Vae,
-        double Upscale,
-        string UpscaleMethod,
-        int Steps,
-        double? CfgScale,
-        string? Sampler,
-        string? Scheduler
-    );
-
-    private sealed record SectionParams(
-        T2IRegisteredParam<T2IModel> Model,
-        T2IRegisteredParam<T2IModel> Vae,
-        T2IRegisteredParam<double> Upscale,
-        T2IRegisteredParam<string> UpscaleMethod,
-        T2IRegisteredParam<int> Steps,
-        int StepsSectionId = 0
-    );
-
     public static List<StageSpec> Parse(WorkflowGenerator g)
     {
         bool hasRefinerPhaseWork = HasRefinerStageConfigured(g) || HasSegmentApplyAfterRefiner(g);
-        StageDefaults baseDefaults = ResolveBaseDefaults(g);
-        StageDefaults refinerDefaults = ResolveRefinerDefaults(g, baseDefaults);
 
         Dictionary<int, StageSpec> stagesById = [];
-        Dictionary<int, StageDefaults> defaultsById = [];
         List<int> orderedIds = [];
 
         List<JObject> allEntries = [BuildStage0Shim(g), .. GetJsonStagesArray(g)];
@@ -65,11 +41,8 @@ internal static class Base2EditSpecParser
                 obj,
                 stageId,
                 previousStage,
-                baseDefaults,
-                refinerDefaults,
                 hasRefinerPhaseWork,
                 stagesById,
-                defaultsById,
                 posPrompt,
                 negPrompt,
                 posOriginal: PromptParser.GetOriginalPrompt(g.UserInput, T2IParamTypes.Prompt.Type.ID, posPrompt),
@@ -79,7 +52,6 @@ internal static class Base2EditSpecParser
                 guidance: g.UserInput.Get(T2IParamTypes.FluxGuidanceScale, -1));
 
             stagesById[stageId] = parsed;
-            defaultsById[stageId] = ToStageDefaults(parsed);
             orderedIds.Add(stageId);
             previousStage = parsed;
         }
@@ -178,11 +150,8 @@ internal static class Base2EditSpecParser
         JObject obj,
         int stageId,
         StageSpec previousStage,
-        StageDefaults baseDefaults,
-        StageDefaults refinerDefaults,
         bool hasRefinerPhaseWork,
         Dictionary<int, StageSpec> stagesById,
-        Dictionary<int, StageDefaults> defaultsById,
         string posPrompt,
         string negPrompt,
         string posOriginal,
@@ -220,15 +189,7 @@ internal static class Base2EditSpecParser
             }
         }
 
-        StageDefaults inherited = parentKind switch
-        {
-            ParentKind.Base => baseDefaults,
-            ParentKind.Refiner => refinerDefaults,
-            ParentKind.Edit => defaultsById[parentStageId],
-            _ => baseDefaults,
-        };
-
-        (T2IModel resolvedModel, ModelSource modelSource) = ResolveStageModel(g, obj, inherited, locationPrefix);
+        (T2IModel resolvedModel, ModelSource modelSource) = ResolveStageModel(g, obj, locationPrefix);
         T2IModel resolvedVae = ResolveStageVae(obj, locationPrefix);
 
         return new StageSpec(
@@ -262,7 +223,6 @@ internal static class Base2EditSpecParser
     private static (T2IModel Model, ModelSource Source) ResolveStageModel(
         WorkflowGenerator g,
         JObject obj,
-        StageDefaults inherited,
         string locationPrefix)
     {
         string raw = GetString(obj, "Model");
@@ -311,19 +271,6 @@ internal static class Base2EditSpecParser
             $"Base2Edit: {locationPrefix} references unknown VAE '{trimmed}'.");
     }
 
-    private static StageDefaults ToStageDefaults(StageSpec stage) =>
-        new(
-            Model: stage.Model,
-            ModelSource: stage.ModelSource,
-            Vae: stage.Vae,
-            Upscale: stage.Upscale,
-            UpscaleMethod: stage.UpscaleMethod,
-            Steps: stage.Steps,
-            CfgScale: stage.CfgScale,
-            Sampler: stage.Sampler,
-            Scheduler: stage.Scheduler
-        );
-
     private static List<JObject> GetJsonStagesArray(WorkflowGenerator g)
     {
         if (!g.UserInput.TryGet(Base2EditExtension.EditStages, out string json)
@@ -360,76 +307,6 @@ internal static class Base2EditSpecParser
             entries.Add(entry);
         }
         return entries;
-    }
-
-    private static StageDefaults BuildSectionDefaults(
-        WorkflowGenerator g,
-        SectionParams spec,
-        StageDefaults fallback,
-        ModelSource source)
-    {
-        T2IModel sectionModel = g.UserInput.Get(spec.Model, null);
-        T2IModel sectionVae = g.UserInput.Get(spec.Vae, null);
-        return new StageDefaults(
-            Model: sectionModel ?? fallback.Model,
-            ModelSource: source,
-            Vae: sectionVae ?? fallback.Vae,
-            Upscale: g.UserInput.Get(spec.Upscale, fallback.Upscale),
-            UpscaleMethod: spec.UpscaleMethod is null
-                ? fallback.UpscaleMethod
-                : g.UserInput.Get(spec.UpscaleMethod, fallback.UpscaleMethod),
-            Steps: g.UserInput.Get(spec.Steps, fallback.Steps, sectionId: spec.StepsSectionId),
-            CfgScale: null,
-            Sampler: null,
-            Scheduler: null
-        );
-    }
-
-    private static StageDefaults ResolveBaseDefaults(WorkflowGenerator g)
-    {
-        SectionParams spec = new(
-            Model: T2IParamTypes.Model,
-            Vae: T2IParamTypes.VAE,
-            Upscale: Base2EditExtension.EditUpscale,
-            UpscaleMethod: Base2EditExtension.EditUpscaleMethod,
-            Steps: T2IParamTypes.Steps
-        );
-        StageDefaults hardcoded = new(
-            Model: null,
-            ModelSource: ModelSource.Base,
-            Vae: null,
-            Upscale: DefaultUpscale,
-            UpscaleMethod: DefaultUpscaleMethod,
-            Steps: DefaultSteps,
-            CfgScale: null,
-            Sampler: null,
-            Scheduler: null
-        );
-        return BuildSectionDefaults(g, spec, hardcoded, ModelSource.Base) with
-        {
-            CfgScale = null,
-            Sampler = null,
-            Scheduler = null,
-        };
-    }
-
-    private static StageDefaults ResolveRefinerDefaults(WorkflowGenerator g, StageDefaults baseDefaults)
-    {
-        int refinerSectionId = T2IParamInput.SectionID_Refiner;
-        SectionParams spec = new(
-            Model: T2IParamTypes.RefinerModel,
-            Vae: T2IParamTypes.RefinerVAE,
-            Upscale: T2IParamTypes.RefinerUpscale,
-            UpscaleMethod: ComfyUIBackendExtension.RefinerUpscaleMethod,
-            Steps: T2IParamTypes.RefinerSteps,
-            StepsSectionId: refinerSectionId
-        );
-        return BuildSectionDefaults(g, spec, baseDefaults, ModelSource.Refiner) with
-        {
-            CfgScale = null,
-            Sampler = null,
-            Scheduler = null,
-        };
     }
 
     private static (ParentKind Kind, int StageId) NormalizeApplyAfter(string applyAfterRaw, int stageId, string locationPrefix)
