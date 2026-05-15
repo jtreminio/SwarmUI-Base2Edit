@@ -147,10 +147,7 @@ internal static class Base2EditSpecParser
         {
             shim["Vae"] = vaeModel.Name;
         }
-        if (g.UserInput.TryGet(Base2EditExtension.EditUpscale, out double upscale))
-        {
-            shim["Upscale"] = upscale;
-        }
+        shim["Upscale"] = g.UserInput.Get(Base2EditExtension.EditUpscale, DefaultUpscale);
         if (g.UserInput.TryGet(Base2EditExtension.EditUpscaleMethod, out string upscaleMethod)
             && !string.IsNullOrWhiteSpace(upscaleMethod))
         {

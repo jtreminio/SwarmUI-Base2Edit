@@ -1072,6 +1072,24 @@ public class WorkflowTests
     }
 
     [Fact]
+    public void Edit_upscale_default_does_not_inherit_refiner_upscale()
+    {
+        // Regression: when ApplyEditAfter=Refiner and RefinerUpscale!=1, leaving
+        // EditUpscale at its default of 1 (which IgnoreIf strips from input) used to
+        // fall through to refinerDefaults.Upscale, adding an unwanted ImageScale before
+        // the implicit edit stage. Documented contract: "Setting to '1' disables the upscale."
+        T2IParamInput input = BuildEditInput("Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(T2IParamTypes.RefinerUpscale, 1.5);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        Assert.Empty(bridge.Graph.NodesOfType<ImageScaleNode>());
+    }
+
+    [Fact]
     public void Edit_upscale_pixel_adds_imagescale_before_vaeencode()
     {
         T2IParamInput input = BuildEditInput("Base");
