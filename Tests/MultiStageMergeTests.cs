@@ -640,7 +640,7 @@ public class MultiStageMergeTests
     }
 
     [Fact]
-    public void Branch_stage_children_are_ignored()
+    public void Branch_stage_children_continue_branch_chain_and_save_only_at_leaf()
     {
         T2IParamInput input = BuildInputWithStage0("Refiner");
         input.Set(T2IParamTypes.RefinerMethod, "PostApply");
@@ -662,7 +662,39 @@ public class MultiStageMergeTests
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
         IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
-        Assert.Equal(3, samplers.Count);
+        Assert.Equal(4, samplers.Count);
+
+        IReadOnlyList<SaveImageNode> branchSaves = bridge.Graph.NodesOfType<SaveImageNode>();
+        Assert.Single(branchSaves);
+    }
+
+    [Fact]
+    public void Sibling_branch_root_runs_full_subchain_when_it_has_children()
+    {
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(Base2EditExtension.EditUpscale, 1.25);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+
+        JArray stages = new(
+            BranchStage("Refiner"),
+            BranchStage("Edit Stage 0"),
+            BranchStage("Edit Stage 2"),
+            BranchStage("Edit Stage 1")
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(
+            input,
+            WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps())
+        ));
+
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
+        Assert.Equal(5, samplers.Count);
+
+        IReadOnlyList<SaveImageNode> branchSaves = bridge.Graph.NodesOfType<SaveImageNode>();
+        Assert.Single(branchSaves);
     }
 
     [Fact]

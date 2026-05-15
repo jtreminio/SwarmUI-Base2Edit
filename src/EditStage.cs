@@ -75,8 +75,8 @@ public class EditStage
             store.Capture(StageRefStore.StageKind.Refiner);
         }
 
-        (List<StageSpec> primaryChain, List<StageSpec> branches) =
-            GetPrimaryChainAndBranches(isFinalStep);
+        (List<StageSpec> primaryChain, List<StageSpec> branchRoots) =
+            GetPrimaryChainAndBranchRoots(isFinalStep);
 
         foreach (StageSpec stage in primaryChain)
         {
@@ -86,7 +86,7 @@ public class EditStage
                 stage: stage,
                 options: new RunEditStageOptions(
                     TrackResolvedModelForMetadata: true,
-                    AllowFinalDecodeRetarget: branches.Count == 0,
+                    AllowFinalDecodeRetarget: branchRoots.Count == 0,
                     ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
                     RewireFinalConsumers: !preferCurrentImageAnchor
                 )
@@ -94,27 +94,15 @@ public class EditStage
             store.Capture(StageRefStore.StageKind.Edit, stage.Id);
         }
 
-        if (branches.Count > 0)
+        if (branchRoots.Count > 0)
         {
             WGNodeData primarySamples = WGNodeDataUtil.TryGetCurrentLatent(g);
             WGNodeData primaryVae = g.CurrentVae;
             WGNodeData primaryImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
 
-            foreach (StageSpec branch in branches)
+            foreach (StageSpec branchRoot in branchRoots)
             {
-                RestoreParentPipelineState(branch);
-                runner.RunStage(
-                    isFinalStep: isFinalStep,
-                    stage: branch,
-                    options: new RunEditStageOptions(
-                        TrackResolvedModelForMetadata: false,
-                        AllowFinalDecodeRetarget: false,
-                        ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
-                        RewireFinalConsumers: false
-                    )
-                );
-                store.Capture(StageRefStore.StageKind.Edit, branch.Id);
-                SaveBranchOutput(branch.Id);
+                RunBranchSubtree(branchRoot, isFinalStep, preferCurrentImageAnchor);
 
                 if (primarySamples is not null)
                 {
@@ -134,6 +122,36 @@ public class EditStage
         if (isFinalStep)
         {
             runner.CleanupDanglingVaeDecodeNodes();
+        }
+    }
+
+    private void RunBranchSubtree(StageSpec root, bool isFinalStep, bool preferCurrentImageAnchor)
+    {
+        List<StageSpec> chain = [];
+        List<StageSpec> subBranchRoots = [];
+        CollectStageChain(root, chain, subBranchRoots);
+
+        foreach (StageSpec stage in chain)
+        {
+            RestoreParentPipelineState(stage);
+            runner.RunStage(
+                isFinalStep: isFinalStep,
+                stage: stage,
+                options: new RunEditStageOptions(
+                    TrackResolvedModelForMetadata: false,
+                    AllowFinalDecodeRetarget: false,
+                    ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
+                    RewireFinalConsumers: false
+                )
+            );
+            store.Capture(StageRefStore.StageKind.Edit, stage.Id);
+        }
+
+        SaveBranchOutput(chain[^1].Id);
+
+        foreach (StageSpec subBranchRoot in subBranchRoots.OrderBy(s => s.Id))
+        {
+            RunBranchSubtree(subBranchRoot, isFinalStep, preferCurrentImageAnchor);
         }
     }
 
@@ -159,7 +177,7 @@ public class EditStage
         }
     }
 
-    private (List<StageSpec> PrimaryChain, List<StageSpec> Branches) GetPrimaryChainAndBranches(bool isFinalStep)
+    private (List<StageSpec> PrimaryChain, List<StageSpec> BranchRoots) GetPrimaryChainAndBranchRoots(bool isFinalStep)
     {
         IReadOnlyList<StageSpec> stages = GetCachedParsedStages();
         if (stages.Count == 0)
@@ -178,16 +196,16 @@ public class EditStage
         }
 
         List<StageSpec> primaryChain = [];
-        List<StageSpec> branches = [];
-        CollectStageChain(roots[0], primaryChain, branches);
-        branches.AddRange(roots.Skip(1));
+        List<StageSpec> branchRoots = [];
+        CollectStageChain(roots[0], primaryChain, branchRoots);
+        branchRoots.AddRange(roots.Skip(1));
 
         HashSet<int> seen = [];
-        branches = [.. branches
+        branchRoots = [.. branchRoots
             .OrderBy(stage => stage.Id)
             .Where(stage => seen.Add(stage.Id))];
 
-        return (primaryChain, branches);
+        return (primaryChain, branchRoots);
     }
 
     private IReadOnlyList<StageSpec> GetCachedParsedStages()
@@ -207,7 +225,7 @@ public class EditStage
     private static void CollectStageChain(
         StageSpec stage,
         List<StageSpec> result,
-        List<StageSpec> branches)
+        List<StageSpec> branchRoots)
     {
         result.Add(stage);
 
@@ -218,11 +236,11 @@ public class EditStage
 
         List<StageSpec> orderedChildren = [.. stage.Children.OrderBy(c => c.Id)];
         StageSpec child = orderedChildren[0];
-        CollectStageChain(child, result, branches);
+        CollectStageChain(child, result, branchRoots);
 
-        foreach (StageSpec siblingBranch in orderedChildren.Skip(1))
+        foreach (StageSpec siblingBranchRoot in orderedChildren.Skip(1))
         {
-            branches.Add(siblingBranch);
+            branchRoots.Add(siblingBranchRoot);
         }
     }
 
