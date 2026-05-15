@@ -121,7 +121,7 @@ public class MultiStageMergeTests
     }
 
     [Fact]
-    public void Stage0_inherits_refiner_cfg_sampler_scheduler_when_unset_and_edit_model_is_use_refiner_before_refiner_phase()
+    public void Stage0_uses_default_cfg_sampler_scheduler_when_unset_and_edit_model_is_use_refiner_before_refiner_phase()
     {
         using SwarmUiTestContext _ = new();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
@@ -144,9 +144,9 @@ public class MultiStageMergeTests
         ComfyNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref0);
         KSamplerAdvancedNode ks0 = Assert.IsType<KSamplerAdvancedNode>(stage0Sampler);
 
-        Assert.Equal(9.0, ks0.Cfg.LiteralValue);
-        Assert.Equal("dpmpp_2m", ks0.SamplerName.LiteralValue);
-        Assert.Equal("karras", ks0.Scheduler.LiteralValue);
+        Assert.Equal(4.0, ks0.Cfg.LiteralValue);
+        Assert.Equal("euler", ks0.SamplerName.LiteralValue);
+        Assert.Equal("normal", ks0.Scheduler.LiteralValue);
     }
 
     [Fact]
@@ -422,7 +422,7 @@ public class MultiStageMergeTests
     }
 
     [Fact]
-    public void Stage1_inherits_refiner_cfg_sampler_scheduler_and_vae_when_unset_and_stage1_model_is_use_refiner()
+    public void Stage1_can_explicitly_set_cfg_sampler_scheduler_and_vae()
     {
         using SwarmUiTestContext _ = new();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
@@ -431,18 +431,14 @@ public class MultiStageMergeTests
         (T2IModelHandler sdHandler, T2IModelHandler vaeHandler) = RegisterSdAndVaeHandlers();
         T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
         sdHandler.Models[baseModel.Name] = baseModel;
-        T2IModel refinerVae = new(vaeHandler, "/tmp", "/tmp/UnitTest_RefinerVae.safetensors", "UnitTest_RefinerVae.safetensors");
-        vaeHandler.Models[refinerVae.Name] = refinerVae;
+        T2IModel stage1Vae = new(vaeHandler, "/tmp", "/tmp/UnitTest_Stage1Vae.safetensors", "UnitTest_Stage1Vae.safetensors");
+        vaeHandler.Models[stage1Vae.Name] = stage1Vae;
 
         T2IParamInput input = BuildInputWithStage0("Base");
         input.Set(T2IParamTypes.Model, baseModel);
         input.Set(T2IParamTypes.RefinerModel, baseModel);
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
         input.Set(Base2EditExtension.EditCFGScale, 12.0);
-        input.Set(T2IParamTypes.RefinerCFGScale, 9.0);
-        input.Set(ComfyUIBackendExtension.RefinerSamplerParam, "dpmpp_2m");
-        input.Set(ComfyUIBackendExtension.RefinerSchedulerParam, "karras");
-        input.Set(T2IParamTypes.RefinerVAE, refinerVae);
 
         JArray stages = new(
             new JObject
@@ -451,7 +447,11 @@ public class MultiStageMergeTests
                 ["keepPreEditImage"] = false,
                 ["control"] = 1.0,
                 ["model"] = ModelPrep.UseRefiner,
-                ["steps"] = 5
+                ["steps"] = 5,
+                ["cfgScale"] = 9.0,
+                ["sampler"] = "dpmpp_2m",
+                ["scheduler"] = "karras",
+                ["vae"] = stage1Vae.Name
             }
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
@@ -471,7 +471,7 @@ public class MultiStageMergeTests
         Assert.Equal("karras", ks1.Scheduler.LiteralValue);
 
         VAELoaderNode vaeLoader = bridge.Graph.NodesOfType<VAELoaderNode>()
-            .Single(n => (n.VaeName.LiteralValue as string)?.Contains("UnitTest_RefinerVae.safetensors") == true);
+            .Single(n => (n.VaeName.LiteralValue as string)?.Contains("UnitTest_Stage1Vae.safetensors") == true);
         VAEEncodeNode vaeEncode = bridge.Graph.NodesOfType<VAEEncodeNode>()
             .Single(n => n.Vae.Connection?.Node.Id == vaeLoader.Id && n.Vae.Connection.SlotIndex == 0);
     }

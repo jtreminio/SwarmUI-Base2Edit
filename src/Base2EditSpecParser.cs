@@ -14,9 +14,8 @@ internal static class Base2EditSpecParser
     private const double DefaultUpscale = 1.0;
     private const string DefaultUpscaleMethod = "pixel-lanczos";
     private const int DefaultSteps = 20;
+    private const double DefaultControl = 1.0;
     private const double DefaultCfgScale = 7.0;
-    private const string DefaultSampler = "euler";
-    private const string DefaultScheduler = "normal";
 
     private sealed record StageDefaults(
         T2IModel Model,
@@ -25,9 +24,9 @@ internal static class Base2EditSpecParser
         double Upscale,
         string UpscaleMethod,
         int Steps,
-        double CfgScale,
-        string Sampler,
-        string Scheduler
+        double? CfgScale,
+        string? Sampler,
+        string? Scheduler
     );
 
     private sealed record SectionParams(
@@ -230,9 +229,7 @@ internal static class Base2EditSpecParser
         };
 
         (T2IModel resolvedModel, ModelSource modelSource) = ResolveStageModel(g, obj, inherited, locationPrefix);
-        T2IModel resolvedVae = ResolveStageVae(obj, inherited.Vae, locationPrefix);
-
-        StageDefaults paramDefaults = modelSource == ModelSource.Refiner ? refinerDefaults : baseDefaults;
+        T2IModel resolvedVae = ResolveStageVae(obj, locationPrefix);
 
         return new StageSpec(
             Id: stageId,
@@ -240,16 +237,16 @@ internal static class Base2EditSpecParser
             ParentStageId: parentStageId,
             KeepPreEditImage: GetOptionalBool(obj, "KeepPreEditImage", previousStage?.KeepPreEditImage ?? false),
             RefineOnly: GetOptionalBool(obj, "RefineOnly", previousStage?.RefineOnly ?? false),
-            Control: NormalizeControl(GetOptionalDouble(obj, "Control", previousStage?.Control ?? 0, locationPrefix)),
+            Control: NormalizeControl(GetOptionalDouble(obj, "Control", DefaultControl, locationPrefix)),
             Model: resolvedModel,
             ModelSource: modelSource,
             Vae: resolvedVae,
-            Upscale: NormalizeUpscale(GetOptionalDouble(obj, "Upscale", inherited.Upscale, locationPrefix)),
-            UpscaleMethod: GetOptionalString(obj, "UpscaleMethod", inherited.UpscaleMethod, locationPrefix, allowEmpty: false),
-            Steps: GetOptionalInt(obj, "Steps", inherited.Steps, locationPrefix),
-            CfgScale: NormalizeCfgScale(GetOptionalDouble(obj, "CfgScale", paramDefaults.CfgScale, locationPrefix)),
-            Sampler: GetOptionalString(obj, "Sampler", paramDefaults.Sampler, locationPrefix, allowEmpty: false),
-            Scheduler: GetOptionalString(obj, "Scheduler", paramDefaults.Scheduler, locationPrefix, allowEmpty: false),
+            Upscale: NormalizeUpscale(GetOptionalDouble(obj, "Upscale", DefaultUpscale, locationPrefix)),
+            UpscaleMethod: GetOptionalString(obj, "UpscaleMethod", DefaultUpscaleMethod, locationPrefix, allowEmpty: false),
+            Steps: GetOptionalInt(obj, "Steps", DefaultSteps, locationPrefix),
+            CfgScale: NormalizeCfgScale(GetOptionalDouble(obj, "CfgScale", g.UserInput.Get(T2IParamTypes.CFGScale, DefaultCfgScale), locationPrefix)),
+            Sampler: ParseOptionalString(obj, "Sampler", locationPrefix),
+            Scheduler: ParseOptionalString(obj, "Scheduler", locationPrefix),
             PositivePrompt: PromptParser.ExtractPrompt(posPrompt, posOriginal, stageId),
             NegativePrompt: PromptParser.ExtractPrompt(negPrompt, negOriginal, stageId),
             Loras: (PromptParser.HasAnyEditSectionForStage(posPrompt, stageId)
@@ -271,21 +268,22 @@ internal static class Base2EditSpecParser
         string raw = GetString(obj, "Model");
         if (raw is null || string.IsNullOrWhiteSpace(raw))
         {
-            return (inherited.Model, inherited.ModelSource);
+            throw new SwarmUserErrorException(
+                $"Base2Edit: {locationPrefix} is missing required field 'Model'.");
         }
         return ModelPrep.ResolveSelection(g, raw.Trim(), locationPrefix);
     }
 
-    private static T2IModel ResolveStageVae(JObject obj, T2IModel inherited, string locationPrefix)
+    private static T2IModel ResolveStageVae(JObject obj, string locationPrefix)
     {
         if (!JsonHasOwnProperty(obj, "Vae"))
         {
-            return inherited;
+            return null;
         }
         string raw = GetString(obj, "Vae");
         if (string.IsNullOrWhiteSpace(raw))
         {
-            return inherited;
+            return null;
         }
         string trimmed = raw.Trim();
         if (StringUtils.Equals(trimmed, "None") || StringUtils.Equals(trimmed, "Automatic"))
@@ -381,9 +379,9 @@ internal static class Base2EditSpecParser
                 ? fallback.UpscaleMethod
                 : g.UserInput.Get(spec.UpscaleMethod, fallback.UpscaleMethod),
             Steps: g.UserInput.Get(spec.Steps, fallback.Steps, sectionId: spec.StepsSectionId),
-            CfgScale: fallback.CfgScale,
-            Sampler: fallback.Sampler,
-            Scheduler: fallback.Scheduler
+            CfgScale: null,
+            Sampler: null,
+            Scheduler: null
         );
     }
 
@@ -403,15 +401,15 @@ internal static class Base2EditSpecParser
             Upscale: DefaultUpscale,
             UpscaleMethod: DefaultUpscaleMethod,
             Steps: DefaultSteps,
-            CfgScale: DefaultCfgScale,
-            Sampler: DefaultSampler,
-            Scheduler: DefaultScheduler
+            CfgScale: null,
+            Sampler: null,
+            Scheduler: null
         );
         return BuildSectionDefaults(g, spec, hardcoded, ModelSource.Base) with
         {
-            CfgScale = g.UserInput.Get(T2IParamTypes.CFGScale, DefaultCfgScale),
-            Sampler = g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, DefaultSampler),
-            Scheduler = g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, DefaultScheduler),
+            CfgScale = null,
+            Sampler = null,
+            Scheduler = null,
         };
     }
 
@@ -428,16 +426,9 @@ internal static class Base2EditSpecParser
         );
         return BuildSectionDefaults(g, spec, baseDefaults, ModelSource.Refiner) with
         {
-            CfgScale = g.UserInput.Get(
-                T2IParamTypes.RefinerCFGScale,
-                g.UserInput.Get(T2IParamTypes.CFGScale, baseDefaults.CfgScale, sectionId: refinerSectionId),
-                sectionId: refinerSectionId),
-            Sampler = g.UserInput.Get(ComfyUIBackendExtension.SamplerParam, null, sectionId: refinerSectionId, includeBase: false)
-                ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSamplerParam, null)
-                ?? baseDefaults.Sampler,
-            Scheduler = g.UserInput.Get(ComfyUIBackendExtension.SchedulerParam, null, sectionId: refinerSectionId, includeBase: false)
-                ?? g.UserInput.Get(ComfyUIBackendExtension.RefinerSchedulerParam, null)
-                ?? baseDefaults.Scheduler,
+            CfgScale = null,
+            Sampler = null,
+            Scheduler = null,
         };
     }
 
@@ -494,6 +485,22 @@ internal static class Base2EditSpecParser
     private static double NormalizeUpscale(double upscale) => TruncateToDecimals(upscale, 2);
 
     private static double NormalizeCfgScale(double cfgScale) => TruncateToDecimals(cfgScale, 1);
+
+    private static string? ParseOptionalString(JObject obj, string key, string locationPrefix)
+    {
+        string value = GetString(obj, key);
+        if (value is null)
+        {
+            return null;
+        }
+        value = value.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            Logs.Warning($"Base2Edit: {locationPrefix} has empty field '{key}'. Leaving unset.");
+            return null;
+        }
+        return value;
+    }
 
     private static string GetString(JObject obj, string key)
     {
