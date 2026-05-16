@@ -9,11 +9,6 @@ namespace Base2Edit.Tests;
 
 internal static class UnitTestStubs
 {
-    /// <summary>
-    /// Some WorkflowGenerator model-gen steps reference <see cref="ComfyUIBackendExtension"/> params directly.
-    /// In unit tests we don't initialize the full ComfyUIBackendExtension, so register the minimum param(s)
-    /// needed to avoid null derefs while still validating workflow JSON structure.
-    /// </summary>
     public static void EnsureComfySetClipDeviceRegistered()
     {
         if (ComfyUIBackendExtension.SetClipDevice is not null)
@@ -33,10 +28,6 @@ internal static class UnitTestStubs
         ));
     }
 
-    /// <summary>
-    /// Base2Edit stage0 inheritance reads <see cref="ComfyUIBackendExtension.SamplerParam"/> and friends directly.
-    /// Unit tests do not initialize the full ComfyUIBackendExtension, so stub-register these params as needed.
-    /// </summary>
     public static void EnsureComfySamplerSchedulerRegistered()
     {
         if (ComfyUIBackendExtension.SamplerParam is not null
@@ -89,10 +80,6 @@ internal static class UnitTestStubs
     }
 }
 
-/// <summary>
-/// Helper to snapshot/restore SwarmUI global/static state that unit tests often override.
-/// Prefer this over repeated try/finally blocks in each test.
-/// </summary>
 internal sealed class SwarmUiTestContext : IDisposable
 {
     private readonly Dictionary<string, T2IModelHandler> _priorModelSets;

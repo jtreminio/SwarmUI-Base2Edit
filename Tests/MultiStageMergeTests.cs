@@ -1,3 +1,5 @@
+using ComfyTyped.Core;
+using ComfyTyped.Generated;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Core;
@@ -9,52 +11,17 @@ namespace Base2Edit.Tests;
 [Collection("Base2EditTests")]
 public class MultiStageMergeTests
 {
-    private static IReadOnlyList<WorkflowNode> NodesOfAnyType(JObject workflow, params string[] classTypes) =>
-        (classTypes ?? [])
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .SelectMany(t => WorkflowUtils.NodesOfType(workflow, t))
-            .ToList();
-
-    private static IReadOnlyList<WorkflowNode> Samplers(JObject workflow) =>
-        NodesOfAnyType(workflow, "KSamplerAdvanced", "SwarmKSampler");
-
-    private static JArray RequireConnectionInput(JObject node, params string[] preferredKeys)
-    {
-        Assert.NotNull(node);
-        Assert.True(node["inputs"] is JObject, "Expected node to have an 'inputs' object.");
-        JObject inputs = (JObject)node["inputs"];
-
-        foreach (string key in preferredKeys ?? [])
-        {
-            if (!string.IsNullOrWhiteSpace(key) && inputs.TryGetValue(key, out JToken tok) && tok is JArray arr && arr.Count == 2)
-            {
-                return arr;
-            }
-        }
-
-        foreach (JProperty prop in inputs.Properties())
-        {
-            if (prop.Value is JArray arr && arr.Count == 2)
-            {
-                return arr;
-            }
-        }
-
-        Assert.Fail("Expected at least one [nodeId, outputIndex] connection input.");
-        return null;
-    }
-
     private static T2IParamInput BuildInputWithStage0(string applyAfter)
     {
-        _ = WorkflowTestHarness.Base2EditSteps();
-        var input = new T2IParamInput(null);
+        WorkflowTestHarness.Base2EditSteps();
+        T2IParamInput input = new(null);
         input.Set(T2IParamTypes.Prompt, "global <edit>do the edit");
-        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner); // enables Base2Edit group
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
         if (!string.IsNullOrWhiteSpace(applyAfter))
         {
             input.Set(Base2EditExtension.ApplyEditAfter, applyAfter);
         }
-        input.Set(T2IParamTypes.Seed, 1L);
+        input.Set(T2IParamTypes.Seed, 1);
         input.Set(T2IParamTypes.Width, 512);
         input.Set(T2IParamTypes.Height, 512);
         return input;
@@ -64,15 +31,38 @@ public class MultiStageMergeTests
         WorkflowTestHarness.Template_BaseOnlyLatents()
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
+    private static (T2IModelHandler SdHandler, T2IModelHandler VaeHandler) RegisterSdAndVaeHandlers()
+    {
+        T2IModelHandler sdHandler = new() { ModelType = "Stable-Diffusion" };
+        T2IModelHandler vaeHandler = new() { ModelType = "VAE" };
+        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
+        {
+            ["Stable-Diffusion"] = sdHandler,
+            ["VAE"] = vaeHandler
+        };
+        return (sdHandler, vaeHandler);
+    }
+
+    private static JObject BranchStage(string applyAfter) =>
+        new()
+        {
+            ["applyAfter"]      = applyAfter,
+            ["keepPreEditImage"] = false,
+            ["refineOnly"]      = true,
+            ["control"]         = 0.5,
+            ["model"]           = ModelPrep.UseBase,
+            ["upscale"]         = 1.25,
+            ["upscaleMethod"]   = "pixel-lanczos",
+            ["steps"]           = 10,
+            ["cfgScale"]        = 1.0
+        };
+
     [Fact]
     public void Stage0_is_merged_from_root_level_params_and_prepended_to_json_additional_stages()
     {
-        // Root-level stage0 says ApplyAfter=Base.
-        // Backend should treat stage0 as coming from root-level params, then prepend it before JSON additional stages.
         T2IParamInput input = BuildInputWithStage0("Base");
 
-        // Provide a single additional stage chained after stage0
-        var stages = new JArray(
+        JArray stages = new(
             new JObject
             {
                 ["applyAfter"] = "Edit Stage 0",
@@ -89,60 +79,54 @@ public class MultiStageMergeTests
 
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
         Assert.Equal(2, samplers.Count);
 
-        IReadOnlyList<WorkflowNode> refLatents = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<ReferenceLatentNode> refLatents = bridge.Graph.NodesOfType<ReferenceLatentNode>();
         Assert.Equal(2, refLatents.Count);
 
-        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
-        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+        ReferenceLatentNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray("10", 0)));
+        ComfyNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref0);
 
-        // Base-hook stage should not leave a decode on the original pre-edit latent.
-        Assert.Empty(WorkflowUtils.FindVaeDecodesBySamples(workflow, new JArray("10", 0)));
+        Assert.Empty(WorkflowQuery.FindVaeDecodesBySamples(bridge, bridge.ResolvePath(new JArray("10", 0))));
 
-        // The other ReferenceLatent (stage 1) must read from stage 0's sampler output.
-        Assert.Contains(refLatents, n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray(stage0Sampler.Id, 0)));
+        Assert.Contains(refLatents, n => n.Latent.Connection?.Node.Id == stage0Sampler.Id && n.Latent.Connection.SlotIndex == 0);
     }
 
     [Fact]
     public void Stage0_inherits_base_cfg_sampler_scheduler_when_unset_and_edit_model_is_use_base()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
         UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
 
         T2IParamInput input = BuildInputWithStage0("Base");
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
 
-        // Do NOT set Base2EditExtension.EditCFGScale/EditSampler/EditScheduler
-        // Set base sampling params and assert stage0 inherits them
         input.Set(T2IParamTypes.CFGScale, 4.5);
         input.Set(ComfyUIBackendExtension.SamplerParam, "dpmpp_2m");
         input.Set(ComfyUIBackendExtension.SchedulerParam, "karras");
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
-        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
-        JObject s0Inputs = (JObject)stage0Sampler.Node["inputs"];
+        ReferenceLatentNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray("10", 0)));
+        ComfyNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref0);
+        KSamplerAdvancedNode ks0 = Assert.IsType<KSamplerAdvancedNode>(stage0Sampler);
 
-        Assert.Equal(4.5, (double)s0Inputs["cfg"]);
-        Assert.Equal("dpmpp_2m", $"{s0Inputs["sampler_name"]}");
-        Assert.Equal("karras", $"{s0Inputs["scheduler"]}");
+        Assert.Equal(4.5, ks0.Cfg.LiteralValue);
+        Assert.Equal("dpmpp_2m", ks0.SamplerName.LiteralValue);
+        Assert.Equal("karras", ks0.Scheduler.LiteralValue);
     }
 
     [Fact]
-    public void Stage0_inherits_refiner_cfg_sampler_scheduler_when_unset_and_edit_model_is_use_refiner_before_refiner_phase()
+    public void Stage0_uses_default_cfg_sampler_scheduler_when_unset_and_edit_model_is_use_refiner_before_refiner_phase()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
         UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
 
-        // Apply-after-base (non-final phase), but edit model selection is "(Use Refiner)"
-        // Unset edit params should inherit refiner overrides rather than base defaults
         T2IParamInput input = BuildInputWithStage0("Base");
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
 
@@ -154,21 +138,20 @@ public class MultiStageMergeTests
         input.Set(ComfyUIBackendExtension.RefinerSamplerParam, "dpmpp_2m");
         input.Set(ComfyUIBackendExtension.RefinerSchedulerParam, "karras");
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
-        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
-        JObject s0Inputs = (JObject)stage0Sampler.Node["inputs"];
+        ReferenceLatentNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray("10", 0)));
+        ComfyNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref0);
+        KSamplerAdvancedNode ks0 = Assert.IsType<KSamplerAdvancedNode>(stage0Sampler);
 
-        Assert.Equal(9.0, (double)s0Inputs["cfg"]);
-        Assert.Equal("dpmpp_2m", $"{s0Inputs["sampler_name"]}");
-        Assert.Equal("karras", $"{s0Inputs["scheduler"]}");
+        Assert.Equal(4.0, ks0.Cfg.LiteralValue);
+        Assert.Equal("euler", ks0.SamplerName.LiteralValue);
+        Assert.Equal("normal", ks0.Scheduler.LiteralValue);
     }
 
     [Fact]
     public void Mixed_apply_after_stages_generate_expected_sampler_settings_and_final_decode()
     {
-        // stage0: Base hook, stage1: Refiner hook
         T2IParamInput input = BuildInputWithStage0("Base");
         input.Set(T2IParamTypes.RefinerMethod, "PostApply");
         input.Set(T2IParamTypes.RefinerControl, 0.2);
@@ -176,7 +159,7 @@ public class MultiStageMergeTests
         input.Set(Base2EditExtension.EditSampler, "euler");
         input.Set(Base2EditExtension.EditScheduler, "normal");
 
-        var stages = new JArray(
+        JArray stages = new(
             new JObject
             {
                 ["applyAfter"] = "Refiner",
@@ -192,54 +175,48 @@ public class MultiStageMergeTests
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
         Assert.Equal(2, samplers.Count);
 
-        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
-        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+        ReferenceLatentNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray("10", 0)));
+        ComfyNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref0);
 
-        // Stage 1 is the remaining sampler after stage0.
-        WorkflowNode stage1Sampler = samplers.Single(s => s.Id != stage0Sampler.Id);
+        ComfyNode stage1Sampler = samplers.Single(s => s.Id != stage0Sampler.Id);
 
-        JObject s0Inputs = (JObject)stage0Sampler.Node["inputs"];
-        Assert.Equal(11, (int)s0Inputs["steps"]);
-        Assert.Equal("euler", $"{s0Inputs["sampler_name"]}");
-        Assert.Equal("normal", $"{s0Inputs["scheduler"]}");
+        KSamplerAdvancedNode ks0 = Assert.IsType<KSamplerAdvancedNode>(stage0Sampler);
+        Assert.Equal(11L, ks0.Steps.LiteralValue);
+        Assert.Equal("euler", ks0.SamplerName.LiteralValue);
+        Assert.Equal("normal", ks0.Scheduler.LiteralValue);
 
-        JObject s1Inputs = (JObject)stage1Sampler.Node["inputs"];
-        Assert.Equal(33, (int)s1Inputs["steps"]);
-        Assert.Equal("dpmpp_2m", $"{s1Inputs["sampler_name"]}");
-        Assert.Equal("karras", $"{s1Inputs["scheduler"]}");
+        KSamplerAdvancedNode ks1 = Assert.IsType<KSamplerAdvancedNode>(stage1Sampler);
+        Assert.Equal(33L, ks1.Steps.LiteralValue);
+        Assert.Equal("dpmpp_2m", ks1.SamplerName.LiteralValue);
+        Assert.Equal("karras", ks1.Scheduler.LiteralValue);
 
-        // Refiner-hook stage must still decode its own sampler output.
-        _ = WorkflowAssertions.RequireSingleVaeDecodeBySamples(workflow, new JArray(stage1Sampler.Id, 0));
+        _ = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, bridge.ResolvePath(new JArray(stage1Sampler.Id, 0)));
     }
 
     [Fact]
     public void Base_upscale_refiner_with_edit_does_not_leave_decode_on_pre_edit_latent()
     {
-        // Repro shape:
-        // base image -> upscale -> refiner -> edit (after refiner).
-        // The pre-edit decode generated before the edit stage must be reused/retargeted,
-        // not left dangling on the pre-edit latent.
         T2IParamInput input = BuildInputWithStage0("Refiner");
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
             WorkflowTestHarness.Template_BaseThenUpscaleThenRefiner()
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
-        WorkflowNode editRefLatent = WorkflowAssertions.RequireNodeOfType(workflow, "ReferenceLatent");
-        JArray preEditLatent = RequireConnectionInput(editRefLatent.Node, "latent");
+        ReferenceLatentNode editRefLatent = WorkflowAssertions.RequireNodeOfType<ReferenceLatentNode>(bridge);
+        Assert.NotNull(editRefLatent.Latent.Connection);
 
-        IReadOnlyList<WorkflowNode> danglingPreEditDecodes = WorkflowUtils.FindVaeDecodesBySamples(workflow, preEditLatent);
+        IReadOnlyList<VAEDecodeNode> danglingPreEditDecodes = WorkflowQuery.FindVaeDecodesBySamples(bridge, editRefLatent.Latent.Connection);
         Assert.Empty(danglingPreEditDecodes);
 
-        WorkflowNode editSampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, editRefLatent);
-        IReadOnlyList<WorkflowNode> finalDecodes = WorkflowUtils.FindVaeDecodesBySamples(workflow, new JArray(editSampler.Id, 0));
+        ComfyNode editSampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, editRefLatent);
+        IReadOnlyList<VAEDecodeNode> finalDecodes = WorkflowQuery.FindVaeDecodesBySamples(bridge, bridge.ResolvePath(new JArray(editSampler.Id, 0)));
         Assert.Single(finalDecodes);
     }
 
@@ -250,26 +227,17 @@ public class MultiStageMergeTests
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
             WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat(
-                [
-                    new WorkflowGenerator.WorkflowGenStep(g =>
-                    {
-                        // Simulate a post-base pipeline change that happens after Base2Edit's base hook.
-                        // If stage0 incorrectly runs in the final hook, it would anchor to this latent.
-                        string postBaseLatent = g.CreateNode("UnitTest_PostBaseLatent", [], id: "2100", idMandatory: false);
-                        g.CurrentMedia = new WGNodeData([postBaseLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
-                    }, 2)
-                ])
+                .Concat([WorkflowTestHarness.PostBaseLatentStep()])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
-        WorkflowNode stage0Ref = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
-        _ = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, stage0Ref);
+        ReferenceLatentNode stage0Ref = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray("10", 0)));
+        _ = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, stage0Ref);
 
         Assert.DoesNotContain(
-            WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"),
-            n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray("2100", 0))
+            bridge.Graph.NodesOfType<ReferenceLatentNode>(),
+            n => n.Latent.Connection?.Node.Id == "2100" && n.Latent.Connection.SlotIndex == 0
         );
     }
 
@@ -294,57 +262,45 @@ public class MultiStageMergeTests
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
             WorkflowTestHarness.Template_BaseOnlyLatents()
-                .Concat(
-                [
-                    new WorkflowGenerator.WorkflowGenStep(g =>
-                    {
-                        // If stage1 incorrectly stays on Refiner with no refiner configured,
-                        // the final-hook edit would anchor to this late latent.
-                        string postBaseLatent = g.CreateNode("UnitTest_PostBaseLatent", [], id: "2100", idMandatory: false);
-                        g.CurrentMedia = new WGNodeData([postBaseLatent, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
-                    }, 2)
-                ])
+                .Concat([WorkflowTestHarness.PostBaseLatentStep()])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
 
         Assert.DoesNotContain(
-            WorkflowUtils.NodesOfType(workflow, "ReferenceLatent"),
-            n => JToken.DeepEquals(RequireConnectionInput(n.Node, "latent"), new JArray("2100", 0))
+            bridge.Graph.NodesOfType<ReferenceLatentNode>(),
+            n => n.Latent.Connection?.Node.Id == "2100" && n.Latent.Connection.SlotIndex == 0
+        );
+        Assert.All(
+            bridge.Graph.NodesOfType<ReferenceLatentNode>(),
+            n => Assert.Equal("10", n.Latent.Connection?.Node.Id)
         );
     }
 
     [Fact]
     public void Different_models_and_vae_override_can_apply_per_stage()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
         UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
 
-        var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
-        var vaeHandler = new T2IModelHandler { ModelType = "VAE" };
-        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
-        {
-            ["Stable-Diffusion"] = sdHandler,
-            ["VAE"] = vaeHandler
-        };
+        (T2IModelHandler sdHandler, T2IModelHandler vaeHandler) = RegisterSdAndVaeHandlers();
 
-        var baseModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
-        var editModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Edit.safetensors", "UnitTest_Edit.safetensors");
+        T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+        T2IModel editModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Edit.safetensors", "UnitTest_Edit.safetensors");
         sdHandler.Models[baseModel.Name] = baseModel;
         sdHandler.Models[editModel.Name] = editModel;
 
-        var stage1Vae = new T2IModel(vaeHandler, "/tmp", "/tmp/UnitTest_Vae.safetensors", "UnitTest_Vae.safetensors");
+        T2IModel stage1Vae = new(vaeHandler, "/tmp", "/tmp/UnitTest_Vae.safetensors", "UnitTest_Vae.safetensors");
         vaeHandler.Models[stage1Vae.Name] = stage1Vae;
 
-        // stage0 uses base model; stage1 switches model + VAE
         T2IParamInput input = BuildInputWithStage0("Base");
         input.Set(T2IParamTypes.Model, baseModel);
         input.Set(T2IParamTypes.RefinerModel, baseModel);
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
         input.Set(Base2EditExtension.EditSteps, 10);
 
-        var stages = new JArray(
+        JArray stages = new(
             new JObject
             {
                 ["applyAfter"] = "Edit Stage 0",
@@ -360,52 +316,42 @@ public class MultiStageMergeTests
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
-        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+        ReferenceLatentNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray("10", 0)));
+        ComfyNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref0);
 
-        WorkflowNode stage1Ref = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent")
+        ReferenceLatentNode stage1Ref = bridge.Graph.NodesOfType<ReferenceLatentNode>()
             .Single(n => n.Id != ref0.Id);
-        WorkflowNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, stage1Ref);
+        ComfyNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, stage1Ref);
 
-        JObject s0Inputs = (JObject)stage0Sampler.Node["inputs"];
-        JObject s1Inputs = (JObject)stage1Sampler.Node["inputs"];
+        KSamplerAdvancedNode ks0 = Assert.IsType<KSamplerAdvancedNode>(stage0Sampler);
+        KSamplerAdvancedNode ks1 = Assert.IsType<KSamplerAdvancedNode>(stage1Sampler);
 
-        // Different stages can have different models
-        Assert.True(s0Inputs["model"] is JArray);
-        Assert.True(s1Inputs["model"] is JArray);
-        Assert.NotEqual($"{((JArray)s0Inputs["model"])[0]}", $"{((JArray)s1Inputs["model"])[0]}");
+        Assert.NotNull(ks0.Model.Connection);
+        Assert.NotNull(ks1.Model.Connection);
+        Assert.NotEqual(ks0.Model.Connection.Node.Id, ks1.Model.Connection.Node.Id);
 
-        // VAE override should introduce a VAELoader and a corresponding VAEEncode for stage1
-        WorkflowNode vaeLoader = WorkflowUtils.NodesOfType(workflow, "VAELoader").Single();
-        Assert.Contains("UnitTest_Vae.safetensors", $"{((JObject)vaeLoader.Node["inputs"])["vae_name"]}");
+        VAELoaderNode vaeLoader = bridge.Graph.NodesOfType<VAELoaderNode>().Single();
+        Assert.Contains("UnitTest_Vae.safetensors", vaeLoader.VaeName.LiteralValue as string);
 
-        WorkflowNode vaeEncode = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
-            .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
-
-        Assert.NotNull(vaeEncode.Node);
+        VAEEncodeNode vaeEncode = bridge.Graph.NodesOfType<VAEEncodeNode>()
+            .Single(n => n.Vae.Connection?.Node.Id == vaeLoader.Id && n.Vae.Connection.SlotIndex == 0);
     }
 
     [Fact]
     public void Stage0_inherits_refiner_vae_when_unset_and_edit_model_is_use_refiner_before_refiner_phase()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
         UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
 
-        var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
-        var vaeHandler = new T2IModelHandler { ModelType = "VAE" };
-        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
-        {
-            ["Stable-Diffusion"] = sdHandler,
-            ["VAE"] = vaeHandler
-        };
+        (T2IModelHandler sdHandler, T2IModelHandler vaeHandler) = RegisterSdAndVaeHandlers();
 
-        var baseModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+        T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
         sdHandler.Models[baseModel.Name] = baseModel;
 
-        var refinerVae = new T2IModel(vaeHandler, "/tmp", "/tmp/UnitTest_RefinerVae.safetensors", "UnitTest_RefinerVae.safetensors");
+        T2IModel refinerVae = new(vaeHandler, "/tmp", "/tmp/UnitTest_RefinerVae.safetensors", "UnitTest_RefinerVae.safetensors");
         vaeHandler.Models[refinerVae.Name] = refinerVae;
 
         T2IParamInput input = BuildInputWithStage0("Base");
@@ -413,30 +359,24 @@ public class MultiStageMergeTests
         input.Set(T2IParamTypes.RefinerModel, baseModel);
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseRefiner);
 
-        // Do NOT set Base2EditExtension.EditVAE
-        // Set a refiner VAE override and expect stage0 to inherit it when "(Use Refiner)" is selected pre-refiner
         input.Set(T2IParamTypes.RefinerVAE, refinerVae);
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        WorkflowNode vaeLoader = WorkflowUtils.NodesOfType(workflow, "VAELoader")
-            .Single(n => $"{((JObject)n.Node["inputs"])["vae_name"]}".Contains("UnitTest_RefinerVae.safetensors"));
+        VAELoaderNode vaeLoader = bridge.Graph.NodesOfType<VAELoaderNode>()
+            .Single(n => (n.VaeName.LiteralValue as string)?.Contains("UnitTest_RefinerVae.safetensors") == true);
 
-        WorkflowNode vaeEncode = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
-            .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
-
-        Assert.NotNull(vaeEncode.Node);
+        VAEEncodeNode vaeEncode = bridge.Graph.NodesOfType<VAEEncodeNode>()
+            .Single(n => n.Vae.Connection?.Node.Id == vaeLoader.Id && n.Vae.Connection.SlotIndex == 0);
     }
 
     [Fact]
     public void Stage1_inherits_base_cfg_sampler_scheduler_when_unset_even_if_stage0_set_explicit_values()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
         UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
 
-        // Stage0 explicitly sets edit cfg/sampler/scheduler. Stage1 does NOT set them
-        // Stage1 should inherit from base
         T2IParamInput input = BuildInputWithStage0("Base");
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
         input.Set(Base2EditExtension.EditCFGScale, 12.0);
@@ -446,7 +386,7 @@ public class MultiStageMergeTests
         input.Set(ComfyUIBackendExtension.SamplerParam, "dpmpp_2m");
         input.Set(ComfyUIBackendExtension.SchedulerParam, "karras");
 
-        var stages = new JArray(
+        JArray stages = new(
             new JObject
             {
                 ["applyAfter"] = "Edit Stage 0",
@@ -458,97 +398,87 @@ public class MultiStageMergeTests
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<ReferenceLatentNode> refs = bridge.Graph.NodesOfType<ReferenceLatentNode>();
         Assert.Equal(2, refs.Count);
 
-        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
-        WorkflowNode sampler0 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
+        ReferenceLatentNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray("10", 0)));
+        ComfyNode sampler0 = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref0);
 
-        WorkflowNode ref1 = refs.Single(n => n.Id != ref0.Id);
-        WorkflowNode sampler1 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref1);
+        ReferenceLatentNode ref1 = refs.Single(n => n.Id != ref0.Id);
+        ComfyNode sampler1 = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref1);
 
-        JObject s0Inputs = (JObject)sampler0.Node["inputs"];
-        JObject s1Inputs = (JObject)sampler1.Node["inputs"];
+        KSamplerAdvancedNode ks0 = Assert.IsType<KSamplerAdvancedNode>(sampler0);
+        KSamplerAdvancedNode ks1 = Assert.IsType<KSamplerAdvancedNode>(sampler1);
 
-        Assert.Equal(12.0, (double)s0Inputs["cfg"]);
-        Assert.Equal("euler", $"{s0Inputs["sampler_name"]}");
-        Assert.Equal("normal", $"{s0Inputs["scheduler"]}");
+        Assert.Equal(12.0, ks0.Cfg.LiteralValue);
+        Assert.Equal("euler", ks0.SamplerName.LiteralValue);
+        Assert.Equal("normal", ks0.Scheduler.LiteralValue);
 
-        Assert.Equal(4.5, (double)s1Inputs["cfg"]);
-        Assert.Equal("dpmpp_2m", $"{s1Inputs["sampler_name"]}");
-        Assert.Equal("karras", $"{s1Inputs["scheduler"]}");
+        Assert.Equal(4.5, ks1.Cfg.LiteralValue);
+        Assert.Equal("dpmpp_2m", ks1.SamplerName.LiteralValue);
+        Assert.Equal("karras", ks1.Scheduler.LiteralValue);
     }
 
     [Fact]
-    public void Stage1_inherits_refiner_cfg_sampler_scheduler_and_vae_when_unset_and_stage1_model_is_use_refiner()
+    public void Stage1_can_explicitly_set_cfg_sampler_scheduler_and_vae()
     {
-        using var _ = new SwarmUiTestContext();
+        using SwarmUiTestContext _ = new();
         UnitTestStubs.EnsureComfySetClipDeviceRegistered();
         UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
 
-        var sdHandler = new T2IModelHandler { ModelType = "Stable-Diffusion" };
-        var vaeHandler = new T2IModelHandler { ModelType = "VAE" };
-        Program.T2IModelSets = new Dictionary<string, T2IModelHandler>
-        {
-            ["Stable-Diffusion"] = sdHandler,
-            ["VAE"] = vaeHandler
-        };
-        var baseModel = new T2IModel(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+        (T2IModelHandler sdHandler, T2IModelHandler vaeHandler) = RegisterSdAndVaeHandlers();
+        T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
         sdHandler.Models[baseModel.Name] = baseModel;
-        var refinerVae = new T2IModel(vaeHandler, "/tmp", "/tmp/UnitTest_RefinerVae.safetensors", "UnitTest_RefinerVae.safetensors");
-        vaeHandler.Models[refinerVae.Name] = refinerVae;
+        T2IModel stage1Vae = new(vaeHandler, "/tmp", "/tmp/UnitTest_Stage1Vae.safetensors", "UnitTest_Stage1Vae.safetensors");
+        vaeHandler.Models[stage1Vae.Name] = stage1Vae;
 
         T2IParamInput input = BuildInputWithStage0("Base");
         input.Set(T2IParamTypes.Model, baseModel);
         input.Set(T2IParamTypes.RefinerModel, baseModel);
         input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
         input.Set(Base2EditExtension.EditCFGScale, 12.0);
-        input.Set(T2IParamTypes.RefinerCFGScale, 9.0);
-        input.Set(ComfyUIBackendExtension.RefinerSamplerParam, "dpmpp_2m");
-        input.Set(ComfyUIBackendExtension.RefinerSchedulerParam, "karras");
-        input.Set(T2IParamTypes.RefinerVAE, refinerVae);
 
-        var stages = new JArray(
+        JArray stages = new(
             new JObject
             {
                 ["applyAfter"] = "Edit Stage 0",
                 ["keepPreEditImage"] = false,
                 ["control"] = 1.0,
                 ["model"] = ModelPrep.UseRefiner,
-                ["steps"] = 5
+                ["steps"] = 5,
+                ["cfgScale"] = 9.0,
+                ["sampler"] = "dpmpp_2m",
+                ["scheduler"] = "karras",
+                ["vae"] = stage1Vae.Name
             }
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        IReadOnlyList<WorkflowNode> refs = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<ReferenceLatentNode> refs = bridge.Graph.NodesOfType<ReferenceLatentNode>();
         Assert.Equal(2, refs.Count);
 
-        WorkflowNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(workflow, new JArray("10", 0));
-        WorkflowNode sampler0 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref0);
-        WorkflowNode ref1 = refs.Single(n => n.Id != ref0.Id);
-        WorkflowNode sampler1 = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, ref1);
+        ReferenceLatentNode ref0 = WorkflowAssertions.RequireReferenceLatentByLatentInput(bridge, bridge.ResolvePath(new JArray("10", 0)));
+        ReferenceLatentNode ref1 = refs.Single(n => n.Id != ref0.Id);
+        ComfyNode sampler1 = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, ref1);
 
-        JObject s1Inputs = (JObject)sampler1.Node["inputs"];
-        Assert.Equal(9.0, (double)s1Inputs["cfg"]);
-        Assert.Equal("dpmpp_2m", $"{s1Inputs["sampler_name"]}");
-        Assert.Equal("karras", $"{s1Inputs["scheduler"]}");
+        KSamplerAdvancedNode ks1 = Assert.IsType<KSamplerAdvancedNode>(sampler1);
+        Assert.Equal(9.0, ks1.Cfg.LiteralValue);
+        Assert.Equal("dpmpp_2m", ks1.SamplerName.LiteralValue);
+        Assert.Equal("karras", ks1.Scheduler.LiteralValue);
 
-        WorkflowNode vaeLoader = WorkflowUtils.NodesOfType(workflow, "VAELoader")
-            .Single(n => $"{((JObject)n.Node["inputs"])["vae_name"]}".Contains("UnitTest_RefinerVae.safetensors"));
-        WorkflowNode vaeEncode = WorkflowUtils.NodesOfType(workflow, "VAEEncode")
-            .Single(n => JToken.DeepEquals(((JObject)n.Node["inputs"])["vae"], new JArray(vaeLoader.Id, 0)));
-        Assert.NotNull(vaeEncode.Node);
+        VAELoaderNode vaeLoader = bridge.Graph.NodesOfType<VAELoaderNode>()
+            .Single(n => (n.VaeName.LiteralValue as string)?.Contains("UnitTest_Stage1Vae.safetensors") == true);
+        VAEEncodeNode vaeEncode = bridge.Graph.NodesOfType<VAEEncodeNode>()
+            .Single(n => n.Vae.Connection?.Node.Id == vaeLoader.Id && n.Vae.Connection.SlotIndex == 0);
     }
 
     [Fact]
     public void Two_stages_after_same_anchor_primary_continues_branch_saves_separately()
     {
-        // stage0 and stage1 both "after refiner" -> same anchor. Primary (stage0) continues pipeline;
-        // branch (stage1) reads same refiner output, saves its image, and does not feed the pipeline
         T2IParamInput input = BuildInputWithStage0("Refiner");
         input.Set(T2IParamTypes.RefinerMethod, "PostApply");
         input.Set(T2IParamTypes.RefinerControl, 0.2);
@@ -556,7 +486,7 @@ public class MultiStageMergeTests
         input.Set(Base2EditExtension.EditSampler, "euler");
         input.Set(Base2EditExtension.EditScheduler, "normal");
 
-        var stages = new JArray(
+        JArray stages = new(
             new JObject
             {
                 ["applyAfter"] = "Refiner",
@@ -574,42 +504,43 @@ public class MultiStageMergeTests
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> stepsWithRefiner =
             WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps());
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, stepsWithRefiner);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, stepsWithRefiner));
 
-        IReadOnlyList<WorkflowNode> refLatents = WorkflowUtils.NodesOfType(workflow, "ReferenceLatent");
+        IReadOnlyList<ReferenceLatentNode> refLatents = bridge.Graph.NodesOfType<ReferenceLatentNode>();
         Assert.Equal(2, refLatents.Count);
 
-        JArray anchorRef = RequireConnectionInput(refLatents[0].Node, "latent");
-        JArray anchorRef1 = RequireConnectionInput(refLatents[1].Node, "latent");
-        Assert.True(JToken.DeepEquals(anchorRef, anchorRef1), "Both edit stages must read from the same anchor (refiner output).");
+        INodeOutput anchorRef  = refLatents[0].Latent.Connection;
+        INodeOutput anchorRef1 = refLatents[1].Latent.Connection;
+        Assert.NotNull(anchorRef);
+        Assert.NotNull(anchorRef1);
+        Assert.Equal(anchorRef.Node.Id, anchorRef1.Node.Id);
+        Assert.Equal(anchorRef.SlotIndex, anchorRef1.SlotIndex);
 
-        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
         Assert.Equal(2, samplers.Count);
 
-        WorkflowNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, refLatents[0]);
-        WorkflowNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(workflow, refLatents[1]);
+        ComfyNode stage0Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, refLatents[0]);
+        ComfyNode stage1Sampler = WorkflowAssertions.RequireSamplerForReferenceLatent(bridge, refLatents[1]);
 
-        IReadOnlyList<WorkflowNode> decodes = WorkflowUtils.NodesOfType(workflow, "VAEDecode");
+        IReadOnlyList<VAEDecodeNode> decodes = bridge.Graph.NodesOfType<VAEDecodeNode>();
         Assert.True(decodes.Count >= 2, "Expected at least 2 VAEDecode (stage0 final + stage1 branch).");
 
-        // Branch stage1 output is saved via a dedicated SaveImage (id = 1000 + 50300 + 1 = 51301)
-        string branchSaveId = "51301";
-        Assert.True(workflow.ContainsKey(branchSaveId), "Expected SaveImage for branch stage1 output.");
-        Assert.Equal("SaveImage", $"{workflow[branchSaveId]!["class_type"]}");
+        IReadOnlyList<SaveImageNode> saveImages = bridge.Graph.NodesOfType<SaveImageNode>();
+        Assert.Contains(saveImages, save =>
+            save.Images.Connection?.Node is VAEDecodeNode decode
+            && decode.Samples.Connection?.Node.Id == stage1Sampler.Id);
     }
 
     [Fact]
     public void At_most_one_SwarmSaveImageWS_per_VAEDecode_output()
     {
-        // Two stages (primary + branch, both after refiner) with KeepPreEditImage: both would save the same
-        // pre-edit image (same VAEDecode output). Base2Edit must attach at most one SwarmSaveImageWS per decode
         T2IParamInput input = BuildInputWithStage0("Refiner");
         input.Set(T2IParamTypes.RefinerMethod, "PostApply");
         input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(Base2EditExtension.KeepPreEditImage, true);
         input.Set(Base2EditExtension.EditSteps, 11);
 
-        var stages = new JArray(
+        JArray stages = new(
             new JObject
             {
                 ["applyAfter"] = "Refiner",
@@ -629,24 +560,22 @@ public class MultiStageMergeTests
             WorkflowTestHarness.Template_BaseThenRefiner()
                 .Concat([new WorkflowGenerator.WorkflowGenStep(g => g.Features.Add("comfy_saveimage_ws"), -999)])
                 .Concat(WorkflowTestHarness.Base2EditSteps());
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, stepsWithRefinerAndWs);
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, stepsWithRefinerAndWs));
 
-        IReadOnlyList<WorkflowNode> vaeDecodes = WorkflowUtils.NodesOfType(workflow, "VAEDecode");
+        IReadOnlyList<VAEDecodeNode> vaeDecodes = bridge.Graph.NodesOfType<VAEDecodeNode>();
         Assert.NotEmpty(vaeDecodes);
 
-        foreach (WorkflowNode decode in vaeDecodes)
+        HashSet<string> saveNodeIds =
+        [
+            .. bridge.Graph.NodesOfType<SwarmSaveImageWSNode>().Select(n => n.Id),
+            .. bridge.Graph.NodesOfType<SaveImageNode>().Select(n => n.Id)
+        ];
+
+        foreach (VAEDecodeNode decode in vaeDecodes)
         {
-            JArray imageOutRef = new JArray { decode.Id, 0 };
-            IReadOnlyList<WorkflowInputConnection> consumers = WorkflowUtils.FindInputConnections(workflow, imageOutRef);
-            int saveCount = consumers.Count(c =>
-            {
-                if (workflow[c.NodeId] is not JObject node)
-                {
-                    return false;
-                }
-                string ct = $"{node["class_type"]}";
-                return ct == "SwarmSaveImageWS" || ct == "SaveImage";
-            });
+            INodeOutput imageOut = decode.IMAGE;
+            IReadOnlyList<(ComfyNode Node, INodeInput Input)> consumers = WorkflowQuery.FindInputsConnectedTo(bridge, imageOut);
+            int saveCount = consumers.Count(c => saveNodeIds.Contains(c.Node.Id));
             Assert.True(saveCount <= 1,
                 $"VAEDecode {decode.Id} output is connected to {saveCount} save node(s); expected at most 1.");
         }
@@ -655,11 +584,10 @@ public class MultiStageMergeTests
     [Fact]
     public void Keep_pre_edit_image_is_respected_per_stage()
     {
-        // stage0: keep pre-edit image, stage1: do not keep pre-edit image
         T2IParamInput input = BuildInputWithStage0("Base");
         input.Set(Base2EditExtension.KeepPreEditImage, true);
 
-        var stages = new JArray(
+        JArray stages = new(
             new JObject
             {
                 ["applyAfter"] = "Edit Stage 0",
@@ -675,17 +603,12 @@ public class MultiStageMergeTests
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, BaseSteps()));
 
-        // stage0 save id is stable: 1000 + 50200 + stageIndex(0) = 51200
-        WorkflowNode save0 = WorkflowAssertions.RequireNodeById(workflow, "51200");
-        Assert.Equal("SaveImage", $"{save0.Node["class_type"]}");
-        Assert.False(workflow.ContainsKey("51201"), "Did not expect a stage1 pre-edit save node.");
+        IReadOnlyList<SaveImageNode> saveImages = bridge.Graph.NodesOfType<SaveImageNode>();
+        SaveImageNode save0 = Assert.Single(saveImages);
 
-        // The save node should point at the pre-edit decode image output
-        JArray savedImageRef = RequireConnectionInput(save0.Node, "images", "image");
-        WorkflowNode savedImageNode = WorkflowAssertions.RequireNodeById(workflow, $"{savedImageRef[0]}");
-        Assert.Equal("VAEDecode", $"{savedImageNode.Node["class_type"]}");
+        Assert.IsType<VAEDecodeNode>(save0.Images.Connection?.Node);
     }
 
     [Fact]
@@ -697,31 +620,9 @@ public class MultiStageMergeTests
         input.Set(Base2EditExtension.EditUpscale, 1.25);
         input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
 
-        var stages = new JArray(
-            new JObject
-            {
-                ["applyAfter"] = "Edit Stage 0",
-                ["keepPreEditImage"] = false,
-                ["refineOnly"] = true,
-                ["control"] = 0.5,
-                ["model"] = ModelPrep.UseBase,
-                ["upscale"] = 1.25,
-                ["upscaleMethod"] = "pixel-lanczos",
-                ["steps"] = 10,
-                ["cfgScale"] = 1.0
-            },
-            new JObject
-            {
-                ["applyAfter"] = "Edit Stage 0",
-                ["keepPreEditImage"] = false,
-                ["refineOnly"] = true,
-                ["control"] = 0.5,
-                ["model"] = ModelPrep.UseBase,
-                ["upscale"] = 1.25,
-                ["upscaleMethod"] = "pixel-lanczos",
-                ["steps"] = 10,
-                ["cfgScale"] = 1.0
-            }
+        JArray stages = new(
+            BranchStage("Edit Stage 0"),
+            BranchStage("Edit Stage 0")
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
@@ -729,62 +630,28 @@ public class MultiStageMergeTests
             input,
             WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps())
         );
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
         Assert.Equal(3, samplers.Count);
 
-        IReadOnlyList<WorkflowNode> scales = WorkflowUtils.NodesOfType(workflow, "ImageScale");
-        Assert.True(scales.Count >= 3, "Expected one ImageScale per edit stage.");
+        IReadOnlyList<ImageScaleNode> scales = bridge.Graph.NodesOfType<ImageScaleNode>();
+        Assert.Equal(3, scales.Count);
     }
 
     [Fact]
-    public void Branch_stage_children_are_ignored()
+    public void Branch_stage_children_continue_branch_chain_and_save_only_at_leaf()
     {
-        // stage0 is primary. stage1 is branch sibling of stage0 child-chain.
-        // stage2 hangs off stage1 and must be ignored because branch stages are leaf-only.
         T2IParamInput input = BuildInputWithStage0("Refiner");
         input.Set(T2IParamTypes.RefinerMethod, "PostApply");
         input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(Base2EditExtension.EditUpscale, 1.25);
         input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
 
-        var stages = new JArray(
-            new JObject
-            {
-                ["applyAfter"] = "Edit Stage 0",
-                ["keepPreEditImage"] = false,
-                ["refineOnly"] = true,
-                ["control"] = 0.5,
-                ["model"] = ModelPrep.UseBase,
-                ["upscale"] = 1.25,
-                ["upscaleMethod"] = "pixel-lanczos",
-                ["steps"] = 10,
-                ["cfgScale"] = 1.0
-            },
-            new JObject
-            {
-                ["applyAfter"] = "Edit Stage 0",
-                ["keepPreEditImage"] = false,
-                ["refineOnly"] = true,
-                ["control"] = 0.5,
-                ["model"] = ModelPrep.UseBase,
-                ["upscale"] = 1.25,
-                ["upscaleMethod"] = "pixel-lanczos",
-                ["steps"] = 10,
-                ["cfgScale"] = 1.0
-            },
-            new JObject
-            {
-                ["applyAfter"] = "Edit Stage 2",
-                ["keepPreEditImage"] = false,
-                ["refineOnly"] = true,
-                ["control"] = 0.5,
-                ["model"] = ModelPrep.UseBase,
-                ["upscale"] = 1.25,
-                ["upscaleMethod"] = "pixel-lanczos",
-                ["steps"] = 10,
-                ["cfgScale"] = 1.0
-            }
+        JArray stages = new(
+            BranchStage("Edit Stage 0"),
+            BranchStage("Edit Stage 0"),
+            BranchStage("Edit Stage 2")
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
@@ -792,76 +659,130 @@ public class MultiStageMergeTests
             input,
             WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps())
         );
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
-        Assert.Equal(3, samplers.Count);
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
+        Assert.Equal(4, samplers.Count);
+
+        IReadOnlyList<SaveImageNode> branchSaves = bridge.Graph.NodesOfType<SaveImageNode>();
+        Assert.Single(branchSaves);
+    }
+
+    [Fact]
+    public void Sibling_branch_root_runs_full_subchain_when_it_has_children()
+    {
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(Base2EditExtension.EditUpscale, 1.25);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+
+        JArray stages = new(
+            BranchStage("Refiner"),
+            BranchStage("Edit Stage 0"),
+            BranchStage("Edit Stage 2"),
+            BranchStage("Edit Stage 1")
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(
+            input,
+            WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps())
+        ));
+
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
+        Assert.Equal(5, samplers.Count);
+
+        IReadOnlyList<SaveImageNode> branchSaves = bridge.Graph.NodesOfType<SaveImageNode>();
+        Assert.Single(branchSaves);
+    }
+
+    [Fact]
+    public void Parallel_refiner_branches_do_not_retarget_primary_chain()
+    {
+        using SwarmUiTestContext _ = new();
+        UnitTestStubs.EnsureComfySetClipDeviceRegistered();
+        UnitTestStubs.EnsureComfySamplerSchedulerRegistered();
+
+        (T2IModelHandler sdHandler, T2IModelHandler vaeHandler) = RegisterSdAndVaeHandlers();
+        T2IModel baseModel = new(sdHandler, "/tmp", "/tmp/UnitTest_Base.safetensors", "UnitTest_Base.safetensors");
+        sdHandler.Models[baseModel.Name] = baseModel;
+        T2IModel stage0Vae = new(vaeHandler, "/tmp", "/tmp/UnitTest_Stage0Vae.safetensors", "UnitTest_Stage0Vae.safetensors");
+        T2IModel stage1Vae = new(vaeHandler, "/tmp", "/tmp/UnitTest_Stage1Vae.safetensors", "UnitTest_Stage1Vae.safetensors");
+        vaeHandler.Models[stage0Vae.Name] = stage0Vae;
+        vaeHandler.Models[stage1Vae.Name] = stage1Vae;
+
+        T2IParamInput input = BuildInputWithStage0("Refiner");
+        input.Set(T2IParamTypes.Model, baseModel);
+        input.Set(T2IParamTypes.RefinerModel, baseModel);
+        input.Set(T2IParamTypes.RefinerMethod, "PostApply");
+        input.Set(T2IParamTypes.RefinerControl, 0.2);
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditVAE, stage0Vae);
+        input.Set(Base2EditExtension.EditUpscale, 2.0);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+        input.Set(Base2EditExtension.EditSteps, 7);
+
+        JArray stages = new(
+            new JObject
+            {
+                ["applyAfter"]    = "Refiner",
+                ["model"]         = ModelPrep.UseBase,
+                ["vae"]           = stage1Vae.Name,
+                ["upscale"]       = 2.0,
+                ["upscaleMethod"] = "pixel-lanczos",
+                ["control"]       = 1.0,
+                ["steps"]         = 11,
+                ["cfgScale"]      = 7.0
+            }
+        );
+        input.Set(Base2EditExtension.EditStages, stages.ToString());
+
+        IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
+            WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(input, steps));
+
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
+        Assert.Equal(2, samplers.Count);
+        HashSet<string> samplerIds = [.. samplers.Select(s => s.Id)];
+
+        IReadOnlyList<ImageScaleNode> scales = bridge.Graph.NodesOfType<ImageScaleNode>();
+        Assert.Equal(2, scales.Count);
+
+        foreach (ImageScaleNode scale in scales)
+        {
+            VAEDecodeNode decode = Assert.IsType<VAEDecodeNode>(scale.Image.Connection?.Node);
+            ComfyNode samplesSource = decode.Samples.Connection?.Node;
+            Assert.NotNull(samplesSource);
+            Assert.DoesNotContain(samplesSource.Id, samplerIds);
+        }
     }
 
     [Fact]
     public void Primary_child_can_chain_while_sibling_branch_stays_leaf()
     {
-        // stage0 after refiner
-        // stage1 + stage2 both after stage0
-        // stage3 after stage1
-        // Expected: stage3 continues only from stage1, not stage2.
         T2IParamInput input = BuildInputWithStage0("Refiner");
         input.Set(T2IParamTypes.RefinerMethod, "PostApply");
         input.Set(T2IParamTypes.RefinerControl, 0.2);
         input.Set(Base2EditExtension.EditUpscale, 1.25);
         input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
 
-        var stages = new JArray(
-            new JObject
-            {
-                ["applyAfter"] = "Edit Stage 0",
-                ["keepPreEditImage"] = false,
-                ["refineOnly"] = true,
-                ["control"] = 0.5,
-                ["model"] = ModelPrep.UseBase,
-                ["upscale"] = 1.25,
-                ["upscaleMethod"] = "pixel-lanczos",
-                ["steps"] = 10,
-                ["cfgScale"] = 1.0
-            },
-            new JObject
-            {
-                ["applyAfter"] = "Edit Stage 0",
-                ["keepPreEditImage"] = false,
-                ["refineOnly"] = true,
-                ["control"] = 0.5,
-                ["model"] = ModelPrep.UseBase,
-                ["upscale"] = 1.25,
-                ["upscaleMethod"] = "pixel-lanczos",
-                ["steps"] = 10,
-                ["cfgScale"] = 1.0
-            },
-            new JObject
-            {
-                ["applyAfter"] = "Edit Stage 1",
-                ["keepPreEditImage"] = false,
-                ["refineOnly"] = true,
-                ["control"] = 0.5,
-                ["model"] = ModelPrep.UseBase,
-                ["upscale"] = 1.25,
-                ["upscaleMethod"] = "pixel-lanczos",
-                ["steps"] = 10,
-                ["cfgScale"] = 1.0
-            }
+        JArray stages = new(
+            BranchStage("Edit Stage 0"),
+            BranchStage("Edit Stage 0"),
+            BranchStage("Edit Stage 1")
         );
         input.Set(Base2EditExtension.EditStages, stages.ToString());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(
+        using WorkflowBridge bridge = WorkflowBridge.Create(WorkflowTestHarness.GenerateWithSteps(
             input,
             WorkflowTestHarness.Template_BaseThenRefiner().Concat(WorkflowTestHarness.Base2EditSteps())
-        );
+        ));
 
-        IReadOnlyList<WorkflowNode> samplers = Samplers(workflow);
+        IReadOnlyList<ComfyNode> samplers = WorkflowQuery.Samplers(bridge);
         Assert.Equal(4, samplers.Count);
 
-        // stage2 is the non-primary sibling branch and should be saved as a branch output.
-        // stage3 continues from stage1 (primary chain), so it should not be treated as a branch.
-        Assert.True(workflow.ContainsKey("51302"), "Expected branch save node for stage2.");
-        Assert.False(workflow.ContainsKey("51303"), "Did not expect branch save node for stage3.");
+        IReadOnlyList<SaveImageNode> branchSaves = bridge.Graph.NodesOfType<SaveImageNode>();
+        Assert.Single(branchSaves);
     }
-
 }

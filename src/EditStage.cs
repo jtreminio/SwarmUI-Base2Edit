@@ -1,15 +1,17 @@
+using ComfyTyped.Core;
+using ComfyTyped.Generated;
+using Newtonsoft.Json.Linq;
+using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
-using SwarmUI.Builtin_ComfyUIBackend;
-using Newtonsoft.Json.Linq;
 
 namespace Base2Edit;
 
 internal record ModelState(
-    JArray Model,
-    JArray Clip,
-    JArray Vae,
-    JArray PreEditVae,
+    WGNodeData Model,
+    WGNodeData Clip,
+    WGNodeData Vae,
+    WGNodeData PreEditVae,
     bool MustReencode
 );
 
@@ -22,8 +24,8 @@ internal record Parameters(
     bool RefineOnly,
     double Guidance,
     long Seed,
-    string Sampler,
-    string Scheduler
+    string? Sampler,
+    string? Scheduler
 );
 
 internal record Conditioning(JArray Positive, JArray Negative);
@@ -46,7 +48,7 @@ public class EditStage
     public readonly WorkflowGenerator g;
     public readonly StageRefStore store;
     private readonly StageRunner runner;
-    private Dictionary<int, JsonParser.StageSpec> _parsedStages;
+    private Dictionary<int, StageSpec> _parsedStages;
 
     public EditStage(WorkflowGenerator g, StageRefStore store)
     {
@@ -59,101 +61,103 @@ public class EditStage
     private WGNodeData WrapImage(JArray path) => new(path, g, WGNodeData.DT_IMAGE, g.CurrentCompat());
     private WGNodeData WrapVae(JArray path) => new(path, g, WGNodeData.DT_VAE, g.CurrentCompat());
 
-    /// <summary>
-    /// Main entry point for running edit stages. The first root stage is the "primary" — it
-    /// (and any children chained via ApplyAfter) continues the main pipeline to the final save
-    /// node. All other root stages with the same ApplyAfter are "branches" that fork from the
-    /// same anchor, save their output independently, and do not affect the primary pipeline.
-    /// </summary>
     public void Run(bool isFinalStep)
     {
-        ParamSnapshot snapshot = SnapshotStageParams(g);
-        try
+        if (!isFinalStep)
         {
-            if (!isFinalStep)
+            store.Capture(StageRefStore.StageKind.Base);
+        }
+
+        bool preferCurrentImageAnchor = ShouldPreferCurrentImageAnchor(isFinalStep);
+        if (isFinalStep)
+        {
+            NormalizeFinalStepAnchor(preferCurrentImageAnchor);
+            store.Capture(StageRefStore.StageKind.Refiner);
+        }
+
+        (List<StageSpec> primaryChain, List<StageSpec> branchRoots) =
+            GetPrimaryChainAndBranchRoots(isFinalStep);
+
+        foreach (StageSpec stage in primaryChain)
+        {
+            RestoreParentPipelineState(stage);
+            runner.RunStage(
+                isFinalStep: isFinalStep,
+                stage: stage,
+                options: new RunEditStageOptions(
+                    TrackResolvedModelForMetadata: true,
+                    AllowFinalDecodeRetarget: branchRoots.Count == 0,
+                    ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
+                    RewireFinalConsumers: !preferCurrentImageAnchor
+                )
+            );
+            store.Capture(StageRefStore.StageKind.Edit, stage.Id);
+        }
+
+        if (branchRoots.Count > 0)
+        {
+            WGNodeData primarySamples = WGNodeDataUtil.TryGetCurrentLatent(g);
+            WGNodeData primaryVae = g.CurrentVae;
+            WGNodeData primaryImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
+
+            foreach (StageSpec branchRoot in branchRoots)
             {
-                store.Capture(StageRefStore.StageKind.Base);
-            }
+                RunBranchSubtree(branchRoot, isFinalStep, preferCurrentImageAnchor);
 
-            bool preferCurrentImageAnchor = ShouldPreferCurrentImageAnchor(isFinalStep);
-            if (isFinalStep)
-            {
-                NormalizeFinalStepAnchor(preferCurrentImageAnchor);
-                store.Capture(StageRefStore.StageKind.Refiner);
-            }
-
-            (List<JsonParser.StageSpec> primaryChain, List<JsonParser.StageSpec> branches) =
-                GetPrimaryChainAndBranches(isFinalStep);
-
-            foreach (JsonParser.StageSpec stage in primaryChain)
-            {
-                RestoreParentPipelineState(stage.ApplyAfter);
-                ApplyStageOverrides(stage);
-                runner.RunStage(
-                    isFinalStep: isFinalStep,
-                    stageIndex: stage.Id,
-                    options: new RunEditStageOptions(
-                        TrackResolvedModelForMetadata: true,
-                        AllowFinalDecodeRetarget: branches.Count == 0,
-                        ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
-                        RewireFinalConsumers: !preferCurrentImageAnchor
-                    )
-                );
-                store.Capture(StageRefStore.StageKind.Edit, stage.Id);
-            }
-
-            if (branches.Count > 0)
-            {
-                WGNodeData primarySamples = WGNodeDataUtil.TryGetCurrentLatent(g);
-                WGNodeData primaryVae = g.CurrentVae;
-                WGNodeData primaryImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
-
-                foreach (JsonParser.StageSpec branch in branches)
+                if (primarySamples is not null)
                 {
-                    RestoreParentPipelineState(branch.ApplyAfter);
-                    ApplyStageOverrides(branch);
-                    runner.RunStage(
-                        isFinalStep: isFinalStep,
-                        stageIndex: branch.Id,
-                        options: new RunEditStageOptions(
-                            TrackResolvedModelForMetadata: false,
-                            AllowFinalDecodeRetarget: false,
-                            ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
-                            RewireFinalConsumers: !preferCurrentImageAnchor
-                        )
-                    );
-                    store.Capture(StageRefStore.StageKind.Edit, branch.Id);
-                    SaveBranchOutput(branch.Id);
-
-                    if (primarySamples is not null)
-                    {
-                        g.CurrentMedia = WrapLatent(primarySamples.Path);
-                    }
-                    if (primaryVae is not null)
-                    {
-                        g.CurrentVae = primaryVae;
-                    }
-                    if (primaryImageOut is not null)
-                    {
-                        g.CurrentMedia = WrapImage(primaryImageOut.Path);
-                    }
+                    g.CurrentMedia = WrapLatent(primarySamples.Path);
+                }
+                if (primaryVae is not null)
+                {
+                    g.CurrentVae = primaryVae;
+                }
+                if (primaryImageOut is not null)
+                {
+                    g.CurrentMedia = WrapImage(primaryImageOut.Path);
                 }
             }
-
-            if (isFinalStep)
-            {
-                runner.CleanupDanglingVaeDecodeNodes();
-            }
         }
-        finally
+
+        if (isFinalStep)
         {
-            snapshot.Restore();
+            runner.CleanupDanglingVaeDecodeNodes();
+        }
+    }
+
+    private void RunBranchSubtree(StageSpec root, bool isFinalStep, bool preferCurrentImageAnchor)
+    {
+        List<StageSpec> chain = [];
+        List<StageSpec> subBranchRoots = [];
+        CollectStageChain(root, chain, subBranchRoots);
+
+        foreach (StageSpec stage in chain)
+        {
+            RestoreParentPipelineState(stage);
+            runner.RunStage(
+                isFinalStep: isFinalStep,
+                stage: stage,
+                options: new RunEditStageOptions(
+                    TrackResolvedModelForMetadata: false,
+                    AllowFinalDecodeRetarget: false,
+                    ForceReencodeFromCurrentImage: preferCurrentImageAnchor,
+                    RewireFinalConsumers: false
+                )
+            );
+            store.Capture(StageRefStore.StageKind.Edit, stage.Id);
+        }
+
+        SaveBranchOutput(chain[^1].Id);
+
+        foreach (StageSpec subBranchRoot in subBranchRoots.OrderBy(s => s.Id))
+        {
+            RunBranchSubtree(subBranchRoot, isFinalStep, preferCurrentImageAnchor);
         }
     }
 
     private void SaveBranchOutput(int branchId)
     {
-        WGNodeData branchImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData branchImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
 
         if (branchImageOut is null)
         {
@@ -173,21 +177,17 @@ public class EditStage
         }
     }
 
-    /// <summary>
-    /// Splits root stages into the primary chain and branch stages. The first root (by ID) is
-    /// the primary — it and its children form a chain that continues the main pipeline. All
-    /// remaining roots are branches that dead-end into their own save node.
-    /// </summary>
-    private (List<JsonParser.StageSpec> PrimaryChain, List<JsonParser.StageSpec> Branches) GetPrimaryChainAndBranches(bool isFinalStep)
+    private (List<StageSpec> PrimaryChain, List<StageSpec> BranchRoots) GetPrimaryChainAndBranchRoots(bool isFinalStep)
     {
-        IReadOnlyList<JsonParser.StageSpec> stages = GetCachedParsedStages();
+        IReadOnlyList<StageSpec> stages = GetCachedParsedStages();
         if (stages.Count == 0)
         {
             return ([], []);
         }
 
-        List<JsonParser.StageSpec> roots = [.. stages
-            .Where(stage => string.Equals(stage.ApplyAfter, isFinalStep ? "Refiner" : "Base", StringComparison.OrdinalIgnoreCase))
+        ParentKind rootKind = isFinalStep ? ParentKind.Refiner : ParentKind.Base;
+        List<StageSpec> roots = [.. stages
+            .Where(stage => stage.ParentKind == rootKind)
             .OrderBy(stage => stage.Id)];
 
         if (roots.Count == 0)
@@ -195,30 +195,25 @@ public class EditStage
             return ([], []);
         }
 
-        List<JsonParser.StageSpec> primaryChain = [];
-        List<JsonParser.StageSpec> branches = [];
-        CollectStageChain(roots[0], primaryChain, branches);
-        branches.AddRange(roots.Skip(1));
+        List<StageSpec> primaryChain = [];
+        List<StageSpec> branchRoots = [];
+        CollectStageChain(roots[0], primaryChain, branchRoots);
+        branchRoots.AddRange(roots.Skip(1));
 
-        // Keep deterministic execution order and avoid duplicates when branch subtrees overlap.
         HashSet<int> seen = [];
-        branches = [.. branches
+        branchRoots = [.. branchRoots
             .OrderBy(stage => stage.Id)
             .Where(stage => seen.Add(stage.Id))];
 
-        return (primaryChain, branches);
+        return (primaryChain, branchRoots);
     }
 
-    /// <summary>
-    /// Lazily parses the edit stage JSON and caches the result for this run.
-    /// Returns all parsed stages ordered by ID.
-    /// </summary>
-    private IReadOnlyList<JsonParser.StageSpec> GetCachedParsedStages()
+    private IReadOnlyList<StageSpec> GetCachedParsedStages()
     {
         if (_parsedStages is null || _parsedStages.Count == 0)
         {
             _parsedStages = [];
-            foreach (JsonParser.StageSpec stage in new JsonParser(g).ParseEditStages())
+            foreach (StageSpec stage in Base2EditSpecParser.Parse(g))
             {
                 _parsedStages[stage.Id] = stage;
             }
@@ -227,14 +222,10 @@ public class EditStage
         return [.. _parsedStages.Values.OrderBy(stage => stage.Id)];
     }
 
-    /// <summary>
-    /// Adds a stage and then its first child (depth-first) to the result list.
-    /// Each stage can have at most one child.
-    /// </summary>
     private static void CollectStageChain(
-        JsonParser.StageSpec stage,
-        List<JsonParser.StageSpec> result,
-        List<JsonParser.StageSpec> branches)
+        StageSpec stage,
+        List<StageSpec> result,
+        List<StageSpec> branchRoots)
     {
         result.Add(stage);
 
@@ -243,24 +234,16 @@ public class EditStage
             return;
         }
 
-        List<JsonParser.StageSpec> orderedChildren = [.. stage.Children.OrderBy(c => c.Id)];
-        JsonParser.StageSpec child = orderedChildren[0];
-        CollectStageChain(child, result, branches);
+        List<StageSpec> orderedChildren = [.. stage.Children.OrderBy(c => c.Id)];
+        StageSpec child = orderedChildren[0];
+        CollectStageChain(child, result, branchRoots);
 
-        foreach (JsonParser.StageSpec siblingBranch in orderedChildren.Skip(1))
+        foreach (StageSpec siblingBranchRoot in orderedChildren.Skip(1))
         {
-            // Branch stages are intentionally single-stage leaves.
-            // Any child stages attached to a branch are ignored.
-            branches.Add(siblingBranch);
+            branchRoots.Add(siblingBranchRoot);
         }
     }
 
-    /// <summary>
-    /// Resolves the pipeline anchor for the final (refiner) step by tracing back from the
-    /// current image output to find the nearest sampler or VAE decode node. This ensures the
-    /// edit stage attaches to the correct point in the workflow rather than a stale reference.
-    /// Skipped when the current image anchor is preferred (e.g. segment-after-refiner workflows).
-    /// </summary>
     private void NormalizeFinalStepAnchor(bool preferCurrentImageAnchor = false)
     {
         if (preferCurrentImageAnchor)
@@ -268,20 +251,19 @@ public class EditStage
             return;
         }
 
-        WGNodeData currentImageOut = WGNodeDataUtil.TryGetCurrentImage(g);
+        WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         if (currentImageOut is null)
         {
             return;
         }
-        (int resolvedWidth, int resolvedHeight) = ResolveImageDimensionsForAnchor(currentImageOut);
+
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        (int resolvedWidth, int resolvedHeight) = ResolveImageDimensionsForAnchor(bridge, currentImageOut);
         int anchorWidth = Math.Max(resolvedWidth, 16);
         int anchorHeight = Math.Max(resolvedHeight, 16);
 
-        // Prefer resolving from the current image tail first. This avoids anchoring to a stale
-        // sampler when latent media still points at refiner output but current image media has drifted
-        // into a downstream chain.
-        if (WorkflowUtils.TryResolveNearestSamplerOrDecodeAnchor(
-                g.Workflow,
+        if (TryResolveNearestAnchor(
+                bridge,
                 samplesRef: null,
                 imageRef: currentImageOut.Path,
                 out JArray imagePathSamples,
@@ -293,12 +275,10 @@ public class EditStage
             return;
         }
 
-        // Fallback: also seed the search with the current latent if available, so the walk
-        // can reach a sampler that doesn't have a direct image-path connection.
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
         if (currentSamples is not null
-            && WorkflowUtils.TryResolveNearestSamplerOrDecodeAnchor(
-                g.Workflow,
+            && TryResolveNearestAnchor(
+                bridge,
                 samplesRef: currentSamples.Path,
                 imageRef: currentImageOut.Path,
                 out JArray anchorSamples,
@@ -310,28 +290,84 @@ public class EditStage
         }
     }
 
-    /// <summary>
-    /// Restores the pipeline (media + VAE) to the captured state of a stage's parent.
-    /// Ensures each stage receives the correct input based on its ApplyAfter target.
-    /// For root stages (ApplyAfter = Base/Refiner), this is effectively a no-op since the
-    /// pipeline is already in the correct state.
-    /// </summary>
-    private void RestoreParentPipelineState(string applyAfter)
+    private static bool TryResolveNearestAnchor(
+        WorkflowBridge bridge,
+        JArray samplesRef,
+        JArray imageRef,
+        out JArray anchorSamples,
+        out JArray anchorImageOut,
+        out JArray anchorVae)
     {
-        StageRefStore.StageRef parentRef = null;
+        anchorSamples = null;
+        anchorImageOut = null;
+        anchorVae = null;
 
-        if (string.Equals(applyAfter, "Base", StringComparison.OrdinalIgnoreCase))
+        Queue<ComfyNode> pending = new();
+        HashSet<string> visited = [];
+
+        void enqueueProducer(JArray nodeRef)
         {
-            parentRef = store.Base;
+            if (nodeRef is null || nodeRef.Count != 2)
+            {
+                return;
+            }
+            if (bridge.ResolvePath(nodeRef) is INodeOutput produced
+                && visited.Add(produced.Node.Id))
+            {
+                pending.Enqueue(produced.Node);
+            }
         }
-        else if (string.Equals(applyAfter, "Refiner", StringComparison.OrdinalIgnoreCase))
+
+        enqueueProducer(samplesRef);
+        enqueueProducer(imageRef);
+
+        while (pending.Count > 0)
         {
-            parentRef = store.Refiner;
+            ComfyNode node = pending.Dequeue();
+
+            if (node is SwarmKSamplerNode or KSamplerAdvancedNode)
+            {
+                anchorSamples = new JArray(node.Id, 0);
+                return true;
+            }
+
+            if (node is VAEDecodeNode or VAEDecodeTiledNode)
+            {
+                anchorImageOut = new JArray(node.Id, 0);
+                INodeOutput samplesConn = node.FindInput("samples")?.Connection
+                                          ?? node.FindInput("latent")?.Connection;
+                if (samplesConn is not null)
+                {
+                    anchorSamples = new JArray(samplesConn.Node.Id, samplesConn.SlotIndex);
+                }
+                if (node.FindInput("vae")?.Connection is INodeOutput vaeConn)
+                {
+                    anchorVae = new JArray(vaeConn.Node.Id, vaeConn.SlotIndex);
+                }
+                return anchorSamples is not null || anchorImageOut is not null;
+            }
+
+            foreach (INodeInput input in node.Inputs)
+            {
+                if (input.Connection?.Node is ComfyNode upstream && visited.Add(upstream.Id))
+                {
+                    pending.Enqueue(upstream);
+                }
+            }
         }
-        else if (StageRefStore.TryParseStageIndexKey(applyAfter, out int parentId))
+
+        return false;
+    }
+
+    private void RestoreParentPipelineState(StageSpec stage)
+    {
+        StageRefStore.StageRef parentRef = stage.ParentKind switch
         {
-            store.TryGetEditRef(parentId, out parentRef);
-        }
+            ParentKind.Base => store.Base,
+            ParentKind.Refiner => store.Refiner,
+            ParentKind.Edit => store.TryGetEditRef(stage.ParentStageId, out StageRefStore.StageRef r) ? r : null,
+            _ => null,
+        };
 
         if (parentRef is null)
         {
@@ -375,7 +411,7 @@ public class EditStage
         g.CurrentMedia.Height ??= height;
     }
 
-    private (int Width, int Height) ResolveImageDimensionsForAnchor(WGNodeData imageOut)
+    private (int Width, int Height) ResolveImageDimensionsForAnchor(WorkflowBridge bridge, WGNodeData imageOut)
     {
         int fallbackWidth = g.UserInput.GetImageWidth();
         int fallbackHeight = g.UserInput.GetImageHeight();
@@ -390,28 +426,19 @@ public class EditStage
         }
 
         if (imageOut.Path?.Count == 2
-            && g.Workflow.TryGetValue($"{imageOut.Path[0]}", out JToken nodeTok)
-            && nodeTok is JObject node
-            && node["inputs"] is JObject inputs)
+            && bridge.Graph.GetNode($"{imageOut.Path[0]}") is ComfyNode node)
         {
-            if (inputs.TryGetValue("width", out JToken widthTok)
-                && inputs.TryGetValue("height", out JToken heightTok)
-                && int.TryParse($"{widthTok}", out int widthFromNode)
-                && int.TryParse($"{heightTok}", out int heightFromNode)
-                && widthFromNode > 0
-                && heightFromNode > 0)
+            int? widthFromNode = node.FindInput("width").LiteralAsInt();
+            int? heightFromNode = node.FindInput("height").LiteralAsInt();
+            if (widthFromNode > 0 && heightFromNode > 0)
             {
-                return (widthFromNode, heightFromNode);
+                return (widthFromNode.Value, heightFromNode.Value);
             }
         }
 
         return (fallbackWidth, fallbackHeight);
     }
 
-    /// <summary>
-    /// Policy gate for final-step anchor behavior. Segment-after-refiner workflows should anchor
-    /// from the current image tail so Base2Edit runs after those segment stages.
-    /// </summary>
     private bool ShouldPreferCurrentImageAnchor(bool isFinalStep)
     {
         if (!isFinalStep)
@@ -420,59 +447,12 @@ public class EditStage
         }
 
         string segmentApplyAfter = g.UserInput.Get(T2IParamTypes.SegmentApplyAfter, "Refiner");
-        if (!string.Equals(segmentApplyAfter, "Refiner"))
+        if (!StringUtils.Equals(segmentApplyAfter, "Refiner"))
         {
             return false;
         }
 
         PromptRegion prompt = new(g.UserInput.Get(T2IParamTypes.Prompt, ""));
         return prompt.Parts.Any(p => p.Type == PromptRegion.PartType.Segment);
-    }
-
-    private static ParamSnapshot SnapshotStageParams(WorkflowGenerator g) =>
-        ParamSnapshot.Of(g.UserInput,
-            Base2EditExtension.KeepPreEditImage.Type,
-            Base2EditExtension.EditRefineOnly.Type,
-            Base2EditExtension.ApplyEditAfter.Type,
-            Base2EditExtension.EditControl.Type,
-            Base2EditExtension.EditModel.Type,
-            Base2EditExtension.EditVAE.Type,
-            Base2EditExtension.EditUpscale.Type,
-            Base2EditExtension.EditUpscaleMethod.Type,
-            Base2EditExtension.EditSteps.Type,
-            Base2EditExtension.EditCFGScale.Type,
-            Base2EditExtension.EditSampler.Type,
-            Base2EditExtension.EditScheduler.Type
-        );
-
-    /// <summary>
-    /// Writes the stage's per-stage parameter overrides (model, VAE, steps, CFG scale, sampler, etc.)
-    /// into the generator's UserInput so downstream node builders pick them up. Optional
-    /// overrides (VAE, CFG scale, sampler, scheduler) are removed from UserInput when not specified
-    /// by the stage, allowing fallback to global defaults.
-    /// </summary>
-    private void ApplyStageOverrides(JsonParser.StageSpec stage)
-    {
-        g.UserInput.Set(Base2EditExtension.KeepPreEditImage.Type, stage.KeepPreEditImage ? "true" : "false");
-        g.UserInput.Set(Base2EditExtension.EditRefineOnly.Type, stage.RefineOnly ? "true" : "false");
-        g.UserInput.Set(Base2EditExtension.ApplyEditAfter.Type, stage.ApplyAfter);
-        g.UserInput.Set(Base2EditExtension.EditControl.Type, $"{stage.Control}");
-        g.UserInput.Set(Base2EditExtension.EditModel.Type, stage.Model);
-        g.UserInput.Set(Base2EditExtension.EditUpscale.Type, $"{stage.Upscale}");
-        g.UserInput.Set(Base2EditExtension.EditUpscaleMethod.Type, stage.UpscaleMethod);
-        g.UserInput.Set(Base2EditExtension.EditSteps.Type, $"{stage.Steps}");
-
-        if (stage.HasVaeOverride)
-        {
-            g.UserInput.Set(Base2EditExtension.EditVAE.Type, stage.Vae);
-        }
-        else
-        {
-            g.UserInput.Remove(Base2EditExtension.EditVAE);
-        }
-
-        g.UserInput.Set(Base2EditExtension.EditCFGScale.Type, $"{stage.CfgScale}");
-        g.UserInput.Set(Base2EditExtension.EditSampler.Type, stage.Sampler);
-        g.UserInput.Set(Base2EditExtension.EditScheduler.Type, stage.Scheduler);
     }
 }

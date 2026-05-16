@@ -9,11 +9,8 @@ namespace Base2Edit;
 
 public class Base2EditExtension : Extension
 {
-    /// <summary>
-    /// Prompt section ID for the global Base2Edit edit section (<edit>).
-    /// Stage-specific sections (<edit[n]>) use <see cref="EditSectionIdForStage"/>.
-    /// </summary>
     public const int SectionID_Edit = 48723;
+    public const int EditSeedOffset = 2;
     public static int EditSectionIdForStage(int stageIndex) => SectionID_Edit + 1 + stageIndex;
     public static T2IParamGroup Base2EditGroup;
     public static T2IRegisteredParam<bool> KeepPreEditImage;
@@ -57,6 +54,7 @@ public class Base2EditExtension : Extension
     public override void OnInit()
     {
         Logs.Info("Base2Edit Extension initializing...");
+        ComfyTyped.Generated.NodeRegistrations.EnsureRegistered();
         RegisterParameters();
         if (!_postGenerateHookRegistered)
         {
@@ -174,7 +172,7 @@ public class Base2EditExtension : Extension
                 + $"'{ModelPrep.UseBase}' uses your base model.\n"
                 + $"'{ModelPrep.UseRefiner}' uses your configured refiner model (or the base model if no refiner override is set).",
             Default: ModelPrep.UseRefiner,
-            GetValues: (Session s) =>
+            GetValues: s =>
             {
                 List<T2IModel> baseList = [.. Program.MainSDModels.ListModelsFor(s).OrderBy(m => m.Name)];
                 List<string> bases = T2IParamTypes.CleanModelList(baseList.Select(m => m.Name));
@@ -194,9 +192,9 @@ public class Base2EditExtension : Extension
                 + "'None' disables VAE override.",
             Default: "None",
             IgnoreIf: "None",
-            GetValues: (Session s) =>
+            GetValues: s =>
             {
-                var vaeNames = Program.T2IModelSets["VAE"].ListModelsFor(s).Select(m => m.Name);
+                IEnumerable<string> vaeNames = Program.T2IModelSets["VAE"].ListModelsFor(s).Select(m => m.Name);
                 return ["Automatic", "None", .. T2IParamTypes.CleanModelList(vaeNames)];
             },
             Subtype: "VAE",

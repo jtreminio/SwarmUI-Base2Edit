@@ -1,3 +1,3 @@
 #! /bin/bash
 
-dotnet test "SwarmUI-Base2Edit.Tests.sln"
+dotnet test "SwarmUI-Base2Edit.Tests.sln" && npm run test

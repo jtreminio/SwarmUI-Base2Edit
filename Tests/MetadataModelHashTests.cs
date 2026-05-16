@@ -46,7 +46,7 @@ public class MetadataModelHashTests
         T2IModel refinerModel = makeModel(sdHandler, "UnitTest_Refiner.safetensors", "0x222");
         T2IModel editModel = makeModel(sdHandler, "UnitTest_Edit.safetensors", "0x333");
 
-        _ = WorkflowTestHarness.Base2EditSteps();
+        WorkflowTestHarness.Base2EditSteps();
         var input = new T2IParamInput(null);
         input.Set(T2IParamTypes.Prompt, "global <edit>edit text");
         input.Set(T2IParamTypes.Seed, 1L);
@@ -57,7 +57,7 @@ public class MetadataModelHashTests
         input.Set(Base2EditExtension.ApplyEditAfter, "Base");
         input.Set(Base2EditExtension.EditModel, editModel.Name);
 
-        _ = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
 
         Assert.True(input.TryGet(Base2EditExtension.EditModelResolvedForMetadata, out T2IModel tracked));
         Assert.Equal(editModel.Name, tracked.Name);
