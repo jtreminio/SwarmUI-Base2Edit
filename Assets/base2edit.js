@@ -1,5 +1,398 @@
 "use strict";
 (() => {
+  // frontend/framePicker/state.ts
+  var _selection = /* @__PURE__ */ new Set();
+  var _dirty = false;
+  var framePickerState = {
+    reset(savedSelection) {
+      _selection = new Set(savedSelection);
+      _dirty = false;
+    },
+    toggle(frameIndex) {
+      if (_selection.has(frameIndex)) {
+        _selection.delete(frameIndex);
+      } else {
+        _selection.add(frameIndex);
+      }
+      _dirty = true;
+    },
+    select(frameIndex) {
+      _selection.add(frameIndex);
+      _dirty = true;
+    },
+    deselect(frameIndex) {
+      _selection.delete(frameIndex);
+      _dirty = true;
+    },
+    selectAll(indices) {
+      for (const i of indices) {
+        _selection.add(i);
+      }
+      _dirty = true;
+    },
+    clearAll() {
+      _selection.clear();
+      _dirty = true;
+    },
+    isSelected(frameIndex) {
+      return _selection.has(frameIndex);
+    },
+    getAll() {
+      return [..._selection].sort((a, b) => a - b);
+    },
+    isDirty() {
+      return _dirty;
+    },
+    count() {
+      return _selection.size;
+    }
+  };
+
+  // frontend/framePicker/render.ts
+  function frameToFileNum(frameIndex) {
+    return String(frameIndex + 1).padStart(6, "0");
+  }
+  function thumbUrl(pattern, frameIndex) {
+    return pattern.replace("NNN", frameToFileNum(frameIndex));
+  }
+  function buildGrid(opts) {
+    const chunkSize = Math.max(1, Math.round(opts.fps));
+    const scroll = document.createElement("div");
+    scroll.className = "b2e-fp-chunks-scroll";
+    let chunkIndex = 0;
+    for (let startFrame = 0; startFrame < opts.frameCount; startFrame += chunkSize) {
+      const endFrame = Math.min(
+        startFrame + chunkSize - 1,
+        opts.frameCount - 1
+      );
+      const chunkIndices = [];
+      for (let i = startFrame; i <= endFrame; i++) {
+        chunkIndices.push(i);
+      }
+      const startSec = (startFrame / opts.fps).toFixed(1);
+      const endSec = ((endFrame + 1) / opts.fps).toFixed(1);
+      const section = document.createElement("section");
+      section.className = "b2e-fp-chunk-section";
+      section.dataset.chunkIndex = String(chunkIndex);
+      const head = document.createElement("div");
+      head.className = "b2e-fp-chunk-section-head";
+      head.innerHTML = `
+            <div class="b2e-fp-chunk-section-title">
+                Chunk ${chunkIndex + 1}
+                <span class="b2e-fp-range">${startSec}–${endSec}s · frames ${startFrame}–${endFrame}</span>
+            </div>`;
+      const grid = document.createElement("div");
+      grid.className = "b2e-fp-frame-grid";
+      for (const fi of chunkIndices) {
+        const tile = document.createElement("div");
+        tile.className = "b2e-fp-frame-tile";
+        tile.dataset.frameIndex = String(fi);
+        if (framePickerState.isSelected(fi)) {
+          tile.classList.add("b2e-fp-selected");
+        }
+        tile.innerHTML = `
+                <img class="b2e-fp-thumb" src="${thumbUrl(opts.thumbUrlPattern, fi)}" alt="Frame ${fi}" loading="lazy">
+                <span class="b2e-fp-frame-num">#${fi}</span>
+                <span class="b2e-fp-time-label">${(fi / opts.fps).toFixed(2)}s</span>`;
+        tile.addEventListener("click", () => {
+          opts.onFrameClick(fi, tile);
+        });
+        grid.appendChild(tile);
+      }
+      section.appendChild(head);
+      section.appendChild(grid);
+      scroll.appendChild(section);
+      chunkIndex++;
+    }
+    return scroll;
+  }
+  function buildChunkBar(frameCount, fps) {
+    const chunkSize = Math.max(1, Math.round(fps));
+    const bar = document.createElement("div");
+    bar.className = "b2e-fp-chunk-bar";
+    const left = document.createElement("div");
+    left.className = "b2e-fp-chunk-bar-left";
+    const allTab = document.createElement("button");
+    allTab.className = "b2e-fp-chunk-tab b2e-fp-active";
+    allTab.type = "button";
+    allTab.innerHTML = `All <span class="browser-header-count">${frameCount}</span>`;
+    left.appendChild(allTab);
+    let chunkIndex = 0;
+    for (let startFrame = 0; startFrame < frameCount; startFrame += chunkSize) {
+      const endFrame = Math.min(startFrame + chunkSize - 1, frameCount - 1);
+      const startSec = (startFrame / fps).toFixed(1);
+      const endSec = ((endFrame + 1) / fps).toFixed(1);
+      const tab = document.createElement("button");
+      tab.className = "b2e-fp-chunk-tab";
+      tab.type = "button";
+      tab.dataset.chunkIndex = String(chunkIndex);
+      tab.innerHTML = `${startSec}–${endSec}s <span class="browser-header-count">${endFrame - startFrame + 1}</span>`;
+      left.appendChild(tab);
+      chunkIndex++;
+    }
+    bar.appendChild(left);
+    return bar;
+  }
+  function updateSidebar(sideEl, frameIndex, fps, thumbUrlPattern) {
+    const timestamp = (frameIndex / fps).toFixed(3);
+    sideEl.innerHTML = `
+        <img class="b2e-fp-preview-img" src="${thumbUrl(thumbUrlPattern, frameIndex)}" alt="Frame ${frameIndex}">
+        <dl class="b2e-fp-preview-meta">
+            <dt>Frame #</dt><dd>${frameIndex}</dd>
+            <dt>Timestamp</dt><dd>${timestamp}s</dd>
+        </dl>`;
+  }
+  function renderSelectedList(listEl, fps, thumbUrlPattern, onClick, onRemove) {
+    const indices = framePickerState.getAll();
+    listEl.innerHTML = "";
+    if (indices.length === 0) {
+      listEl.innerHTML = `<p class="b2e-fp-selected-empty">No frames selected yet.</p>`;
+      return;
+    }
+    const header = document.createElement("div");
+    header.className = "b2e-fp-selected-header";
+    header.textContent = `Selected (${indices.length})`;
+    listEl.appendChild(header);
+    const grid = document.createElement("div");
+    grid.className = "b2e-fp-selected-grid";
+    for (const fi of indices) {
+      const item = document.createElement("div");
+      item.className = "b2e-fp-selected-item";
+      item.title = `Frame #${fi} · ${(fi / fps).toFixed(2)}s`;
+      item.innerHTML = `
+            <img class="b2e-fp-selected-thumb" src="${thumbUrl(thumbUrlPattern, fi)}" alt="Frame ${fi}" loading="lazy">
+            <span class="b2e-fp-selected-num">#${fi}</span>
+            <button class="b2e-fp-selected-remove" type="button" title="Deselect this frame">×</button>`;
+      item.querySelector(".b2e-fp-selected-thumb")?.addEventListener(
+        "click",
+        () => onClick(fi)
+      );
+      item.querySelector(".b2e-fp-selected-num")?.addEventListener(
+        "click",
+        () => onClick(fi)
+      );
+      item.querySelector(".b2e-fp-selected-remove")?.addEventListener(
+        "click",
+        (e) => {
+          e.stopPropagation();
+          onRemove(fi);
+        }
+      );
+      grid.appendChild(item);
+    }
+    listEl.appendChild(grid);
+  }
+
+  // frontend/framePicker/modal.ts
+  var MODAL_ID = "b2e-frame-picker-modal";
+  function getOrCreateModalEl() {
+    let el = document.getElementById(MODAL_ID);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = MODAL_ID;
+      el.className = "modal fade b2e-fp-modal";
+      el.tabIndex = -1;
+      el.setAttribute("role", "dialog");
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function openFramePickerModal(videoSrc) {
+    const modalEl = getOrCreateModalEl();
+    modalEl.innerHTML = buildLoadingShell();
+    $(modalEl).modal("show");
+    genericRequest("B2EFramePickerOpen", { videoUrl: videoSrc }, (raw) => {
+      const data = raw;
+      if (data.error) {
+        renderError(modalEl, data.error);
+        return;
+      }
+      framePickerState.reset(data.savedSelection);
+      renderModal(modalEl, videoSrc, data);
+    });
+  }
+  function buildLoadingShell() {
+    return `
+        <div class="modal-dialog modal-xl" role="document">
+            <div class="modal-content b2e-fp-modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Frame Picker</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body b2e-fp-loading">
+                    <div class="loading-spinner"><div class="loadspin1"></div><div class="loadspin2"></div><div class="loadspin3"></div></div>
+                </div>
+            </div>
+        </div>`;
+  }
+  function renderError(modalEl, message) {
+    const body = modalEl.querySelector(".modal-body");
+    if (body) {
+      body.innerHTML = `<div class="b2e-fp-error">${message}</div>`;
+    }
+  }
+  function renderModal(modalEl, videoSrc, data) {
+    const modalDialog = modalEl.querySelector(".modal-dialog");
+    if (!modalDialog) {
+      return;
+    }
+    modalEl.style.setProperty(
+      "--b2e-fp-aspect",
+      `${data.width} / ${data.height}`
+    );
+    const durationSec = (data.frameCount / data.fps).toFixed(1);
+    const subtitle = `${durationSec}s · ${data.fps.toFixed(0)} fps · ${data.frameCount} frames · ${data.width}×${data.height}`;
+    const previewEl = document.createElement("div");
+    previewEl.className = "b2e-fp-side-preview";
+    previewEl.innerHTML = `<p class="b2e-fp-side-empty">Click a frame to preview</p>`;
+    const selectedListEl = document.createElement("div");
+    selectedListEl.className = "b2e-fp-selected-list";
+    let lastFocused = null;
+    const refreshSelectedList = () => {
+      renderSelectedList(
+        selectedListEl,
+        data.fps,
+        data.thumbUrlPattern,
+        (fi) => focusFrame(fi),
+        (fi) => deselectFrame(fi)
+      );
+    };
+    const counterEl = document.createElement("span");
+    counterEl.className = "b2e-fp-selection-count";
+    counterEl.textContent = `${framePickerState.count()} selected`;
+    const refreshCounter = () => {
+      counterEl.textContent = `${framePickerState.count()} selected`;
+    };
+    const focusFrame = (frameIndex) => {
+      lastFocused = frameIndex;
+      updateSidebar(previewEl, frameIndex, data.fps, data.thumbUrlPattern);
+      const tile = modalEl.querySelector(
+        `.b2e-fp-frame-tile[data-frame-index="${frameIndex}"]`
+      );
+      tile?.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+    const deselectFrame = (frameIndex) => {
+      framePickerState.deselect(frameIndex);
+      const tile = modalEl.querySelector(
+        `.b2e-fp-frame-tile[data-frame-index="${frameIndex}"]`
+      );
+      tile?.classList.remove("b2e-fp-selected");
+      refreshCounter();
+      refreshSelectedList();
+      if (lastFocused === frameIndex) {
+        updateSidebar(
+          previewEl,
+          frameIndex,
+          data.fps,
+          data.thumbUrlPattern
+        );
+      }
+    };
+    const onFrameClick = (frameIndex, tileEl) => {
+      framePickerState.toggle(frameIndex);
+      tileEl.classList.toggle(
+        "b2e-fp-selected",
+        framePickerState.isSelected(frameIndex)
+      );
+      lastFocused = frameIndex;
+      refreshCounter();
+      updateSidebar(previewEl, frameIndex, data.fps, data.thumbUrlPattern);
+      refreshSelectedList();
+    };
+    const chunkBar = buildChunkBar(data.frameCount, data.fps);
+    const gridScroll = buildGrid({
+      frameCount: data.frameCount,
+      fps: data.fps,
+      thumbUrlPattern: data.thumbUrlPattern,
+      onFrameClick
+    });
+    chunkBar.querySelectorAll(".b2e-fp-chunk-tab[data-chunk-index]").forEach((tabEl) => {
+      tabEl.addEventListener("click", () => {
+        const ci = tabEl.dataset.chunkIndex;
+        const section = gridScroll.querySelector(
+          `[data-chunk-index="${ci}"]`
+        );
+        section?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+    const mainArea = document.createElement("div");
+    mainArea.className = "b2e-fp-main";
+    mainArea.appendChild(chunkBar);
+    mainArea.appendChild(gridScroll);
+    const aside = document.createElement("aside");
+    aside.className = "b2e-fp-side";
+    aside.innerHTML = `<h3 class="b2e-fp-side-title">Selected Frame</h3>`;
+    aside.appendChild(previewEl);
+    aside.appendChild(selectedListEl);
+    const layout = document.createElement("div");
+    layout.className = "b2e-fp-layout";
+    layout.appendChild(mainArea);
+    layout.appendChild(aside);
+    const footer = document.createElement("div");
+    footer.className = "modal-footer b2e-fp-footer";
+    footer.appendChild(counterEl);
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "basic-button";
+    clearBtn.type = "button";
+    clearBtn.textContent = "Clear all";
+    clearBtn.addEventListener("click", () => {
+      framePickerState.clearAll();
+      modalEl.querySelectorAll(".b2e-fp-selected").forEach((el) => {
+        el.classList.remove("b2e-fp-selected");
+      });
+      refreshCounter();
+      refreshSelectedList();
+    });
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "basic-button";
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener(
+      "click",
+      () => $(modalEl).modal("hide")
+    );
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "basic-button b2e-fp-save-btn";
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save selections";
+    saveBtn.addEventListener("click", () => {
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+      genericRequest(
+        "B2EFramePickerSave",
+        { videoUrl: videoSrc, frameIndices: framePickerState.getAll() },
+        (raw) => {
+          const result = raw;
+          if (result.error) {
+            renderError(
+              modalEl,
+              `Frame Picker save failed: ${result.error}`
+            );
+            saveBtn.disabled = false;
+            saveBtn.textContent = "Save selections";
+            return;
+          }
+          $(modalEl).modal("hide");
+        }
+      );
+    });
+    footer.appendChild(clearBtn);
+    footer.appendChild(cancelBtn);
+    footer.appendChild(saveBtn);
+    modalDialog.innerHTML = `
+        <div class="modal-content b2e-fp-modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Frame Picker <span class="b2e-fp-subtitle">${subtitle}</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body b2e-fp-modal-body"></div>
+        </div>`;
+    const body = modalDialog.querySelector(".modal-body");
+    body?.appendChild(layout);
+    modalDialog.querySelector(".modal-content")?.appendChild(footer);
+    refreshSelectedList();
+  }
+
   // frontend/imageButtons.ts
   var createImageButtons = () => {
     const BUTTON_LABEL = "Base2Edit";
@@ -998,5 +1391,15 @@
     }, 200);
   }
   editor.startGenerateWrapRetry();
+  registerMediaButton(
+    "Pick Frames",
+    (src) => openFramePickerModal(src),
+    "Open the Frame Picker to extract and save individual frames from this video",
+    ["video"],
+    false,
+    // isDefault: don't promote to always-visible; stays in "More" dropdown
+    true
+    // showInHistory: appear on history cards AND main viewer toolbar
+  );
 })();
 //# sourceMappingURL=base2edit.js.map

@@ -55,3 +55,25 @@ interface Window {
     base2editRunEditOnlyFromImage?: (src: string) => void;
     base2editStageRegistry?: Base2EditStageRegistry;
 }
+
+declare function registerMediaButton(
+    name: string,
+    action: (src: string) => void,
+    title: string,
+    mediaTypes: string[] | null,
+    isDefault: boolean,
+    showInHistory: boolean,
+): void;
+
+declare function genericRequest(
+    url: string,
+    data: Record<string, unknown>,
+    callback: (data: Record<string, unknown>) => void,
+    depth?: number,
+    errorHandle?: ((msg: string) => void) | null,
+): void;
+
+declare function $(el: HTMLElement | string): JQuery;
+interface JQuery {
+    modal(action: string): JQuery;
+}

@@ -1,3 +1,4 @@
+import { openFramePickerModal } from "./framePicker/modal";
 import { createImageButtons } from "./imageButtons";
 import {
     registerB2EImagePrefix,
@@ -15,8 +16,7 @@ registerEditPromptPrefix();
 registerB2EPromptPrefix();
 registerB2EImagePrefix();
 
-const imageButtons = createImageButtons();
-imageButtons.waitFor(runEditOnlyFromImage);
+createImageButtons().waitFor(runEditOnlyFromImage);
 
 export const tryRegisterStageEditor = (): boolean => {
     if (
@@ -44,3 +44,12 @@ if (!tryRegisterStageEditor()) {
 }
 
 editor.startGenerateWrapRetry();
+
+registerMediaButton(
+    "Pick Frames",
+    (src) => openFramePickerModal(src),
+    "Open the Frame Picker to extract and save individual frames from this video",
+    ["video"],
+    false,
+    true,
+);

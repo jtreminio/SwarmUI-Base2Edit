@@ -63,6 +63,7 @@ public class Base2EditExtension : Extension
         }
         WorkflowGenerator.AddStep(g => new Runner(g).Run(isFinalStep: false), -4.2);
         WorkflowGenerator.AddStep(g => new Runner(g).Run(isFinalStep: true), 5.9);
+        FramePickerAPI.Register();
     }
 
     private static void HandlePostGenerateMetadata(T2IEngine.PostGenerationEventParams evt)
