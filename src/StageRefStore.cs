@@ -255,9 +255,9 @@ public class StageRefStore(WorkflowGenerator g)
         {
             result["frames"] = data.Frames.Value;
         }
-        if (data.FPS.HasValue)
+        if (data.GetRawFPS() is int fps)
         {
-            result["fps"] = data.FPS.Value;
+            result["fps"] = fps;
         }
         return result;
     }
