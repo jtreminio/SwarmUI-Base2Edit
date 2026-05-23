@@ -363,7 +363,7 @@ internal static class Base2EditSpecParser
 
     private static double NormalizeCfgScale(double cfgScale) => TruncateToDecimals(cfgScale, 1);
 
-    private static string? ParseOptionalString(JObject obj, string key, string locationPrefix)
+    private static string ParseOptionalString(JObject obj, string key, string locationPrefix)
     {
         string value = GetString(obj, key);
         if (value is null)

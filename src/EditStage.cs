@@ -24,8 +24,8 @@ internal record Parameters(
     bool RefineOnly,
     double Guidance,
     long Seed,
-    string? Sampler,
-    string? Scheduler
+    string Sampler,
+    string Scheduler
 );
 
 internal record Conditioning(JArray Positive, JArray Negative);
