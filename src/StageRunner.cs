@@ -29,6 +29,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         T2IModel savedFinalLoadedModel = g.FinalLoadedModel;
         List<T2IModel> savedFinalLoadedModelList = g.FinalLoadedModelList;
         g.FinalLoadedModelList = [.. savedFinalLoadedModelList];
+        bool stageIsPiD = stage.Model?.ModelClass?.CompatClass?.ID == "pid";
+        WGNodeData pidParentLatent = stageIsPiD ? WGNodeDataUtil.TryGetCurrentLatent(g) : null;
+        T2IModelCompatClass pidParentCompat = stageIsPiD ? (pidParentLatent?.Compat ?? g.CurrentMedia?.Compat) : null;
+        int pidParentWidth = stageIsPiD ? (g.CurrentMedia?.Width ?? g.UserInput.GetImageWidth()) : 0;
+        int pidParentHeight = stageIsPiD ? (g.CurrentMedia?.Height ?? g.UserInput.GetImageHeight()) : 0;
         try
         {
             ctx.ModelState = PrepareModelAndVae(ctx, isFinalStep, options);
@@ -69,37 +74,46 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 SavePreEditImageIfNeeded(ctx);
             }
 
-            if (!ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
-                && currentSamples is not null
-                && g.CurrentMedia?.IsLatentData != true)
+            int stageWidth;
+            int stageHeight;
+            if (stageIsPiD)
             {
-                int? mediaWidth = g.CurrentMedia?.Width;
-                int? mediaHeight = g.CurrentMedia?.Height;
-                g.CurrentMedia = new WGNodeData(currentSamples.Path, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
-                {
-                    Width = mediaWidth,
-                    Height = mediaHeight
-                };
+                (stageWidth, stageHeight) = RunPiDEditStage(ctx, prompts, pidParentLatent, pidParentCompat, pidParentWidth, pidParentHeight);
             }
+            else
+            {
+                if (!ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
+                    && currentSamples is not null
+                    && g.CurrentMedia?.IsLatentData != true)
+                {
+                    int? mediaWidth = g.CurrentMedia?.Width;
+                    int? mediaHeight = g.CurrentMedia?.Height;
+                    g.CurrentMedia = new WGNodeData(currentSamples.Path, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+                    {
+                        Width = mediaWidth,
+                        Height = mediaHeight
+                    };
+                }
 
-            ReencodeIfNeeded(ctx, new ReencodeOptions(
-                ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
-            ));
-            (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx);
-            ctx.Parameters = new Parameters(
-                Width: stageWidth,
-                Height: stageHeight,
-                Steps: ctx.Stage.Steps,
-                CfgScale: ctx.Stage.CfgScale,
-                Control: ctx.Stage.Control,
-                RefineOnly: ctx.Stage.RefineOnly,
-                Guidance: stage.Guidance,
-                Seed: stage.Seed,
-                Sampler: ctx.Stage.Sampler,
-                Scheduler: ctx.Stage.Scheduler
-            );
-            ctx.Conditioning = CreateConditioning(ctx, prompts);
-            ExecuteSampler(ctx);
+                ReencodeIfNeeded(ctx, new ReencodeOptions(
+                    ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
+                ));
+                (stageWidth, stageHeight) = ApplyEditUpscaleIfNeeded(ctx);
+                ctx.Parameters = new Parameters(
+                    Width: stageWidth,
+                    Height: stageHeight,
+                    Steps: ctx.Stage.Steps,
+                    CfgScale: ctx.Stage.CfgScale,
+                    Control: ctx.Stage.Control,
+                    RefineOnly: ctx.Stage.RefineOnly,
+                    Guidance: stage.Guidance,
+                    Seed: stage.Seed,
+                    Sampler: ctx.Stage.Sampler,
+                    Scheduler: ctx.Stage.Scheduler
+                );
+                ctx.Conditioning = CreateConditioning(ctx, prompts);
+                ExecuteSampler(ctx);
+            }
 
             if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
             {
@@ -782,6 +796,113 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 g.MaskShrunkInfo = savedMaskShrunkInfo;
             }
         }
+    }
+
+    /// <summary>Maps the parent stage's latent compat class to the PiD 'latent_format' enum value, or null if PiD can't decode it.</summary>
+    private static string MapPiDLatentFormat(T2IModelCompatClass compat)
+    {
+        string id = compat?.ID ?? "";
+        if (id.StartsWith("flux-2"))
+        {
+            return "flux2";
+        }
+        if (id == "flux-1")
+        {
+            return "flux1";
+        }
+        if (id.StartsWith("stable-diffusion-v3"))
+        {
+            return "sd3";
+        }
+        if (id == "z-image" || id == "zeta-chroma") // Z-Image uses the Flux.1 latent format
+        {
+            return "flux1";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Runs a PiD (Pixel Diffusion Decoder) edit stage. Mirrors the core refiner's PiD path: the parent stage's LDM latent
+    /// is attached via PiDConditioning, PiD generates a fresh 4x pixel-space target from noise, cfg is forced to 1.0
+    /// (distilled, CFG-distilled), and the result is left as a pixel-space latent for the shared decode tail.
+    /// </summary>
+    private (int Width, int Height) RunPiDEditStage(
+        EditStageContext ctx,
+        PromptParser.EditPrompts prompts,
+        WGNodeData parentLatent,
+        T2IModelCompatClass parentCompat,
+        int parentWidth,
+        int parentHeight)
+    {
+        string latentFormat = MapPiDLatentFormat(parentCompat);
+        if (parentLatent is null || latentFormat is null)
+        {
+            throw new SwarmReadableErrorException(
+                $"Base2Edit: A PiD edit model requires a Flux.1, Flux.2, SD3, or Z-Image parent latent, but the parent stage is '{parentCompat?.ID ?? "none"}'. "
+                + "PiD decodes another model's latent into a 4x image; it can't be chained after itself or run without a base.");
+        }
+
+        // PiD is a fixed 4x decoder-upscaler: target resolution is 4x the parent generation resolution.
+        int width = Math.Max(16, parentWidth * 4 / 16 * 16);
+        int height = Math.Max(16, parentHeight * 4 / 16 * 16);
+
+        ctx.Parameters = new Parameters(
+            Width: width,
+            Height: height,
+            Steps: ctx.Stage.Steps,
+            CfgScale: 1.0,
+            Control: ctx.Stage.Control,
+            RefineOnly: false,
+            Guidance: ctx.Stage.Guidance,
+            Seed: ctx.Stage.Seed,
+            Sampler: ctx.Stage.Sampler,
+            Scheduler: ctx.Stage.Scheduler);
+
+        WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        JArray positive = [BuildPromptEncoder(bridge, ctx.ModelState.Clip, prompts.Positive, ctx.Parameters), 0];
+        JArray negative = [BuildPromptEncoder(bridge, ctx.ModelState.Clip, prompts.Negative, ctx.Parameters), 0];
+
+        string pidCond = g.CreateNode("PiDConditioning", new JObject()
+        {
+            ["positive"] = positive,
+            ["latent"] = parentLatent.Path,
+            ["latent_format"] = latentFormat,
+            ["degrade_sigma"] = 0.0 // TODO: expose as a param; 0 = treat the parent latent as clean.
+        });
+        positive = [pidCond, 0];
+        ctx.Conditioning = new Conditioning(positive, negative);
+
+        int batch = g.UserInput.Get(T2IParamTypes.BatchSize, 1);
+        string pidLatent = g.CreateNode("EmptyChromaRadianceLatentImage", new JObject()
+        {
+            ["batch_size"] = batch,
+            ["width"] = width,
+            ["height"] = height
+        });
+
+        // PiD samples from full noise with cfg=1.0 (distilled), honoring the stage's Edit Sampler/Scheduler.
+        string samplerNode = g.CreateKSampler(
+            ctx.ModelState.Model.Path,
+            positive,
+            negative,
+            [pidLatent, 0],
+            1.0,
+            ctx.Stage.Steps,
+            0,
+            10000,
+            ctx.Stage.Seed,
+            returnWithLeftoverNoise: false,
+            addNoise: true,
+            explicitSampler: ctx.Stage.Sampler,
+            explicitScheduler: ctx.Stage.Scheduler,
+            sectionId: ctx.SectionId);
+
+        g.CurrentMedia = new WGNodeData([samplerNode, 0], g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat())
+        {
+            Width = width,
+            Height = height
+        };
+        return (width, height);
     }
 
     private void FinalizeOutput(EditStageContext ctx, bool isFinalStep, RunEditStageOptions options)
