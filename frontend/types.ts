@@ -15,6 +15,8 @@ export interface RootStage {
 export interface Stage {
     keepPreEditImage: boolean;
     refineOnly?: boolean;
+    expanded?: boolean;
+    skipped?: boolean;
     applyAfter: string;
     control: number;
     upscale: number;

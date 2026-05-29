@@ -22,7 +22,13 @@ jest.mock("./runEditOnly", () => ({
     runEditOnlyFromImage: jest.fn(),
 }));
 
-(globalThis as any).promptTabComplete = {
+type TestGlobal = typeof globalThis & {
+    promptTabComplete?: { registerPrefix: () => void };
+    postParamBuildSteps?: (() => void)[];
+};
+const testGlobal = globalThis as TestGlobal;
+
+testGlobal.promptTabComplete = {
     registerPrefix: jest.fn(),
 };
 
@@ -34,26 +40,22 @@ describe("tryRegisterStageEditor", () => {
     });
 
     it("returns false when postParamBuildSteps is undefined", () => {
-        delete (globalThis as { postParamBuildSteps?: unknown })
-            .postParamBuildSteps;
+        delete testGlobal.postParamBuildSteps;
         expect(tryRegisterStageEditor()).toBe(false);
     });
 
     it("returns false when postParamBuildSteps is null", () => {
-        (globalThis as { postParamBuildSteps?: unknown }).postParamBuildSteps =
-            null as unknown as undefined;
+        testGlobal.postParamBuildSteps = null;
         expect(tryRegisterStageEditor()).toBe(false);
     });
 
     it("returns false when postParamBuildSteps is a plain object", () => {
-        (globalThis as { postParamBuildSteps?: unknown }).postParamBuildSteps =
-            {} as unknown as undefined;
+        testGlobal.postParamBuildSteps = {} as unknown as (() => void)[];
         expect(tryRegisterStageEditor()).toBe(false);
     });
 
     it("returns false when postParamBuildSteps is a number", () => {
-        (globalThis as { postParamBuildSteps?: unknown }).postParamBuildSteps =
-            42 as unknown as undefined;
+        testGlobal.postParamBuildSteps = 42 as unknown as (() => void)[];
         expect(tryRegisterStageEditor()).toBe(false);
     });
 
@@ -63,16 +65,12 @@ describe("tryRegisterStageEditor", () => {
 
     it("pushes exactly one callback when postParamBuildSteps is an array", () => {
         tryRegisterStageEditor();
-        expect(
-            ((globalThis as any).postParamBuildSteps as unknown[]).length,
-        ).toBe(1);
+        expect(testGlobal.postParamBuildSteps.length).toBe(1);
     });
 
     it("pushed callback invokes editor.init() when called", () => {
         tryRegisterStageEditor();
-        const cb = (
-            (globalThis as any).postParamBuildSteps as Array<() => void>
-        )[0];
+        const cb = testGlobal.postParamBuildSteps[0];
         cb();
         expect(mockInit).toHaveBeenCalledTimes(1);
     });
@@ -82,9 +80,7 @@ describe("tryRegisterStageEditor", () => {
             throw new Error("boom");
         });
         tryRegisterStageEditor();
-        const cb = (
-            (globalThis as any).postParamBuildSteps as Array<() => void>
-        )[0];
+        const cb = testGlobal.postParamBuildSteps[0];
         const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
         try {
             expect(() => cb()).not.toThrow();

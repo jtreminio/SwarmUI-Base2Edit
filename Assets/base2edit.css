@@ -1,3 +1,111 @@
 #base2edit_stage_editor .input-group-content > div.auto-input {
     min-width: calc(max(14rem, 50% - 10px));
 }
+
+#base2edit_stage_editor {
+    --b2e-transition-surface: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+#base2edit_stage_editor .b2e-stage-card.input-group {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    margin-top: 1.2rem;
+    transition: var(--b2e-transition-surface);
+}
+
+#base2edit_stage_editor .b2e-stage-card.input-group-closed > .base2edit-stage-content {
+    display: none;
+}
+
+#base2edit_stage_editor .b2e-stage-card .input-group-header {
+    cursor: pointer;
+}
+
+#base2edit_stage_editor .b2e-stage-card-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+#base2edit_stage_editor .b2e-btn-tiny {
+    height: 22px;
+    min-width: 24px;
+    padding: 0 6px;
+    font-size: 12px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+#base2edit_stage_editor [data-base2edit-action="remove-stage"]:hover {
+    background-color: var(--danger-button-background);
+    color: var(--danger-button-foreground);
+    border-color: var(--danger-button-border);
+}
+
+#base2edit_stage_editor .b2e-btn-skip-active {
+    border-color: color-mix(in srgb, var(--bs-warning) 55%, var(--light-border) 45%);
+    background: color-mix(in srgb, var(--bs-warning) 24%, var(--background-panel) 76%);
+    color: var(--text);
+}
+
+#base2edit_stage_editor .b2e-btn-skip-active:hover {
+    border-color: color-mix(in srgb, var(--bs-warning) 70%, var(--light-border) 30%);
+    background: color-mix(in srgb, var(--bs-warning) 34%, var(--background-panel) 66%);
+}
+
+#base2edit_stage_editor .b2e-stage-card.b2e-skipped {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bs-warning) 20%, transparent);
+}
+
+#base2edit_stage_editor .b2e-stage-card.b2e-skipped .header-label {
+    text-decoration: line-through;
+    color: var(--text-soft);
+}
+
+#base2edit_stage_editor .b2e-stage-card.b2e-skipped > .base2edit-stage-content {
+    opacity: 0.45;
+    pointer-events: none;
+    filter: grayscale(0.6);
+}
+
+#base2edit_stage_editor .b2e-stage-card:has([data-base2edit-action="remove-stage"]:hover) {
+    border-color: color-mix(in srgb, var(--red) 50%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--red) 40%, transparent);
+}
+
+#base2edit_stage_editor .b2e-add-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px dashed var(--light-border);
+    background: transparent;
+    color: var(--text-soft);
+    border-radius: 6px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+#base2edit_stage_editor .b2e-add-btn:hover {
+    border-color: var(--emphasis);
+    color: var(--emphasis);
+    background: color-mix(in srgb, var(--emphasis) 8%, transparent);
+}
+
+#base2edit_stage_editor .b2e-add-btn-clip {
+    height: 36px;
+    margin-top: 1.2rem;
+}

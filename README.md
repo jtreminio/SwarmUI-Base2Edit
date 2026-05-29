@@ -79,3 +79,29 @@ If an override is disabled/unset, Base2Edit inherits defaults from the stage you
 - Any `<lora:...>` tags inside `<edit>` / `<edit[n]>` are stacked **on top** of the chosen model stack.
 - If you pick **(Use Base)** or **(Use Refiner)**, the edit stage inherits that stage's model + LoRA stack (including UI-confined LoRAs).
 - If you pick a specific model by name, Base2Edit loads that model and applies only **Global** UI LoRAs (plus any `<edit>` section LoRAs).
+
+# Development
+
+## Use ComfyTyped
+
+### Generate node definitions with ComfyTyped
+```
+cd /path/to/ComfyTyped
+dotnet build -c Release ComfyTyped.csproj
+cp bin/Release/net8.0/ComfyTyped.dll \
+    ../SwarmUI-Base2Edit/lib/ComfyTyped.dll
+
+dotnet run --project tools/ComfyTyped.CodeGen -- \
+    --comfy-json http://127.0.0.1:7801/ComfyBackendDirect/api/object_info \
+    --output ../SwarmUI-Base2Edit/src/Generated \
+    --namespace Base2Edit.Generated \
+    --core-assembly ../SwarmUI-Base2Edit/lib/ComfyTyped.dll
+```
+
+### Once ready to commit, prune unused node definitions
+```
+cd /path/to/ComfyTyped
+dotnet run --project tools/ComfyTyped.CodeGen -- prune \
+    --generated-dir ../SwarmUI-Base2Edit/src/Generated \
+    --source ../SwarmUI-Base2Edit/src
+```

@@ -214,6 +214,8 @@
       keepPreEditImage: utils.getInputElement("input_keeppreeditimage").checked,
       refineOnly: utils.getInputElement("input_refineonly").checked,
       applyAfter,
+      expanded: true,
+      skipped: false,
       control: parseFloat(
         utils.getInputElement("input_editcontrol").value
       ),
@@ -750,17 +752,41 @@
     editor2.innerHTML = "";
     editor2.appendChild(list);
     addRemoveBtnListener(list, deps);
+    addToggleStageBtnListener(list, deps);
+    addSkipStageBtnListener(list, deps);
     stages.forEach((stage, idx) => {
       const stageId = idx + 1;
+      const expanded = stage.expanded !== false;
+      const skipped = stage.skipped === true;
       const wrap = document.createElement("div");
-      wrap.className = "input-group input-group-open base2edit-stage-wrap";
-      wrap.classList.add("border", "rounded", "p-2", "mb-2");
+      wrap.className = "input-group base2edit-stage-wrap b2e-stage-card";
+      wrap.classList.add(
+        expanded ? "input-group-open" : "input-group-closed"
+      );
+      if (skipped) {
+        wrap.classList.add("b2e-skipped");
+      }
       wrap.id = `base2edit_stage_${stageId}`;
       wrap.dataset.base2editStageId = `${stageId}`;
       applyFullWidthLayout(wrap);
+      const collapseGlyph = expanded ? "&#x2B9F;" : "&#x2B9E;";
+      const collapseTitle = expanded ? "Minimize stage" : "Expand stage";
+      const skipTitle = skipped ? "Re-enable stage" : "Skip stage";
+      const skipVariant = skipped ? " b2e-btn-skip-active" : "";
       const header = document.createElement("span");
       header.className = "input-group-header input-group-noshrink";
-      header.innerHTML = `<span class="header-label-wrap"><span class="header-label">Edit Stage ${stageId}</span><span class="header-label-spacer"></span><button class="interrupt-button" title="Remove stage" data-base2edit-action="remove-stage" id="base2edit_remove_stage_${stageId}">×</button></span>`;
+      header.dataset.base2editAction = "toggle-stage";
+      header.title = collapseTitle;
+      header.innerHTML = `
+            <span class="header-label-wrap">
+                <span class="auto-symbol">${collapseGlyph}</span>
+                <span class="header-label">Edit Stage ${stageId}</span>
+                <span class="header-label-spacer"></span>
+                <span class="b2e-stage-card-actions">
+                    <button type="button" class="basic-button b2e-btn-tiny${skipVariant}" title="${skipTitle}" data-base2edit-action="skip-stage">&#x23ED;&#xFE0E;</button>
+                    <button class="interrupt-button b2e-btn-tiny" title="Remove stage" data-base2edit-action="remove-stage" id="base2edit_remove_stage_${stageId}">&times;</button>
+                </span>
+            </span>`;
       wrap.appendChild(header);
       const content = document.createElement("div");
       content.className = "input-group-content base2edit-stage-content";
@@ -810,7 +836,8 @@
       }
     });
     const addBtn = document.createElement("button");
-    addBtn.className = "basic-button";
+    addBtn.type = "button";
+    addBtn.className = "b2e-add-btn b2e-add-btn-clip";
     addBtn.innerText = "+ Add Edit Stage";
     addBtn.addEventListener("click", (e) => {
       e.preventDefault();
@@ -843,6 +870,68 @@
       const stageId = parseInt(rawId, 10);
       const stages = deps.getStages();
       stages.splice(stageId - 1, 1);
+      deps.saveStages(stages);
+      showStages(list.parentElement, deps);
+    });
+  };
+  var addToggleStageBtnListener = (list, deps) => {
+    list.addEventListener("click", (e) => {
+      const target = e.target;
+      if (target.closest(
+        '[data-base2edit-action="skip-stage"], [data-base2edit-action="remove-stage"]'
+      )) {
+        return;
+      }
+      const zone = target.closest('[data-base2edit-action="toggle-stage"]');
+      if (!zone) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      deps.serializeStagesFromUi();
+      const stageEl = zone.closest(
+        "[data-base2edit-stage-id]"
+      );
+      const rawId = stageEl?.dataset.base2editStageId;
+      if (!rawId) {
+        return;
+      }
+      const stageId = parseInt(rawId, 10);
+      const stages = deps.getStages();
+      const stage = stages[stageId - 1];
+      if (!stage) {
+        return;
+      }
+      stage.expanded = stage.expanded === false;
+      deps.saveStages(stages);
+      showStages(list.parentElement, deps);
+    });
+  };
+  var addSkipStageBtnListener = (list, deps) => {
+    list.addEventListener("click", (e) => {
+      const btn = e.target.closest(
+        '[data-base2edit-action="skip-stage"]'
+      );
+      if (!btn) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      deps.serializeStagesFromUi();
+      const stageEl = btn.closest(
+        "[data-base2edit-stage-id]"
+      );
+      const rawId = stageEl?.dataset.base2editStageId;
+      if (!rawId) {
+        return;
+      }
+      const stageId = parseInt(rawId, 10);
+      const stages = deps.getStages();
+      const stage = stages[stageId - 1];
+      if (!stage) {
+        return;
+      }
+      stage.skipped = stage.skipped !== true;
       deps.saveStages(stages);
       showStages(list.parentElement, deps);
     });

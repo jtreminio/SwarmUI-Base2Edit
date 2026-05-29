@@ -49,6 +49,8 @@ export const createStage = (applyAfter: string): Stage => {
             utils.getInputElement("input_refineonly") as HTMLInputElement
         ).checked,
         applyAfter: applyAfter,
+        expanded: true,
+        skipped: false,
         control: parseFloat(
             (utils.getInputElement("input_editcontrol") as HTMLInputElement)
                 .value,
