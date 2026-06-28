@@ -52,7 +52,7 @@ internal enum EditPhase
 public class EditStage
 {
     private const int BranchEditSaveId = 50300;
-
+    private const string FinalImageNodeId = "9";
     public readonly WorkflowGenerator g;
     public readonly StageRefStore store;
     private readonly StageRunner runner;
@@ -149,6 +149,11 @@ public class EditStage
             store.Capture(StageRefStore.StageKind.Edit, stage.Id);
         }
 
+        if (primaryChain.Count > 0 && (isFinalStep || !Base2EditSpecParser.HasRefinerPhaseWork(g)))
+        {
+            Base2EditExtension.RecordStageOutputNode(g, FinalImageNodeId, $"Edit Stage {primaryChain[^1].Id} (final output)");
+        }
+
         if (branchRoots.Count > 0)
         {
             WGNodeData primarySamples = WGNodeDataUtil.TryGetCurrentLatent(g);
@@ -222,8 +227,9 @@ public class EditStage
 
         if (!VaeNodeReuse.HasSaveForImage(g, branchImageOut.Path))
         {
-            WrapImage(branchImageOut.Path)
-                .SaveOutput(null, null, id: g.GetStableDynamicID(BranchEditSaveId, branchId));
+            string branchSaveNodeId = g.GetStableDynamicID(BranchEditSaveId, branchId);
+            WrapImage(branchImageOut.Path).SaveOutput(null, null, id: branchSaveNodeId);
+            Base2EditExtension.RecordStageOutputNode(g, branchSaveNodeId, $"Edit Stage {branchId} (branch output)");
         }
     }
 

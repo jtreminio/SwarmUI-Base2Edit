@@ -12,6 +12,8 @@ public class Base2EditExtension : Extension
     public const int SectionID_Edit = 48723;
     public const int EditSeedOffset = 2;
     public const string SeedVR2ModelParamName = "SeedVR2 Model";
+    public const string StageNodeMapKey = "base2edit_stage_nodes";
+    public const string StageMetadataKey = "Base2Edit Stage";
     public static int EditSectionIdForStage(int stageIndex) => SectionID_Edit + 1 + stageIndex;
     public static T2IParamGroup Base2EditGroup;
     public static T2IRegisteredParam<bool> KeepPreEditImage;
@@ -84,7 +86,41 @@ public class Base2EditExtension : Extension
         return T2IParamTypes.Types.ContainsKey(T2IParamTypes.CleanTypeName(SeedVR2ModelParamName));
     }
 
+    public static void RecordStageOutputNode(WorkflowGenerator g, string nodeId, string label)
+    {
+        if (string.IsNullOrEmpty(nodeId))
+        {
+            return;
+        }
+        if (!(g.UserInput.ExtraMeta.TryGetValue(StageNodeMapKey, out object raw) && raw is Dictionary<string, string> map))
+        {
+            map = [];
+            g.UserInput.ExtraMeta[StageNodeMapKey] = map;
+        }
+        map[nodeId] = label;
+    }
+
     private static void HandlePostGenerateMetadata(T2IEngine.PostGenerationEventParams evt)
+    {
+        ApplyStageOutputMetadata(evt);
+        ApplyResolvedEditModelMetadata(evt);
+    }
+
+    private static void ApplyStageOutputMetadata(T2IEngine.PostGenerationEventParams evt)
+    {
+        if (!evt.UserInput.ExtraMeta.Remove(StageNodeMapKey, out object raw))
+        {
+            return;
+        }
+        if (evt.ComfyNodeId is not null
+            && raw is Dictionary<string, string> map
+            && map.TryGetValue(evt.ComfyNodeId, out string label))
+        {
+            evt.UserInput.ExtraMeta[StageMetadataKey] = label;
+        }
+    }
+
+    private static void ApplyResolvedEditModelMetadata(T2IEngine.PostGenerationEventParams evt)
     {
         if (EditModel?.Type is null || EditModelResolvedForMetadata is null)
         {
