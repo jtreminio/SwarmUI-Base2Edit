@@ -23,7 +23,7 @@ internal static class Base2EditSpecParser
 
     public static List<StageSpec> Parse(WorkflowGenerator g)
     {
-        bool hasRefinerPhaseWork = HasRefinerStageConfigured(g) || HasSegmentApplyAfterRefiner(g);
+        bool hasRefinerPhaseWork = HasRefinerPhaseWork(g);
         bool seedVr2WillUpscale = HasSeedVR2UpscalePhase(g);
 
         Dictionary<int, StageSpec> stagesById = [];
@@ -406,6 +406,9 @@ internal static class Base2EditSpecParser
         }
         return StringUtils.Equals(stage.Trim(), "before_video");
     }
+
+    internal static bool HasRefinerPhaseWork(WorkflowGenerator g)
+        => HasRefinerStageConfigured(g) || HasSegmentApplyAfterRefiner(g);
 
     private static bool HasRefinerStageConfigured(WorkflowGenerator g)
     {
