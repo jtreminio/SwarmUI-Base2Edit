@@ -512,6 +512,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 && !VaeNodeReuse.HasSaveForImage(g, currentImageOut.Path))
             {
                 new WGNodeData(currentImageOut.Path, g, WGNodeData.DT_IMAGE, g.CurrentCompat()).SaveOutput(null, null, id: preEditSaveNodeId);
+                BridgeSync.SyncLastId(g);
             }
             Logs.Debug("Base2Edit: Saved pre-edit image");
         }
