@@ -1,5 +1,6 @@
 using ComfyTyped.Core;
 using ComfyTyped.Generated;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Base2Edit.Tests;
@@ -77,6 +78,16 @@ internal static class WorkflowAssertions
         IReadOnlyList<VAEDecodeNode> matches = WorkflowQuery.FindVaeDecodesBySamples(bridge, samples);
         Assert.Single(matches);
         return matches[0];
+    }
+
+    /// <summary>Compares node paths by value. Do NOT use Assert.Equal on two JArrays directly:
+    /// xUnit's comparer reports unequal JArrays as equal, silently passing the assertion.</summary>
+    public static void AssertPathEquals(JArray expected, JArray actual)
+    {
+        Assert.True(
+            JToken.DeepEquals(expected, actual),
+            $"Expected node path {expected?.ToString(Newtonsoft.Json.Formatting.None)} "
+            + $"but got {actual?.ToString(Newtonsoft.Json.Formatting.None)}.");
     }
 }
 

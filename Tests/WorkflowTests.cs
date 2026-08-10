@@ -233,7 +233,7 @@ public class WorkflowTests
         Assert.Equal(postEditDecode.Id, chainConsumer.Inputs.Single(i => i.Name == "image").Connection?.Node.Id);
 
         ComfyNode chainTail = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_B");
-        Assert.Equal(new JArray(chainTail.Id, 0), generator.CurrentMedia.Path);
+        WorkflowAssertions.AssertPathEquals(new JArray(chainTail.Id, 0), generator.CurrentMedia.Path);
     }
 
     [Fact]
@@ -273,7 +273,7 @@ public class WorkflowTests
 
         // The final image is the edit's decode, so SaveImage (priority 10) persists the post-SeedVR2 edit.
         VAEDecodeNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, sampler.Outputs[0]);
-        Assert.Equal(new JArray(postEditDecode.Id, 0), generator.CurrentMedia.Path);
+        WorkflowAssertions.AssertPathEquals(new JArray(postEditDecode.Id, 0), generator.CurrentMedia.Path);
     }
 
     [Fact]
@@ -356,8 +356,11 @@ public class WorkflowTests
     }
 
     [Fact]
-    public void EditStage_refiner_hook_infers_downstream_tail_when_final_imageout_was_not_set()
+    public void EditStage_refiner_hook_keeps_edit_output_when_chain_never_took_over_final_media()
     {
+        // A downstream image chain consumes the edit output but never assigns g.CurrentMedia
+        // to its tail (mimics extensions that leave the final media stale). The chain is a side
+        // output: the hook keeps the final media anchored on a decode of the edit sampler.
         T2IParamInput input = BuildEditInput("Refiner");
 
         IEnumerable<WorkflowGenerator.WorkflowGenStep> steps =
@@ -386,12 +389,13 @@ public class WorkflowTests
         (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        ComfyNode tail = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_Tail");
-        Assert.Equal(new JArray(tail.Id, 0), generator.CurrentMedia.Path);
+        KSamplerAdvancedNode sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
+        VAEDecodeNode finalDecode = Assert.IsType<VAEDecodeNode>(bridge.NodeAt(generator.CurrentMedia.Path));
+        Assert.Equal(sampler.Id, finalDecode.Samples.Connection?.Node.Id);
     }
 
     [Fact]
-    public void EditStage_refiner_hook_cleanup_removes_orphan_preedit_decode_in_refiner_shape()
+    public void EditStage_refiner_hook_preserves_drifted_image_chain_when_no_refiner_stages_run()
     {
         T2IParamInput input = BuildEditInput("Refiner");
 
@@ -425,13 +429,17 @@ public class WorkflowTests
             }
             .Concat(WorkflowTestHarness.Base2EditSteps());
 
-        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, steps);
+        (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, steps);
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
         KSamplerAdvancedNode sampler = WorkflowAssertions.RequireNodeOfType<KSamplerAdvancedNode>(bridge);
-        _ = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, sampler.Outputs[0]);
         ComfyNode chainConsumer = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_A");
         Assert.Equal(sampler.Id, chainConsumer.Inputs.Single(i => i.Name == "image").Connection?.Node.Id);
+
+        Assert.Empty(WorkflowQuery.FindVaeDecodesBySamples(bridge, sampler.Outputs[0]));
+
+        ComfyNode chainTail = WorkflowAssertions.RequireNodeOfType(bridge, "UnitTest_SeedVR2Like_B");
+        WorkflowAssertions.AssertPathEquals(new JArray(chainTail.Id, 0), generator.CurrentMedia.Path);
     }
 
     [Fact]
@@ -1380,5 +1388,68 @@ public class WorkflowTests
 
         Assert.Equal(loader.Id, modelUpscale.UpscaleModel.Connection?.Node.Id);
         Assert.Equal(modelUpscale.Id, imageScale.Image.Connection?.Node.Id);
+    }
+
+    [Fact]
+    public void EditControl_zero_with_pixel_upscale_skips_sampler_and_reencode()
+    {
+        // Edit Control 0 + a pixel upscale method: no edit-stage sampler should be created,
+        // the ImageScale upscale still runs, and the upscaled image must not be round-tripped
+        // through a VAEEncode (no re-encode back to latent) before being handed off.
+        // Mirrors the reported payload: "Apply Edit After: Refiner" with no refiner configured
+        // (stage downgrades to the base phase) and Keep Pre-Edit Image enabled. The later
+        // refiner hook must not re-anchor the final media back behind the upscale.
+        T2IParamInput input = BuildEditInput("Refiner");
+        input.Set(Base2EditExtension.EditControl, 0.0);
+        input.Set(Base2EditExtension.EditUpscale, 2.0);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+        input.Set(Base2EditExtension.KeepPreEditImage, true);
+
+        (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        Assert.Empty(WorkflowQuery.Samplers(bridge));
+
+        ImageScaleNode imageScale = WorkflowAssertions.RequireNodeOfType<ImageScaleNode>(bridge);
+        Assert.Empty(bridge.Graph.NodesOfType<VAEEncodeNode>());
+
+        WorkflowAssertions.AssertPathEquals(new JArray(imageScale.Id, 0), generator.CurrentMedia.Path);
+    }
+
+    [Fact]
+    public void EditControl_zero_with_upscale_one_still_creates_sampler()
+    {
+        // Documented contract: Control 0 only skips sampling when an upscale is also
+        // requested (Upscale != 1). With Upscale left at its default of 1, the edit-stage
+        // sampler must still be created (it just runs with start step == steps).
+        T2IParamInput input = BuildEditInput("Base");
+        input.Set(Base2EditExtension.EditControl, 0.0);
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        ComfyNode sampler = RequireSingleSampler(bridge);
+        Assert.NotNull(sampler);
+    }
+
+    [Fact]
+    public void EditControl_zero_with_latent_upscale_skips_sampler_and_decodes_upscaled_latent()
+    {
+        // Edit Control 0 + a latent- upscale method: no edit-stage sampler should be
+        // created, the LatentUpscaleBy node still runs, and its output is decoded straight
+        // to the final image (the latent path still produces a latent for FinalizeOutput
+        // to decode; it is not skipped like the pixel/model paths).
+        T2IParamInput input = BuildEditInput("Base");
+        input.Set(Base2EditExtension.EditControl, 0.0);
+        input.Set(Base2EditExtension.EditUpscale, 2.0);
+        input.Set(Base2EditExtension.EditUpscaleMethod, "latent-nearest-exact");
+
+        JObject workflow = WorkflowTestHarness.GenerateWithSteps(input, BaseSteps());
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        Assert.Empty(WorkflowQuery.Samplers(bridge));
+
+        LatentUpscaleByNode latentUpscale = WorkflowAssertions.RequireNodeOfType<LatentUpscaleByNode>(bridge);
+        WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, latentUpscale.Outputs[0]);
     }
 }

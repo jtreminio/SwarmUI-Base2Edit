@@ -89,7 +89,7 @@ export const buildFieldsForStage = (
                 id: "editcontrol",
                 name: "Edit Control",
                 description:
-                    "Controls how much of the edit sampling is applied.",
+                    "Controls how much of the edit sampling is applied. At 0 (with Edit Upscale set), sampling is skipped and only the upscale runs.",
                 type: "decimal",
                 default: `${stage.control}`,
                 min: rootStage.control.min,

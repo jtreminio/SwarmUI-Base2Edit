@@ -421,4 +421,36 @@ public class Base2EditSpecParserTests
 
         Assert.Equal(ParentKind.Base, stage0.ParentKind);
     }
+
+    [Fact]
+    public void Stage0_rootEditControlZero_isAccepted()
+    {
+        // Edit Control's Min was relaxed from 0.1 to 0; the parser/root path must accept
+        // and preserve 0 rather than clamping it back up.
+        using SwarmUiTestContext _ = new();
+        T2IParamInput input = BuildBaseInput();
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditControl, 0.0);
+
+        StageSpec stage0 = ParseStage0(input);
+
+        Assert.Equal(0.0, stage0.Control);
+    }
+
+    [Fact]
+    public void EditStage_jsonControlZero_isAccepted_notNormalizedUp()
+    {
+        // A stage card with Control 0 must survive NormalizeControl's Clamp(control, 0, 1)
+        // as exactly 0, not get pulled up to some minimum.
+        using SwarmUiTestContext _ = new();
+        T2IParamInput input = BuildBaseInput();
+        input.Set(Base2EditExtension.EditModel, ModelPrep.UseBase);
+        input.Set(Base2EditExtension.EditStages,
+            "[{\"ApplyAfter\":\"Edit Stage 0\",\"Model\":\"" + ModelPrep.UseBase + "\",\"Control\":0}]");
+
+        List<StageSpec> stages = Base2EditSpecParser.Parse(MakeGenerator(input));
+        StageSpec stage1 = stages.Single(s => s.Id == 1);
+
+        Assert.Equal(0.0, stage1.Control);
+    }
 }

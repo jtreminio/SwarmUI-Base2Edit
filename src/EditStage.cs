@@ -308,6 +308,20 @@ public class EditStage
             return;
         }
 
+        // A raw image produced by something other than a VAE decode (e.g. an upscale's ImageScale)
+        // means image-space processing happened after the last decode; re-anchoring upstream would
+        // discard that processing from the final output. Keep the image, only resolve its dimensions.
+        if (g.CurrentMedia?.IsRawMedia == true)
+        {
+            using WorkflowBridge checkBridge = WorkflowBridge.Create(g.Workflow);
+            if (checkBridge.NodeAt(g.CurrentMedia.Path) is not (null or IVaeDecode))
+            {
+                (int width, int height) = ResolveImageDimensionsForAnchor(checkBridge, g.CurrentMedia);
+                ApplyAnchorDimensions(Math.Max(width, 16), Math.Max(height, 16));
+                return;
+            }
+        }
+
         WGNodeData currentImageOut = g.CurrentMedia?.AsRawImage(g.CurrentVae);
         if (currentImageOut is null)
         {

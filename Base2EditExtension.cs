@@ -187,9 +187,10 @@ public class Base2EditExtension : Extension
             Description: "Controls how much of the edit sampling is applied.\n"
                 + "At 1.0, full edit steps are run.\n"
                 + "At 0.5, only 50% of edit steps are run from the midpoint.\n"
-                + "Lower values preserve more of the original image.",
+                + "Lower values preserve more of the original image.\n"
+                + "At 0, edit sampling is skipped entirely; if Edit Upscale is set, only the upscale is applied.",
             Default: "1",
-            Min: 0.1,
+            Min: 0,
             Max: 1,
             Step: 0.05,
             ViewType: ParamViewType.SLIDER,

@@ -87,7 +87,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             ReencodeIfNeeded(ctx, new ReencodeOptions(
                 ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
             ));
-            (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx);
+            bool skipSampler = ctx.Stage.Control == 0 && ctx.Stage.Upscale != 1;
+            (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx, skipLatentEncode: skipSampler);
             ctx.Parameters = new Parameters(
                 Width: stageWidth,
                 Height: stageHeight,
@@ -100,15 +101,22 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 Sampler: ctx.Stage.Sampler,
                 Scheduler: ctx.Stage.Scheduler
             );
-            ctx.Conditioning = CreateConditioning(ctx, prompts);
-            ExecuteSampler(ctx);
+            if (skipSampler)
+            {
+                Logs.Debug($"Base2Edit: Stage {stageIndex} has Edit Control 0; skipping edit sampling (upscale only).");
+            }
+            else
+            {
+                ctx.Conditioning = CreateConditioning(ctx, prompts);
+                ExecuteSampler(ctx);
+            }
 
             if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
             {
                 g.CurrentVae = new WGNodeData(ctx.ModelState.Vae.Path, g, WGNodeData.DT_VAE, g.CurrentCompat());
             }
 
-            FinalizeOutput(ctx, isFinalStep, options);
+            FinalizeOutput(ctx, isFinalStep, options, skipSampler);
 
             if (isFinalStep && options.RewireFinalConsumers)
             {
@@ -784,9 +792,14 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
     }
 
-    private void FinalizeOutput(EditStageContext ctx, bool isFinalStep, RunEditStageOptions options)
+    private void FinalizeOutput(EditStageContext ctx, bool isFinalStep, RunEditStageOptions options, bool samplerSkipped)
     {
         if (!isFinalStep)
+        {
+            return;
+        }
+
+        if (samplerSkipped && g.CurrentMedia?.IsRawMedia == true)
         {
             return;
         }
@@ -818,7 +831,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
     }
 
-    private (int Width, int Height) ApplyEditUpscaleIfNeeded(EditStageContext ctx)
+    private (int Width, int Height) ApplyEditUpscaleIfNeeded(EditStageContext ctx, bool skipLatentEncode)
     {
         WGNodeData stageVae = ctx.ModelState.Vae;
         int baseWidth = Math.Max(g.CurrentMedia?.Width ?? g.UserInput.GetImageWidth(), 16);
@@ -879,6 +892,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 Width = width,
                 Height = height
             };
+
+            if (skipLatentEncode)
+            {
+                return (width, height);
+            }
 
             if (VaeNodeReuse.ReuseVaeEncodeForImage(g, upscaledImageRef, stageVae.Path, out INodeOutput reusedSamples))
             {
@@ -954,6 +972,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 Width = width,
                 Height = height
             };
+
+            if (skipLatentEncode)
+            {
+                return (width, height);
+            }
 
             if (VaeNodeReuse.ReuseVaeEncodeForImage(g, upscaledImageRef, stageVae.Path, out INodeOutput reusedPidSamples))
             {
