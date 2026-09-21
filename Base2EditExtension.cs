@@ -58,6 +58,7 @@ public class Base2EditExtension : Extension
     {
         Logs.Info("Base2Edit Extension initializing...");
         ComfyTyped.Generated.NodeRegistrations.EnsureRegistered();
+        Generated.NodeRegistrations.EnsureRegistered();
         RegisterParameters();
         if (!_postGenerateHookRegistered)
         {

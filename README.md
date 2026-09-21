@@ -54,6 +54,9 @@ When two or more edit stages share the same start (e.g. both "After Refiner"), t
 
 The base model (and refiner if you enabled it) generates the girl, then the edit stage transforms it into a photo.
 
+Qwen Image 2.1 can be selected as the **Edit Model** with a SwarmUI/ComfyUI version that supports it.
+The edit stage sends its input image and any `<b2eimage[...]>` references to Qwen's vision encoder and both conditioning branches. **Refine Only** disables these image references.
+
 ## Options
 
 - **Keep Pre-Edit Image** - Save the image before editing so you can compare
