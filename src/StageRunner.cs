@@ -7,7 +7,7 @@ using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using Image = SwarmUI.Utils.Image;
-using SwarmTextEncodeAdvancedNode = Base2Edit.Generated.SwarmTextEncodeAdvancedNode;
+using TextEncodeQwenImage21Node = Base2Edit.Generated.TextEncodeQwenImage21Node;
 
 namespace Base2Edit;
 
@@ -663,36 +663,17 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         PromptParser.ImagePromptParseResult imageRefs,
         StageResolver resolver)
     {
-        WGNodeData vae = ctx.ModelState.Vae;
         List<JArray> images = [];
-        List<JArray> latents = [];
         if (!ctx.Parameters.RefineOnly)
         {
             images = resolver.ResolveImagePixels(imageRefs.References, ctx.Stage.Id);
-            JArray currentSamples = TryEnsureCurrentSamplesForEdit(vae);
             JArray currentImage = StageResolver.TryFindExistingImage(g, g.CurrentMedia)
-                ?? g.CurrentMedia?.AsRawImage(vae)?.Path;
+                ?? g.CurrentMedia?.AsRawImage(ctx.ModelState.Vae)?.Path;
             if (currentImage is not null)
             {
                 // Keep the implicit stage anchor last, matching the other edit paths.
                 images.RemoveAll(image => JToken.DeepEquals(image, currentImage));
                 images.Add(currentImage);
-            }
-            foreach (JArray image in images)
-            {
-                if (currentSamples is not null && JToken.DeepEquals(image, currentImage))
-                {
-                    latents.Add(currentSamples);
-                }
-                else if (VaeNodeReuse.ReuseVaeEncodeForImage(g, image, vae.Path, out INodeOutput reused))
-                {
-                    latents.Add(reused.ToPath());
-                }
-                else
-                {
-                    latents.Add(new WGNodeData(image, g, WGNodeData.DT_IMAGE, g.CurrentCompat())
-                        .EncodeToLatent(vae).Path);
-                }
             }
         }
         else if (imageRefs.References.Count > 0)
@@ -701,24 +682,17 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         using WorkflowBridge bridge = BridgeSync.For(g);
-        JArray imageBatch = images.FirstOrDefault();
-        foreach (JArray image in images.Skip(1))
+        TextEncodeQwenImage21Node encoder = bridge.AddNode(new TextEncodeQwenImage21Node());
+        encoder.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
+        encoder.Vae.ConnectFromPath(bridge, ctx.ModelState.Vae.Path);
+        encoder.Prompt.Set(prompts.Positive);
+        encoder.NegativePrompt.Set(prompts.Negative);
+        encoder.Resolution.Set(0L);
+        foreach (JArray image in images)
         {
-            BatchImagesNodeNode batch = bridge.AddNode(new BatchImagesNodeNode());
-            batch.Images.AddFromUntyped(bridge.ResolvePath(imageBatch));
-            batch.Images.AddFromUntyped(bridge.ResolvePath(image));
-            imageBatch = batch.IMAGE.ToPath();
+            encoder.Images.AddFromUntyped(bridge.ResolvePath(image));
         }
-
-        JArray positive = [BuildPromptEncoder(bridge, ctx.ModelState.Clip, prompts.Positive, ctx.Parameters, imageBatch), 0];
-        JArray negative = [BuildPromptEncoder(bridge, ctx.ModelState.Clip, prompts.Negative, ctx.Parameters, imageBatch), 0];
-        // The vision encoder and both CFG branches must see the same ordered references.
-        foreach (JArray latent in latents)
-        {
-            positive = [AddReferenceLatent(bridge, positive, latent), 0];
-            negative = [AddReferenceLatent(bridge, negative, latent), 0];
-        }
-        return new Conditioning(positive, negative);
+        return new Conditioning(encoder.Positive.ToPath(), encoder.Negative.ToPath());
     }
 
     private Conditioning CreateHiDreamO1Conditioning(
@@ -777,27 +751,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WorkflowBridge bridge,
         WGNodeData clip,
         string prompt,
-        Parameters editParams,
-        JArray images = null)
+        Parameters editParams)
     {
-        if (g.IsQwenImage21())
-        {
-            SwarmTextEncodeAdvancedNode visionNode = bridge.AddNode(
-                new SwarmTextEncodeAdvancedNode().With(
-                    Steps: editParams.Steps,
-                    Prompt: prompt,
-                    Width: editParams.Width,
-                    Height: editParams.Height,
-                    TargetWidth: editParams.Width,
-                    TargetHeight: editParams.Height));
-            visionNode.Clip.ConnectFromPath(bridge, clip.Path);
-            if (images is not null)
-            {
-                visionNode.Images.ConnectFromPath(bridge, images);
-            }
-            return visionNode.Id;
-        }
-
         SwarmClipTextEncodeAdvancedNode node = bridge.AddNode(
             new SwarmClipTextEncodeAdvancedNode().With(
                 Steps: editParams.Steps,

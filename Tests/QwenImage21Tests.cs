@@ -7,7 +7,7 @@ using SwarmUI.Media;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using Xunit;
-using SwarmTextEncodeAdvancedNode = Base2Edit.Generated.SwarmTextEncodeAdvancedNode;
+using TextEncodeQwenImage21Node = Base2Edit.Generated.TextEncodeQwenImage21Node;
 
 namespace Base2Edit.Tests;
 
@@ -52,60 +52,20 @@ public class QwenImage21Tests
         g.MaskShrunkInfo = new(null, null, null, cropped);
     }, -800);
 
-    private static (SwarmTextEncodeAdvancedNode Encoder, List<INodeOutput> Latents) ReadConditioning(INodeOutput output)
+    private static (TextEncodeQwenImage21Node Encoder, List<INodeOutput> Images) AssertMatchingReferences(
+        WorkflowBridge bridge, KSamplerAdvancedNode sampler, int count)
     {
-        List<INodeOutput> latents = [];
-        while (output.Node is ReferenceLatentNode reference)
-        {
-            latents.Insert(0, reference.Latent.Connection);
-            output = reference.Conditioning.Connection;
-        }
-        return (Assert.IsType<SwarmTextEncodeAdvancedNode>(output.Node), latents);
-    }
-
-    private static List<INodeOutput> ReadImages(INodeOutput output)
-    {
-        if (output is null)
-        {
-            return [];
-        }
-        if (output.Node is BatchImagesNodeNode batch)
-        {
-            return batch.Images.Items.SelectMany(item => ReadImages(item.Connection)).ToList();
-        }
-        return [output];
-    }
-
-    private static (List<INodeOutput> Images, List<INodeOutput> Latents) AssertMatchingReferences(KSamplerAdvancedNode sampler, int count)
-    {
-        var positive = ReadConditioning(sampler.Positive.Connection);
-        var negative = ReadConditioning(sampler.Negative.Connection);
-        Assert.Equal(count, positive.Latents.Count);
-        Assert.Equal(positive.Latents, negative.Latents);
-        Assert.Same(positive.Encoder.Images.Connection, negative.Encoder.Images.Connection);
-        List<INodeOutput> images = ReadImages(positive.Encoder.Images.Connection);
+        TextEncodeQwenImage21Node encoder = Assert.IsType<TextEncodeQwenImage21Node>(sampler.Positive.Connection.Node);
+        Assert.Same(encoder.Positive, sampler.Positive.Connection);
+        Assert.Same(encoder.Negative, sampler.Negative.Connection);
+        Assert.Equal(0L, encoder.Resolution.LiteralAsLong());
+        List<INodeOutput> images = encoder.Images.Items.Select(item => item.Connection).ToList();
         Assert.Equal(count, images.Count);
         Assert.DoesNotContain(images, image => image.Node.Id is "50" or "51");
-        for (int i = 0; i < count; i++)
-        {
-            if (images[i].Node is VAEDecodeNode decode)
-            {
-                // The current stage can retain its original latent; other references may be encoded anew.
-                if (positive.Latents[i].Node is VAEEncodeNode encode)
-                {
-                    Assert.Same(images[i], encode.Pixels.Connection);
-                }
-                else
-                {
-                    Assert.Same(decode.Samples.Connection, positive.Latents[i]);
-                }
-            }
-            else
-            {
-                Assert.Same(images[i], Assert.IsType<VAEEncodeNode>(positive.Latents[i].Node).Pixels.Connection);
-            }
-        }
-        return (images, positive.Latents);
+        Assert.Empty(bridge.Graph.NodesOfType<BatchImagesNodeNode>());
+        Assert.Empty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
+        Assert.Empty(bridge.Graph.NodesOfType<Base2Edit.Generated.SwarmTextEncodeAdvancedNode>());
+        return (encoder, images);
     }
 
     [Theory]
@@ -121,10 +81,9 @@ public class QwenImage21Tests
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
         KSamplerAdvancedNode sampler = Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>());
-        var references = AssertMatchingReferences(sampler, 1);
-        Assert.Same(sampler.LatentImage.Connection, references.Latents[0]);
-        Assert.Equal("make it blue", ReadConditioning(sampler.Positive.Connection).Encoder.Prompt.LiteralAsString()?.Trim());
-        Assert.Equal("blurry", ReadConditioning(sampler.Negative.Connection).Encoder.Prompt.LiteralAsString()?.Trim());
+        var references = AssertMatchingReferences(bridge, sampler, 1);
+        Assert.Equal("make it blue", references.Encoder.Prompt.LiteralAsString()?.Trim());
+        Assert.Equal("blurry", references.Encoder.NegativePrompt.LiteralAsString()?.Trim());
         Assert.Equal("50", generator.BasicInputImage.Path[0].ToString());
         Assert.Equal("51", generator.MaskShrunkInfo.ScaledImage);
     }
@@ -150,10 +109,10 @@ public class QwenImage21Tests
         Assert.Equal(2, samplers.Count);
         KSamplerAdvancedNode first = samplers.Single(s => s.LatentImage.Connection.Node.Id == "10");
         KSamplerAdvancedNode second = samplers.Single(s => s.LatentImage.Connection == first.Outputs[0]);
-        AssertMatchingReferences(first, 1);
-        var references = AssertMatchingReferences(second, 2);
+        AssertMatchingReferences(bridge, first, 1);
+        var references = AssertMatchingReferences(bridge, second, 2);
         Assert.Equal("10", Assert.IsType<VAEDecodeNode>(references.Images[0].Node).Samples.Connection.Node.Id);
-        Assert.Same(first.Outputs[0], references.Latents[1]);
+        Assert.Same(first.Outputs[0], Assert.IsType<VAEDecodeNode>(references.Images[1].Node).Samples.Connection);
     }
 
     [Fact]
@@ -202,16 +161,16 @@ public class QwenImage21Tests
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
         KSamplerAdvancedNode sampler = Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>());
-        var references = AssertMatchingReferences(sampler, 1);
+        var references = AssertMatchingReferences(bridge, sampler, 1);
         VAEDecodeNode source = Assert.IsType<VAEDecodeNode>(references.Images[0].Node);
         Assert.Equal("4", source.Vae.Connection.Node.Id);
         Assert.Equal("10", source.Samples.Connection.Node.Id);
-        VAEEncodeNode converted = Assert.IsType<VAEEncodeNode>(references.Latents[0].Node);
+        VAEEncodeNode converted = Assert.IsType<VAEEncodeNode>(sampler.LatentImage.Connection.Node);
         VAELoaderNode editVae = Assert.Single(bridge.Graph.NodesOfType<VAELoaderNode>());
         Assert.Same(editVae.Outputs[0], converted.Vae.Connection);
-        Assert.Same(converted.Outputs[0], sampler.LatentImage.Connection);
+        Assert.Same(editVae.Outputs[0], references.Encoder.Vae.Connection);
         CLIPLoaderNode editClip = Assert.Single(bridge.Graph.NodesOfType<CLIPLoaderNode>());
-        Assert.Same(editClip.Outputs[0], ReadConditioning(sampler.Positive.Connection).Encoder.Clip.Connection);
+        Assert.Same(editClip.Outputs[0], references.Encoder.Clip.Connection);
     }
 
     [Fact]
@@ -226,10 +185,10 @@ public class QwenImage21Tests
             WorkflowTestHarness.Template_BaseOnlyLatents().Append(OriginalInputsStep()).Concat(WorkflowTestHarness.Base2EditSteps()));
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
-        var references = AssertMatchingReferences(Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>()), 2);
-        VAEEncodeNode encodedPrompt = Assert.IsType<VAEEncodeNode>(references.Latents[0].Node);
-        Assert.Equal("4", encodedPrompt.Vae.Connection.Node.Id);
-        Assert.Equal(2, encodedPrompt.Vae.Connection.SlotIndex);
+        var references = AssertMatchingReferences(bridge, Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>()), 2);
+        Assert.IsType<LoadImageNode>(references.Images[0].Node);
+        Assert.Equal("4", references.Encoder.Vae.Connection.Node.Id);
+        Assert.Equal(2, references.Encoder.Vae.Connection.SlotIndex);
         Assert.Same(promptImage, Assert.Single(generator.UserInput.Get(T2IParamTypes.PromptImages)));
     }
 
@@ -244,6 +203,45 @@ public class QwenImage21Tests
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
         Assert.Empty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
-        AssertMatchingReferences(Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>()), 0);
+        AssertMatchingReferences(bridge, Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>()), 0);
+    }
+
+    [Theory]
+    [InlineData("Base", 0.9, 2)]
+    [InlineData("Refiner", 0.9, 2)]
+    [InlineData("Refiner", 1.0, 0)]
+    public void Different_sized_identity_and_scene_references_stay_separate_and_preserve_edit_control(
+        string applyAfter, double control, int startStep)
+    {
+        using SwarmUiTestContext _ = new();
+        const string editPrompt = "Replace the person in <image2> with the person from <image1>.";
+        T2IParamInput input = BuildInput($"young man <edit><b2eimage[prompt0]>{editPrompt}");
+        input.Set(T2IParamTypes.Width, 832);
+        input.Set(T2IParamTypes.Height, 1216);
+        input.Set(T2IParamTypes.NegativePrompt, "");
+        input.Set(Base2EditExtension.ApplyEditAfter, applyAfter);
+        input.Set(Base2EditExtension.EditControl, control);
+        input.Set(Base2EditExtension.EditSteps, 20);
+        using SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgb24> reference = new(1220, 1850);
+        Image promptImage = new(reference);
+        input.Set(T2IParamTypes.PromptImages, new List<Image> { promptImage });
+
+        (JObject workflow, WorkflowGenerator generator) = WorkflowTestHarness.GenerateWithStepsAndState(input,
+            WorkflowTestHarness.Template_BaseOnlyLatents().Concat(WorkflowTestHarness.Base2EditSteps()));
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+
+        KSamplerAdvancedNode sampler = Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>());
+        var references = AssertMatchingReferences(bridge, sampler, 2);
+        LoadImageNode upload = Assert.IsType<LoadImageNode>(references.Images[0].Node);
+        VAEDecodeNode scene = Assert.IsType<VAEDecodeNode>(references.Images[1].Node);
+        Assert.Same(sampler.LatentImage.Connection, scene.Samples.Connection);
+        JObject encoderInputs = (JObject)workflow[references.Encoder.Id]["inputs"];
+        Assert.Equal(new JArray(upload.Id, 0), encoderInputs["images.image_1"]);
+        Assert.Equal(new JArray(scene.Id, 0), encoderInputs["images.image_2"]);
+        Assert.Equal(editPrompt, references.Encoder.Prompt.LiteralAsString());
+        Assert.Equal("", references.Encoder.NegativePrompt.LiteralAsString());
+        Assert.Equal((long)startStep, sampler.StartAtStep.LiteralAsLong());
+        Assert.Equal(832, generator.CurrentMedia.Width);
+        Assert.Equal(1216, generator.CurrentMedia.Height);
     }
 }
