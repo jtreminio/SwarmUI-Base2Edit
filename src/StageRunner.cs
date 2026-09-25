@@ -630,9 +630,28 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         JArray currentStageSamples = !editParams.RefineOnly
             ? TryEnsureCurrentSamplesForEdit(currentStageVae)
             : null;
+        List<JArray> mingImages = [];
+        if (g.IsMingImage() && !editParams.RefineOnly
+            && (ComfyUIBackendExtension.TextEncodedImage is null
+                || g.UserInput.Get(ComfyUIBackendExtension.TextEncodedImage, "auto") != "none"))
+        {
+            mingImages = resolver.ResolveImagePixels(imageRefs.References, stageIndex);
+            JArray currentImage = StageResolver.TryFindExistingImage(g, g.CurrentMedia)
+                ?? g.CurrentMedia?.AsRawImage(currentStageVae)?.Path;
+            if (currentImage is not null)
+            {
+                mingImages.RemoveAll(image => JToken.DeepEquals(image, currentImage));
+                mingImages.Add(currentImage);
+                if (mingImages.Count > 8)
+                {
+                    // Keep the current edit input in Ming's eight-image encoder limit.
+                    mingImages.RemoveRange(7, mingImages.Count - 8);
+                }
+            }
+        }
 
         using WorkflowBridge bridge = BridgeSync.For(g);
-        JArray positiveConditioning = [BuildPromptEncoder(bridge, clip, cleanedPrompts.Positive, editParams), 0];
+        JArray positiveConditioning = [BuildPromptEncoder(bridge, clip, cleanedPrompts.Positive, editParams, mingImages), 0];
 
         if (!editParams.RefineOnly)
         {
@@ -751,7 +770,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         WorkflowBridge bridge,
         WGNodeData clip,
         string prompt,
-        Parameters editParams)
+        Parameters editParams,
+        List<JArray> mingImages = null)
     {
         SwarmClipTextEncodeAdvancedNode node = bridge.AddNode(
             new SwarmClipTextEncodeAdvancedNode().With(
@@ -763,6 +783,38 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 TargetHeight: editParams.Height,
                 Guidance: editParams.Guidance));
         node.Clip.ConnectFromPath(bridge, clip.Path);
+        if (mingImages is { Count: > 0 })
+        {
+            // Ming's text encoder accepts one image batch, with up to eight images.
+            // Scale before batching so references from different stages can share a batch.
+            JArray imageBatch = null;
+            foreach (JArray image in mingImages.Take(8))
+            {
+                JArray imagePath = image;
+                if (mingImages.Count > 1)
+                {
+                    ImageScaleNode scaled = bridge.AddNode(new ImageScaleNode().With(
+                        UpscaleMethod: ImageScaleNode.UpscaleMethodValues.Lanczos,
+                        Width: editParams.Width,
+                        Height: editParams.Height,
+                        Crop: ImageScaleNode.CropValues.Disabled));
+                    scaled.Image.ConnectFromPath(bridge, image);
+                    imagePath = scaled.IMAGE.ToPath();
+                }
+                if (imageBatch is null)
+                {
+                    imageBatch = imagePath;
+                }
+                else
+                {
+                    ImageBatchNode batch = bridge.AddNode(new ImageBatchNode());
+                    batch.Image1.ConnectFromPath(bridge, imageBatch);
+                    batch.Image2.ConnectFromPath(bridge, imagePath);
+                    imageBatch = batch.IMAGE.ToPath();
+                }
+            }
+            node.Images.ConnectFromPath(bridge, imageBatch);
+        }
         return node.Id;
     }
 
@@ -982,7 +1034,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 UpscaleMethod: latentMethod,
                 ScaleBy: upscale));
             latentUpscale.Samples.ConnectFromPath(bridge, g.CurrentMedia.Path);
-            g.CurrentMedia = g.CurrentMedia.WithPath(latentUpscale.LATENT);
+            g.CurrentMedia = g.CurrentMedia.WithPath(latentUpscale.LATENT.ToPath());
             g.CurrentMedia.Width = width;
             g.CurrentMedia.Height = height;
             return (width, height);
