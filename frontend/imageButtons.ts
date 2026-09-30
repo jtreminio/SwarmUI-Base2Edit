@@ -21,8 +21,11 @@ export const createImageButtons = (): ImageButtonsApi => {
             return false;
         }
         const originalButtonsForImage = buttonsForImage;
-        buttonsForImage = (fullsrc: string, src: string, metadata: unknown) => {
-            const buttons = originalButtonsForImage(fullsrc, src, metadata);
+        buttonsForImage = (
+            ...args: Parameters<typeof originalButtonsForImage>
+        ) => {
+            const buttons = originalButtonsForImage(...args);
+            const src = args[1];
             if (
                 typeof window.base2editRunEditOnlyFromImage !== "function" ||
                 !isMediaSupported(src)

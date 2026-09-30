@@ -16,8 +16,9 @@
         return false;
       }
       const originalButtonsForImage = buttonsForImage;
-      buttonsForImage = (fullsrc, src, metadata) => {
-        const buttons = originalButtonsForImage(fullsrc, src, metadata);
+      buttonsForImage = (...args) => {
+        const buttons = originalButtonsForImage(...args);
+        const src = args[1];
         if (typeof window.base2editRunEditOnlyFromImage !== "function" || !isMediaSupported(src)) {
           return buttons;
         }

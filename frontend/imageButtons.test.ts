@@ -9,11 +9,7 @@ import {
 import { createImageButtons } from "./imageButtons";
 
 type Globals = typeof globalThis & {
-    buttonsForImage?: (
-        fullsrc: string,
-        src: string,
-        metadata: unknown,
-    ) => Array<{ label: string; title: string; onclick: () => void }>;
+    buttonsForImage?: typeof buttonsForImage;
 };
 const globals = globalThis as Globals;
 
@@ -75,6 +71,67 @@ describe("createImageButtons / init", () => {
         const wrappedOnce = globals.buttonsForImage;
         init(jest.fn());
         expect(globals.buttonsForImage === wrappedOnce).toBe(true);
+    });
+
+    it.each([
+        true,
+        false,
+        undefined,
+    ])("forwards current-image flag (%s) and future arguments", (isCurrentImage) => {
+        const mockFn = jest
+            .fn<NonNullable<typeof buttonsForImage>>()
+            .mockReturnValue([]);
+        globals.buttonsForImage = mockFn;
+        const { init } = createImageButtons();
+        init(jest.fn());
+        const metadata = { prompt: "test" };
+        const futureArgument = { option: "future" };
+        // biome-ignore lint/style/noNonNullAssertion: buttonsForImage guaranteed to exist after init
+        globals.buttonsForImage!(
+            "full.png",
+            "foo.png",
+            metadata,
+            isCurrentImage,
+            futureArgument,
+            "extra",
+        );
+        expect(mockFn).toHaveBeenCalledWith(
+            "full.png",
+            "foo.png",
+            metadata,
+            isCurrentImage,
+            futureArgument,
+            "extra",
+        );
+    });
+
+    it("keeps current-image-only buttons alongside Base2Edit", () => {
+        const currentImageButton = {
+            label: "Current image only",
+            title: "Current image only",
+            onclick: jest.fn(),
+        };
+        globals.buttonsForImage = jest
+            .fn<NonNullable<typeof buttonsForImage>>()
+            .mockImplementation(
+                (_fullsrc, _src, _metadata, isCurrentImage = false) =>
+                    isCurrentImage ? [currentImageButton] : [],
+            );
+        window.base2editRunEditOnlyFromImage = jest.fn();
+        const { init } = createImageButtons();
+        init(jest.fn());
+        // biome-ignore lint/style/noNonNullAssertion: buttonsForImage guaranteed to exist after init
+        const result = globals.buttonsForImage!(
+            "full.png",
+            "foo.png",
+            null,
+            true,
+        );
+        expect(result.map((button) => button.label)).toEqual([
+            "Current image only",
+            "Base2Edit",
+        ]);
+        expect(result[0]).toBe(currentImageButton);
     });
 
     it("does not add button when window.base2editRunEditOnlyFromImage is absent", () => {

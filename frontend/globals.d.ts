@@ -36,6 +36,8 @@ declare var buttonsForImage:
           fullsrc: string,
           src: string,
           metadata: unknown,
+          isCurrentImage?: boolean,
+          ...args: unknown[]
       ) => Array<{ label: string; title: string; onclick: () => void }>)
     | undefined;
 
