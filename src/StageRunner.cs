@@ -757,7 +757,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         int slotCount = Math.Min(refImages.Count, 10);
         for (int i = 0; i < slotCount; i++)
         {
-            INodeOutput imageOutput = bridge.ResolvePath(refImages[i]);
+            INodeOutput imageOutput = EnsureRgbImage(bridge, refImages[i]);
             if (imageOutput is not null)
             {
                 refNode.Images.AddFromUntyped(imageOutput);
@@ -766,12 +766,30 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         return new Conditioning([refNode.Id, 0], [refNode.Id, 1]);
     }
 
+    private static INodeOutput EnsureRgbImage(WorkflowBridge bridge, JArray image)
+    {
+        INodeOutput source = bridge.ResolvePath(image);
+        if (source is null || source.Node is SplitImageWithAlphaNode)
+        {
+            return source;
+        }
+
+        SplitImageWithAlphaNode split = bridge.Graph.NodesOfType<SplitImageWithAlphaNode>()
+            .FirstOrDefault(node => node.Image.Connection == source);
+        if (split is null)
+        {
+            split = bridge.AddNode(new SplitImageWithAlphaNode());
+            split.Image.ConnectToUntyped(source);
+        }
+        return split.IMAGE;
+    }
+
     private string BuildPromptEncoder(
         WorkflowBridge bridge,
         WGNodeData clip,
         string prompt,
         Parameters editParams,
-        List<JArray> mingImages = null)
+        List<JArray> referenceImages = null)
     {
         SwarmClipTextEncodeAdvancedNode node = bridge.AddNode(
             new SwarmClipTextEncodeAdvancedNode().With(
@@ -783,22 +801,21 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 TargetHeight: editParams.Height,
                 Guidance: editParams.Guidance));
         node.Clip.ConnectFromPath(bridge, clip.Path);
-        if (mingImages is { Count: > 0 })
+        if (referenceImages is { Count: > 0 })
         {
-            // Ming's text encoder accepts one image batch, with up to eight images.
-            // Scale before batching so references from different stages can share a batch.
+            // This encoder accepts one image batch. Normalize channels and size before batching.
             JArray imageBatch = null;
-            foreach (JArray image in mingImages.Take(8))
+            foreach (JArray image in referenceImages.Take(8))
             {
-                JArray imagePath = image;
-                if (mingImages.Count > 1)
+                JArray imagePath = EnsureRgbImage(bridge, image).ToPath();
+                if (referenceImages.Count > 1)
                 {
                     ImageScaleNode scaled = bridge.AddNode(new ImageScaleNode().With(
                         UpscaleMethod: ImageScaleNode.UpscaleMethodValues.Lanczos,
                         Width: editParams.Width,
                         Height: editParams.Height,
                         Crop: ImageScaleNode.CropValues.Disabled));
-                    scaled.Image.ConnectFromPath(bridge, image);
+                    scaled.Image.ConnectFromPath(bridge, imagePath);
                     imagePath = scaled.IMAGE.ToPath();
                 }
                 if (imageBatch is null)

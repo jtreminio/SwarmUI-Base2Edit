@@ -70,9 +70,10 @@ public class MingImageTests
         Assert.Null(Assert.IsType<SwarmClipTextEncodeAdvancedNode>(sampler.Negative.Connection?.Node).Images.Connection);
         Assert.Same(sampler.LatentImage.Connection, reference.Latent.Connection);
         Assert.Empty(bridge.Graph.NodesOfType<ImageBatchNode>());
+        SplitImageWithAlphaNode rgb = Assert.IsType<SplitImageWithAlphaNode>(encoder.Images.Connection?.Node);
         Assert.Equal(imageInput ? "11" : "10", imageInput
-            ? encoder.Images.Connection.Node.Id
-            : Assert.IsType<VAEDecodeNode>(encoder.Images.Connection.Node).Samples.Connection.Node.Id);
+            ? rgb.Image.Connection.Node.Id
+            : Assert.IsType<VAEDecodeNode>(rgb.Image.Connection.Node).Samples.Connection.Node.Id);
     }
 
     [Fact]
@@ -100,8 +101,10 @@ public class MingImageTests
         ImageBatchNode batch = Assert.IsType<ImageBatchNode>(encoder.Images.Connection?.Node);
         ImageScaleNode baseImage = Assert.IsType<ImageScaleNode>(batch.Image1.Connection?.Node);
         ImageScaleNode currentImage = Assert.IsType<ImageScaleNode>(batch.Image2.Connection?.Node);
-        Assert.Equal("10", Assert.IsType<VAEDecodeNode>(baseImage.Image.Connection?.Node).Samples.Connection?.Node.Id);
-        Assert.Same(first.Outputs[0], Assert.IsType<VAEDecodeNode>(currentImage.Image.Connection?.Node).Samples.Connection);
+        SplitImageWithAlphaNode baseRgb = Assert.IsType<SplitImageWithAlphaNode>(baseImage.Image.Connection?.Node);
+        SplitImageWithAlphaNode currentRgb = Assert.IsType<SplitImageWithAlphaNode>(currentImage.Image.Connection?.Node);
+        Assert.Equal("10", Assert.IsType<VAEDecodeNode>(baseRgb.Image.Connection?.Node).Samples.Connection?.Node.Id);
+        Assert.Same(first.Outputs[0], Assert.IsType<VAEDecodeNode>(currentRgb.Image.Connection?.Node).Samples.Connection);
         Assert.Equal(512, baseImage.Width.LiteralAsInt());
         Assert.Equal(512, currentImage.Height.LiteralAsInt());
     }
@@ -122,8 +125,10 @@ public class MingImageTests
         Assert.Empty(bridge.Graph.NodesOfType<ImageBatchNode>());
     }
 
-    [Fact]
-    public void Specific_ming_edit_model_decodes_with_source_vae_and_encodes_with_ming_vae()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Specific_ming_edit_model_decodes_with_source_vae_and_encodes_with_ming_vae(bool sourceSupportsAlpha)
     {
         using SwarmUiTestContext _ = new();
         T2IParamInput input = BuildInput("global <edit>make it blue");
@@ -133,8 +138,10 @@ public class MingImageTests
         {
             ModelClass = new()
             {
-                ID = "sdxl-base",
-                CompatClass = new() { ID = "sdxl", ShortCode = "SDXL" },
+                ID = sourceSupportsAlpha ? "qwen-image-2.1" : "sdxl-base",
+                CompatClass = sourceSupportsAlpha
+                    ? T2IModelClassSorter.CompatQwenImage21
+                    : new() { ID = "sdxl", ShortCode = "SDXL" },
                 StandardWidth = 1024,
                 StandardHeight = 1024
             }
@@ -171,11 +178,13 @@ public class MingImageTests
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
         KSamplerAdvancedNode sampler = Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>());
         var (reference, encoder) = PositiveEncoder(sampler);
-        VAEDecodeNode source = Assert.IsType<VAEDecodeNode>(encoder.Images.Connection?.Node);
+        SplitImageWithAlphaNode rgb = Assert.IsType<SplitImageWithAlphaNode>(encoder.Images.Connection?.Node);
+        VAEDecodeNode source = Assert.IsType<VAEDecodeNode>(rgb.Image.Connection?.Node);
         Assert.Equal("4", source.Vae.Connection?.Node.Id);
         Assert.Equal("10", source.Samples.Connection?.Node.Id);
         VAELoaderNode mingVae = Assert.Single(bridge.Graph.NodesOfType<VAELoaderNode>());
         VAEEncodeNode converted = Assert.IsType<VAEEncodeNode>(sampler.LatentImage.Connection?.Node);
+        Assert.Same(source.IMAGE, converted.Pixels.Connection);
         Assert.Same(mingVae.Outputs[0], converted.Vae.Connection);
         Assert.Same(converted.Outputs[0], reference.Latent.Connection);
         CLIPLoaderNode mingClip = Assert.Single(bridge.Graph.NodesOfType<CLIPLoaderNode>());

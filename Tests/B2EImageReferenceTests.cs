@@ -550,12 +550,20 @@ public class B2EImageReferenceTests
             g.CreateNode("UnitTest_Model", [], id: "4", idMandatory: false);
             g.CreateNode("UnitTest_Latent", [], id: "10", idMandatory: false);
             string baseImage = g.CreateNode("UnitTest_Image", [], id: "11", idMandatory: false);
+            string alphaMask = g.CreateNode("SolidMask", new JObject
+            {
+                ["value"] = 0.5, ["width"] = 512, ["height"] = 512
+            }, id: "12", idMandatory: false);
+            string rgba = g.CreateNode("JoinImageWithAlpha", new JObject
+            {
+                ["image"] = new JArray(baseImage, 0), ["alpha"] = new JArray(alphaMask, 0)
+            }, id: "13", idMandatory: false);
 
             g.CurrentModel = new WGNodeData(["4", 0], g, WGNodeData.DT_MODEL, g.CurrentCompat());
             g.CurrentTextEnc = new WGNodeData(["4", 1], g, WGNodeData.DT_TEXTENC, g.CurrentCompat());
             g.CurrentVae = new WGNodeData(["4", 2], g, WGNodeData.DT_VAE, g.CurrentCompat());
-            g.CurrentMedia = new WGNodeData([baseImage, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
-            g.BasicInputImage = new WGNodeData([baseImage, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
+            g.CurrentMedia = new WGNodeData([rgba, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat()) { MayHaveAlpha = true };
+            g.BasicInputImage = g.CurrentMedia;
             g.FinalLoadedModel = hidreamModel;
             g.FinalLoadedModelList = [hidreamModel];
         }, -1000);
@@ -584,7 +592,9 @@ public class B2EImageReferenceTests
         JArray imageRef = Assert.IsType<JArray>(refInputs["images.image_1"]);
         Assert.Equal(2, imageRef.Count);
         ComfyNode imageSource = bridge.Graph.GetNode((string)imageRef[0]);
-        Assert.NotNull(imageSource);
+        SplitImageWithAlphaNode rgb = Assert.IsType<SplitImageWithAlphaNode>(imageSource);
+        JoinImageWithAlphaNode rgba = Assert.IsType<JoinImageWithAlphaNode>(rgb.Image.Connection?.Node);
+        Assert.Equal("11", rgba.Image.Connection?.Node.Id);
     }
 
     [Fact]
@@ -644,8 +654,8 @@ public class B2EImageReferenceTests
         JArray imageRef = Assert.IsType<JArray>(refInputs["images.image_1"]);
         Assert.Equal(2, imageRef.Count);
         ComfyNode imageSource = bridge.Graph.GetNode((string)imageRef[0]);
-        Assert.NotNull(imageSource);
-        Assert.IsType<VAEDecodeNode>(imageSource);
+        SplitImageWithAlphaNode rgb = Assert.IsType<SplitImageWithAlphaNode>(imageSource);
+        Assert.IsType<VAEDecodeNode>(rgb.Image.Connection?.Node);
     }
 
     [Fact]
@@ -708,7 +718,8 @@ public class B2EImageReferenceTests
 
         JObject refInputs = (JObject)workflow[refNode.Id]["inputs"];
         JArray imageRef = Assert.IsType<JArray>(refInputs["images.image_1"]);
-        Assert.Equal("11", (string)imageRef[0]);
+        SplitImageWithAlphaNode rgb = Assert.IsType<SplitImageWithAlphaNode>(bridge.Graph.GetNode((string)imageRef[0]));
+        Assert.Equal("11", rgb.Image.Connection?.Node.Id);
         Assert.Equal(0, (int)imageRef[1]);
     }
 
