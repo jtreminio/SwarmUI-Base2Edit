@@ -77,6 +77,13 @@ If an override is disabled/unset, Base2Edit inherits defaults from the stage you
 - **(Use Base)** inherits Base stage sampling defaults (CFG/sampler/scheduler/VAE) and the Base model stack + lora
 - **(Use Refiner)** inherits Refiner sampling defaults (CFG/sampler/scheduler/VAE) and the Refiner model stack + lora. If no Refiner stage defined, uses Base
 
+#### Presets
+
+Use `<edit><preset:MyPreset>` or `<edit[n]><preset:MyPreset>` to apply a saved preset to an edit section. The `<p:MyPreset>` alias also works.
+Preset model, VAE, steps, CFG, sampler, and scheduler values map to the corresponding edit settings. Sectional Base2Edit fields also apply. Other generation settings, such as image count and base resolution, are ignored inside edit sections.
+Preset LoRAs stay confined to the edit section. Prompt and negative prompt templates apply to that section, with `{value}` representing its prompt text; plain text is appended.
+An indexed section overrides its stage's card settings, and its parameter overrides pass to child stages. A shared `<edit>` preset overrides stage 0 settings and supplies defaults for additional stages without explicit card overrides. Global presets retain normal SwarmUI behavior.
+
 #### LoRAs
 
 - Any `<lora:...>` tags inside `<edit>` / `<edit[n]>` are stacked **on top** of the chosen model stack.

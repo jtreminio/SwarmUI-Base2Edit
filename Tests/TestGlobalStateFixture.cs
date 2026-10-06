@@ -12,6 +12,7 @@ public class Base2EditTestsCollection : ICollectionFixture<GlobalStateFixture>
 public sealed class GlobalStateFixture : IDisposable
 {
     private readonly List<WorkflowGenerator.WorkflowGenStep> _workflowSteps;
+    private readonly List<Action<T2IParamInput>> _specialHandlers;
     private readonly Dictionary<string, Func<string, T2IPromptHandling.PromptTagContext, string>> _promptBasic;
     private readonly Dictionary<string, Func<string, T2IPromptHandling.PromptTagContext, string>> _promptProcessors;
     private readonly Dictionary<string, Func<string, T2IPromptHandling.PromptTagContext, string>> _promptPost;
@@ -20,6 +21,7 @@ public sealed class GlobalStateFixture : IDisposable
     public GlobalStateFixture()
     {
         _workflowSteps = [.. WorkflowGenerator.Steps];
+        _specialHandlers = [.. T2IParamInput.SpecialParameterHandlers];
         _promptBasic = new(T2IPromptHandling.PromptTagBasicProcessors);
         _promptProcessors = new(T2IPromptHandling.PromptTagProcessors);
         _promptPost = new(T2IPromptHandling.PromptTagPostProcessors);
@@ -29,6 +31,7 @@ public sealed class GlobalStateFixture : IDisposable
     public void Dispose()
     {
         WorkflowGenerator.Steps = [.. _workflowSteps];
+        T2IParamInput.SpecialParameterHandlers = [.. _specialHandlers];
 
         T2IPromptHandling.PromptTagBasicProcessors = new(_promptBasic);
         T2IPromptHandling.PromptTagProcessors = new(_promptProcessors);

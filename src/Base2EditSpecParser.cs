@@ -221,8 +221,10 @@ internal static class Base2EditSpecParser
             CfgScale: NormalizeCfgScale(GetOptionalDouble(obj, "CfgScale", g.UserInput.Get(T2IParamTypes.CFGScale, DefaultCfgScale), locationPrefix)),
             Sampler: ParseOptionalString(obj, "Sampler", locationPrefix),
             Scheduler: ParseOptionalString(obj, "Scheduler", locationPrefix),
-            PositivePrompt: PromptParser.ExtractPrompt(posPrompt, posOriginal, stageId),
-            NegativePrompt: PromptParser.ExtractPrompt(negPrompt, negOriginal, stageId),
+            PositivePrompt: EditPresets.ApplyPrompt(g.UserInput, T2IParamTypes.Prompt, stageId,
+                PromptParser.ExtractPrompt(posPrompt, posOriginal, stageId)),
+            NegativePrompt: EditPresets.ApplyPrompt(g.UserInput, T2IParamTypes.NegativePrompt, stageId,
+                PromptParser.ExtractPrompt(negPrompt, negOriginal, stageId)),
             Loras: (PromptParser.HasAnyEditSectionForStage(posPrompt, stageId)
                     || PromptParser.HasAnyEditSectionForStage(negPrompt, stageId))
                 ? loraInputs.FilterForStage(stageId)
@@ -559,6 +561,10 @@ internal static class Base2EditSpecParser
     private static void ApplyParamOverrides(T2IParamInput input, JObject card, int stageId, List<int> ancestorSections)
     {
         List<int> ownSection = [Base2EditExtension.EditSectionIdForStage(stageId)];
+        if (stageId == 0)
+        {
+            ownSection.Add(Base2EditExtension.SectionID_Edit);
+        }
         foreach ((T2IParamType param, string cardKey) in OverridableParams)
         {
             if (!JsonHasOwnProperty(card, cardKey) && TryReadOverride(input, ancestorSections, param, out string inherited))

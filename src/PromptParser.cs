@@ -17,6 +17,7 @@ internal static class PromptParser
     private static readonly HashSet<string> BuiltInSectionStarters = [
         "base",
         "refiner",
+        "pixeldecoder",
         "video",
         "videoswap",
         "videoclip",
@@ -28,6 +29,33 @@ internal static class PromptParser
     ];
 
     public record EditPrompts(string Positive, string Negative);
+
+    // Core's early preset scan is not section-aware. Its equivalent <p:...> alias
+    // bypasses that scan while retaining normal processing during prompt parsing.
+    public static string DeferEditPresets(string prompt)
+    {
+        bool inEdit = false;
+        return FreneticUtilities.FreneticToolkit.StringConversionHelper.QuickSimpleTagFiller(prompt, "<", ">", tag =>
+        {
+            if (TryExtractTagPrefix(tag, out string prefix, out _))
+            {
+                prefix = prefix.ToLowerInvariant();
+                if (prefix == EditTagName)
+                {
+                    inEdit = true;
+                }
+                else if (IsSectionStartingTag(prefix))
+                {
+                    inEdit = false;
+                }
+                else if (inEdit && tag.StartsWith("preset:", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "<p:" + tag[7..] + ">";
+                }
+            }
+            return "<" + tag + ">";
+        }, false, 0);
+    }
 
     public sealed record ImagePromptParseResult(
         EditPrompts Prompts,

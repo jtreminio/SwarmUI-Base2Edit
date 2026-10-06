@@ -60,6 +60,7 @@ public class Base2EditExtension : Extension
         ComfyTyped.Generated.NodeRegistrations.EnsureRegistered();
         Generated.NodeRegistrations.EnsureRegistered();
         RegisterParameters();
+        EditPresets.Register();
         if (!_postGenerateHookRegistered)
         {
             T2IEngine.PostGenerateEvent += HandlePostGenerateMetadata;
