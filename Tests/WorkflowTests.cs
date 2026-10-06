@@ -1024,7 +1024,7 @@ public class WorkflowTests
 
     private static void AssertPreEditSaveWiredToBaseLatent(WorkflowBridge bridge, SaveImageNode save)
     {
-        VAEDecodeNode preEditDecode = Assert.IsType<VAEDecodeNode>(save.Images.Connection?.Node);
+        VAEDecodeNode preEditDecode = Assert.IsType<VAEDecodeNode>(save.ImagesInput.Connection?.Node);
         Assert.Equal("10", preEditDecode.Samples.Connection?.Node.Id);
 
         ComfyNode sampler = RequireSingleSampler(bridge);
@@ -1119,7 +1119,7 @@ public class WorkflowTests
         SaveImageNode save = WorkflowAssertions.RequireNodeById<SaveImageNode>(bridge, "900");
         KSamplerAdvancedNode sampler = Assert.IsType<KSamplerAdvancedNode>(RequireSingleSampler(bridge));
         VAEDecodeNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, sampler.Outputs[0]);
-        Assert.Equal(postEditDecode.Id, save.Images.Connection?.Node.Id);
+        Assert.Equal(postEditDecode.Id, save.ImagesInput.Connection?.Node.Id);
     }
 
     [Fact]
@@ -1154,12 +1154,12 @@ public class WorkflowTests
         SaveImageNode existingSave = WorkflowAssertions.RequireNodeById<SaveImageNode>(bridge, "900");
         KSamplerAdvancedNode sampler = Assert.IsType<KSamplerAdvancedNode>(RequireSingleSampler(bridge));
         VAEDecodeNode postEditDecode = WorkflowAssertions.RequireSingleVaeDecodeBySamples(bridge, sampler.Outputs[0]);
-        Assert.Equal(postEditDecode.Id, existingSave.Images.Connection?.Node.Id);
+        Assert.Equal(postEditDecode.Id, existingSave.ImagesInput.Connection?.Node.Id);
 
         IReadOnlyList<SaveImageNode> saves = bridge.Graph.NodesOfType<SaveImageNode>();
         Assert.True(saves.Count >= 2, "Expected dedicated pre-edit save plus existing final save.");
         SaveImageNode preEditSave = saves.Single(s => s.Id != "900");
-        VAEDecodeNode preEditDecode = Assert.IsType<VAEDecodeNode>(preEditSave.Images.Connection?.Node);
+        VAEDecodeNode preEditDecode = Assert.IsType<VAEDecodeNode>(preEditSave.ImagesInput.Connection?.Node);
         Assert.Equal("10", preEditDecode.Samples.Connection?.Node.Id);
     }
 

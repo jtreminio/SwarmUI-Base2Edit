@@ -759,7 +759,7 @@ public class B2EImageReferenceTests
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
 
         SaveImageNode save = Assert.Single(bridge.Graph.NodesOfType<SaveImageNode>());
-        INodeOutput images = save.Images.Connection;
+        INodeOutput images = save.ImagesInput.Connection;
         Assert.NotNull(images);
         Assert.Equal("11", images.Node.Id);
         Assert.Equal(0, images.SlotIndex);

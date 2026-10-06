@@ -527,7 +527,7 @@ public class MultiStageMergeTests
 
         IReadOnlyList<SaveImageNode> saveImages = bridge.Graph.NodesOfType<SaveImageNode>();
         Assert.Contains(saveImages, save =>
-            save.Images.Connection?.Node is VAEDecodeNode decode
+            save.ImagesInput.Connection?.Node is VAEDecodeNode decode
             && decode.Samples.Connection?.Node.Id == stage1Sampler.Id);
     }
 
@@ -608,7 +608,7 @@ public class MultiStageMergeTests
         IReadOnlyList<SaveImageNode> saveImages = bridge.Graph.NodesOfType<SaveImageNode>();
         SaveImageNode save0 = Assert.Single(saveImages);
 
-        Assert.IsType<VAEDecodeNode>(save0.Images.Connection?.Node);
+        Assert.IsType<VAEDecodeNode>(save0.ImagesInput.Connection?.Node);
     }
 
     [Fact]
