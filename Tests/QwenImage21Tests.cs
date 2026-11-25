@@ -7,7 +7,6 @@ using SwarmUI.Media;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using Xunit;
-using TextEncodeQwenImage21Node = Base2Edit.Generated.TextEncodeQwenImage21Node;
 
 namespace Base2Edit.Tests;
 
@@ -64,7 +63,7 @@ public class QwenImage21Tests
         Assert.DoesNotContain(images, image => image.Node.Id is "50" or "51");
         Assert.Empty(bridge.Graph.NodesOfType<BatchImagesNodeNode>());
         Assert.Empty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
-        Assert.Empty(bridge.Graph.NodesOfType<Base2Edit.Generated.SwarmTextEncodeAdvancedNode>());
+        Assert.Empty(bridge.Graph.NodesOfType<SwarmTextEncodeAdvancedNode>());
         return (encoder, images);
     }
 

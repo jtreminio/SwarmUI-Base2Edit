@@ -6,7 +6,6 @@ using SwarmUI.Core;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using Xunit;
-using SwarmTextEncodeAdvancedNode = Base2Edit.Generated.SwarmTextEncodeAdvancedNode;
 
 namespace Base2Edit.Tests;
 

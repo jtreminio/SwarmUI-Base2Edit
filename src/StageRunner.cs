@@ -7,8 +7,6 @@ using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using Image = SwarmUI.Utils.Image;
-using SwarmTextEncodeAdvancedNode = Base2Edit.Generated.SwarmTextEncodeAdvancedNode;
-using TextEncodeQwenImage21Node = Base2Edit.Generated.TextEncodeQwenImage21Node;
 
 namespace Base2Edit;
 
