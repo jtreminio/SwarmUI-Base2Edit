@@ -44,6 +44,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
             bool skipSampler = ctx.Stage.Control == 0 && ctx.Stage.Upscale != 1;
             bool useMiniMaxReferences = g.IsMiniMaxH3Image() && !ctx.Stage.RefineOnly && !skipSampler;
+            // The native node uses the first image in the batch and returns one empty latent.
+            bool useMiniMaxLatent = useMiniMaxReferences && ctx.Stage.Control == 1
+                && g.UserInput.Get(T2IParamTypes.BatchSize, 1) == 1;
             // SwarmUI classifies the U1.5 and U1.6 checkpoints together.
             bool useSenseNova = g.IsSenseNovaU15() && !skipSampler;
             bool useSourcePixels = useMiniMaxReferences || useSenseNova;
@@ -100,11 +103,14 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 ));
             }
             (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx,
-                skipLatentEncode: skipSampler || useSenseNova, useMiniMaxReferences: useMiniMaxReferences);
+                skipLatentEncode: skipSampler || useSenseNova || useMiniMaxLatent, useMiniMaxReferences: useMiniMaxReferences);
             if (useMiniMaxReferences && g.CurrentMedia?.IsRawMedia == true)
             {
-                PrepareMiniMaxSamples(ctx);
-                // The VAE crops to full latent cells when the source size is not aligned.
+                if (!useMiniMaxLatent)
+                {
+                    PrepareMiniMaxSamples(ctx);
+                }
+                // MiniMax uses full latent cells when the source size is not aligned.
                 stageWidth = stageWidth / MiniMaxLatentDownscale * MiniMaxLatentDownscale;
                 stageHeight = stageHeight / MiniMaxLatentDownscale * MiniMaxLatentDownscale;
             }
@@ -132,7 +138,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             }
             else
             {
-                ctx.Conditioning = CreateConditioning(ctx, prompts, useMiniMaxReferences);
+                ctx.Conditioning = CreateConditioning(ctx, prompts, useMiniMaxReferences, useMiniMaxLatent);
                 ExecuteSampler(ctx, useSenseNova);
             }
 
@@ -648,7 +654,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     private Conditioning CreateConditioning(
         EditStageContext ctx,
         PromptParser.EditPrompts prompts,
-        bool useMiniMaxReferences)
+        bool useMiniMaxReferences,
+        bool useMiniMaxLatent)
     {
         WGNodeData clip = ctx.ModelState.Clip;
         Parameters editParams = ctx.Parameters;
@@ -660,7 +667,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         if (useMiniMaxReferences)
         {
-            return CreateMiniMaxH3ImageConditioning(ctx, imageRefs, resolver);
+            return CreateMiniMaxH3ImageConditioning(ctx, imageRefs, resolver, useMiniMaxLatent);
         }
         if (g.IsSenseNovaU15())
         {
@@ -818,7 +825,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
     private Conditioning CreateMiniMaxH3ImageConditioning(
         EditStageContext ctx,
         PromptParser.ImagePromptParseResult imageRefs,
-        StageResolver resolver)
+        StageResolver resolver,
+        bool useMiniMaxLatent)
     {
         WGNodeData vae = ctx.ModelState.Vae;
         JArray currentImage = StageResolver.TryFindExistingImage(g, g.CurrentMedia)
@@ -830,33 +838,38 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         images.Insert(0, currentImage);
 
         using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
-        SwarmMiniMaxH3ImageCollectReferencesNode collector = bridge.AddEditNode(new SwarmMiniMaxH3ImageCollectReferencesNode());
-        collector.Vae.ConnectFromPath(bridge, vae.Path);
-        foreach (JArray image in images.Take(collector.RefImages.Max))
+        MiniMaxH3ImageConditioningNode positive = bridge.AddEditNode(new MiniMaxH3ImageConditioningNode().With(
+            Prompt: imageRefs.Prompts.Positive, Width: ctx.Parameters.Width, Height: ctx.Parameters.Height));
+        positive.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
+        positive.Vae.ConnectFromPath(bridge, vae.Path);
+        foreach (JArray image in images.Take(positive.Images.Max))
         {
-            collector.RefImages.AddFromUntyped(bridge.ResolvePath(image));
+            positive.Images.AddFromUntyped(bridge.ResolvePath(image));
         }
 
-        Parameters parameters = ctx.Parameters;
-        bool enhance = g.UserInput.Get(T2IParamTypes.ModelSpecificEnhancements, true);
-        SwarmTextEncodeAdvancedNode AddEncoder(string prompt, double sizeMultiplier)
+        if (useMiniMaxLatent)
         {
-            SwarmTextEncodeAdvancedNode encoder = bridge.AddEditNode(new SwarmTextEncodeAdvancedNode().With(
-                Steps: parameters.Steps,
-                Prompt: prompt,
-                Width: enhance ? (int)Utilities.RoundToPrecision(parameters.Width * sizeMultiplier, 64) : parameters.Width,
-                Height: enhance ? (int)Utilities.RoundToPrecision(parameters.Height * sizeMultiplier, 64) : parameters.Height,
-                TargetWidth: parameters.Width,
-                TargetHeight: parameters.Height,
-                Guidance: parameters.Guidance));
-            encoder.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
-            return encoder;
+            GetImageSizeNode size = bridge.AddEditNode(new GetImageSizeNode());
+            size.Image.ConnectFromPath(bridge, currentImage);
+            positive.Width.ConnectTo(size.Width);
+            positive.Height.ConnectTo(size.Height);
         }
 
-        SwarmTextEncodeAdvancedNode positive = AddEncoder(imageRefs.Prompts.Positive, 1.5);
-        positive.MinimaxRefs.ConnectTo(collector.MiniMaxReferences);
-        SwarmTextEncodeAdvancedNode negative = AddEncoder(imageRefs.Prompts.Negative, 0.8);
-        return new Conditioning(positive.CONDITIONING.ToPath(), negative.CONDITIONING.ToPath());
+        JArray negativePath;
+        if (string.IsNullOrWhiteSpace(imageRefs.Prompts.Negative))
+        {
+            ConditioningZeroOutNode negative = bridge.AddEditNode(new ConditioningZeroOutNode());
+            negative.Conditioning.ConnectTo(positive.Positive);
+            negativePath = negative.CONDITIONING.ToPath();
+        }
+        else
+        {
+            CLIPTextEncodeNode negative = bridge.AddEditNode(new CLIPTextEncodeNode().With(Text: imageRefs.Prompts.Negative));
+            negative.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
+            negativePath = negative.CONDITIONING.ToPath();
+        }
+
+        return new Conditioning(positive.Positive.ToPath(), negativePath, useMiniMaxLatent ? positive.LATENT.ToPath() : null);
     }
 
     private Conditioning CreateKrea2Conditioning(
@@ -1158,9 +1171,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
             int stageSectionId = ctx.SectionId;
-            JArray currentStageSamples = useSenseNova
+            JArray currentStageSamples = conditioning.SamplerLatent ?? (useSenseNova
                 ? CreateSenseNovaSamples(ctx)
-                : EnsureCurrentSamplesForEdit(preferredVae: null);
+                : EnsureCurrentSamplesForEdit(preferredVae: null));
             string samplerNode = g.CreateKSampler(
                 model.Path,
                 conditioning.Positive,

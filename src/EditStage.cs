@@ -30,7 +30,7 @@ internal record Parameters(
     string Scheduler
 );
 
-internal record Conditioning(JArray Positive, JArray Negative);
+internal record Conditioning(JArray Positive, JArray Negative, JArray SamplerLatent = null);
 
 internal readonly record struct RunEditStageOptions(
     bool TrackResolvedModelForMetadata = true,

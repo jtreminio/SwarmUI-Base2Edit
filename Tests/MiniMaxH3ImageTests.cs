@@ -18,6 +18,43 @@ public class MiniMaxH3ImageTests
     private const string EditVaeId = "minimax-h3-image-vae";
 
     [Theory]
+    [InlineData("Base", 1.0)]
+    [InlineData("Refiner", 1.1)]
+    public void Full_strength_MiniMax_uses_native_conditioning_and_latent(string applyAfter, double upscale)
+    {
+        JObject workflow = Generate(applyAfter, "base <edit>Swap <Picture 1> with <Picture 2> <b2eimage[prompt0]>", input =>
+        {
+            input.Set(Base2EditExtension.EditControl, 1.0);
+            input.Set(Base2EditExtension.EditUpscale, upscale);
+            input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
+            using MagickImage pixels = new(MagickColors.Black, 16, 16);
+            input.Set(T2IParamTypes.PromptImages, new List<Image> { new(pixels) });
+        });
+
+        using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
+        KSamplerAdvancedNode edit = GetEditSampler(bridge);
+        MiniMaxH3ImageConditioningNode positive = Assert.IsType<MiniMaxH3ImageConditioningNode>(edit.Positive.Connection.Node);
+        Assert.Equal("Swap <Picture 1> with <Picture 2>", positive.Prompt.LiteralAsString()?.Trim());
+        Assert.Same(positive.LATENT, edit.LatentImage.Connection);
+        Assert.Equal(0, edit.StartAtStep.LiteralAsInt());
+
+        ConditioningZeroOutNode negative = Assert.IsType<ConditioningZeroOutNode>(edit.Negative.Connection.Node);
+        Assert.Same(positive.Positive, negative.Conditioning.Connection);
+        Assert.Equal(2, positive.Images.Count);
+        INodeOutput source = positive.Images[0].Connection;
+        Assert.Equal(upscale == 1 ? "VAEDecode" : "ImageScale", source.Node.ClassTypeName);
+        Assert.IsType<LoadImageNode>(positive.Images[1].Connection.Node);
+        Assert.NotNull(workflow[positive.Id]?["inputs"]?["images.image_0"]);
+        Assert.NotNull(workflow[positive.Id]?["inputs"]?["images.image_1"]);
+        GetImageSizeNode size = Assert.IsType<GetImageSizeNode>(positive.Width.Connection.Node);
+        Assert.Same(source, size.Image.Connection);
+        Assert.Same(size.Width, positive.Width.Connection);
+        Assert.Same(size.Height, positive.Height.Connection);
+        Assert.Empty(bridge.Graph.NodesOfType<IVaeEncode>());
+        AssertSavedEdit(bridge, edit, positive);
+    }
+
+    [Theory]
     [InlineData("Base")]
     [InlineData("Refiner")]
     public void MiniMax_to_MiniMax_samples_from_the_base_latent_and_keeps_native_references(string applyAfter)
@@ -34,13 +71,11 @@ public class MiniMaxH3ImageTests
         SwarmKSamplerNode baseSampler = Assert.IsType<SwarmKSamplerNode>(bridge.Graph.GetNode("10"));
         SwarmKSamplerNode edit = Assert.Single(bridge.Graph.NodesOfType<SwarmKSamplerNode>(), sampler => sampler.Id != "10");
         Assert.Same(baseSampler.Outputs[0], edit.LatentImage.Connection);
-        SwarmTextEncodeAdvancedNode positive = Assert.IsType<SwarmTextEncodeAdvancedNode>(edit.Positive.Connection.Node);
-        SwarmMiniMaxH3ImageCollectReferencesNode collector =
-            Assert.IsType<SwarmMiniMaxH3ImageCollectReferencesNode>(positive.MinimaxRefs.Connection.Node);
-        Assert.Equal(2, collector.RefImages.Count);
-        IVaeDecode source = Assert.IsType<VAEDecodeTiledNode>(collector.RefImages[0].Connection.Node);
+        MiniMaxH3ImageConditioningNode positive = Assert.IsType<MiniMaxH3ImageConditioningNode>(edit.Positive.Connection.Node);
+        Assert.Equal(2, positive.Images.Count);
+        IVaeDecode source = Assert.IsType<VAEDecodeTiledNode>(positive.Images[0].Connection.Node);
         Assert.Same(baseSampler.Outputs[0], source.Samples.Connection);
-        Assert.IsType<LoadImageNode>(collector.RefImages[1].Connection.Node);
+        Assert.IsType<LoadImageNode>(positive.Images[1].Connection.Node);
         Assert.Empty(bridge.Graph.NodesOfType<IVaeEncode>());
     }
 
@@ -82,30 +117,31 @@ public class MiniMaxH3ImageTests
         Assert.Equal(4864, scale.Height.LiteralAsInt());
         IVaeDecode source = Assert.IsType<VAEDecodeTiledNode>(scale.Image.Connection.Node);
         Assert.Equal("23", source.Samples.Connection.Node.Id);
-        SwarmTextEncodeAdvancedNode positive = Assert.IsType<SwarmTextEncodeAdvancedNode>(edit.Positive.Connection.Node);
-        SwarmMiniMaxH3ImageCollectReferencesNode collector =
-            Assert.IsType<SwarmMiniMaxH3ImageCollectReferencesNode>(positive.MinimaxRefs.Connection.Node);
-        Assert.Equal(referenceCount, collector.RefImages.Count);
-        Assert.Same(encoded.Pixels.Connection, collector.RefImages[0].Connection);
-        Assert.Same(encoded.Vae.Connection, collector.Vae.Connection);
+        MiniMaxH3ImageConditioningNode positive = Assert.IsType<MiniMaxH3ImageConditioningNode>(edit.Positive.Connection.Node);
+        Assert.Equal(referenceCount, positive.Images.Count);
+        Assert.Same(encoded.Pixels.Connection, positive.Images[0].Connection);
+        Assert.Same(encoded.Vae.Connection, positive.Vae.Connection);
         if (referenceCount == 2)
         {
-            Assert.IsType<LoadImageNode>(collector.RefImages[1].Connection.Node);
+            Assert.IsType<LoadImageNode>(positive.Images[1].Connection.Node);
         }
-        Assert.Equal(scale.Width.LiteralAsInt(), positive.TargetWidth.LiteralAsInt());
-        Assert.Equal(scale.Height.LiteralAsInt(), positive.TargetHeight.LiteralAsInt());
+        Assert.Equal(scale.Width.LiteralAsInt(), positive.Width.LiteralAsInt());
+        Assert.Equal(scale.Height.LiteralAsInt(), positive.Height.LiteralAsInt());
         SaveImageNode save = Assert.IsType<SaveImageNode>(bridge.Graph.GetNode("9"));
         IVaeDecode output = Assert.IsType<VAEDecodeTiledNode>(save.ImagesInput.Connection.Node);
         Assert.Same(edit.Outputs[0], output.Samples.Connection);
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void MiniMax_latent_upscale_conditions_and_samples_at_the_upscaled_latent_size(bool miniMaxBase)
+    [InlineData(true, 0.95)]
+    [InlineData(false, 0.95)]
+    [InlineData(true, 1.0)]
+    [InlineData(false, 1.0)]
+    public void MiniMax_latent_upscale_conditions_and_samples_at_the_upscaled_latent_size(bool miniMaxBase, double control)
     {
         JObject workflow = Generate("Base", "base <edit>edit it", input =>
         {
+            input.Set(Base2EditExtension.EditControl, control);
             input.Set(Base2EditExtension.EditUpscale, 1.25);
             input.Set(Base2EditExtension.EditUpscaleMethod, "latent-bilinear");
         }, miniMaxBase: miniMaxBase);
@@ -115,15 +151,24 @@ public class MiniMaxH3ImageTests
             ? Assert.Single(bridge.Graph.NodesOfType<SwarmKSamplerNode>(), sampler => sampler.Id != "10")
             : GetEditSampler(bridge);
         INodeOutput samples = edit.FindInput("latent_image").Connection;
-        LatentUpscaleByNode upscale = Assert.IsType<LatentUpscaleByNode>(samples.Node);
-        SwarmTextEncodeAdvancedNode positive = Assert.IsType<SwarmTextEncodeAdvancedNode>(edit.FindInput("positive").Connection.Node);
-        Assert.Equal(1040, positive.TargetWidth.LiteralAsInt());
-        Assert.Equal(1520, positive.TargetHeight.LiteralAsInt());
-        SwarmMiniMaxH3ImageCollectReferencesNode collector =
-            Assert.IsType<SwarmMiniMaxH3ImageCollectReferencesNode>(positive.MinimaxRefs.Connection.Node);
-        IVaeDecode source = Assert.IsAssignableFrom<IVaeDecode>(Assert.Single(collector.RefImages.Items).Connection.Node);
-        Assert.Same(samples, source.Samples.Connection);
-        Assert.Same(collector.Vae.Connection, source.Vae.Connection);
+        MiniMaxH3ImageConditioningNode positive = Assert.IsType<MiniMaxH3ImageConditioningNode>(edit.FindInput("positive").Connection.Node);
+        INodeOutput image = Assert.Single(positive.Images.Items).Connection;
+        IVaeDecode source = Assert.IsAssignableFrom<IVaeDecode>(image.Node);
+        LatentUpscaleByNode upscale = Assert.IsType<LatentUpscaleByNode>(source.Samples.Connection.Node);
+        Assert.Same(positive.Vae.Connection, source.Vae.Connection);
+        if (control == 1)
+        {
+            Assert.Same(positive.LATENT, samples);
+            GetImageSizeNode size = Assert.IsType<GetImageSizeNode>(positive.Width.Connection.Node);
+            Assert.Same(image, size.Image.Connection);
+            Assert.Same(size.Height, positive.Height.Connection);
+        }
+        else
+        {
+            Assert.Same(upscale.LATENT, samples);
+            Assert.Equal(1040, positive.Width.LiteralAsInt());
+            Assert.Equal(1520, positive.Height.LiteralAsInt());
+        }
         if (miniMaxBase)
         {
             Assert.Equal("10", upscale.Samples.Connection.Node.Id);
@@ -131,7 +176,7 @@ public class MiniMaxH3ImageTests
         else
         {
             IVaeEncode encoded = Assert.IsType<VAEEncodeNode>(upscale.Samples.Connection.Node);
-            Assert.Same(collector.Vae.Connection, encoded.Vae.Connection);
+            Assert.Same(positive.Vae.Connection, encoded.Vae.Connection);
             IVaeDecode baseDecode = Assert.IsAssignableFrom<IVaeDecode>(encoded.Pixels.Connection.Node);
             Assert.Equal("10", baseDecode.Samples.Connection.Node.Id);
             Assert.Equal("4", baseDecode.Vae.Connection.Node.Id);
@@ -157,17 +202,15 @@ public class MiniMaxH3ImageTests
         });
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
         KSamplerAdvancedNode edit = GetEditSampler(bridge);
-        SwarmTextEncodeAdvancedNode positive = Assert.IsType<SwarmTextEncodeAdvancedNode>(edit.Positive.Connection.Node);
-        SwarmTextEncodeAdvancedNode negative = Assert.IsType<SwarmTextEncodeAdvancedNode>(edit.Negative.Connection.Node);
+        MiniMaxH3ImageConditioningNode positive = Assert.IsType<MiniMaxH3ImageConditioningNode>(edit.Positive.Connection.Node);
+        ConditioningZeroOutNode negative = Assert.IsType<ConditioningZeroOutNode>(edit.Negative.Connection.Node);
         Assert.Equal("edit it", positive.Prompt.LiteralAsString()?.Trim());
-        Assert.Null(negative.MinimaxRefs.Connection);
-        Assert.Equal(832, positive.TargetWidth.LiteralAsInt());
-        Assert.Equal(1216, positive.TargetHeight.LiteralAsInt());
+        Assert.Same(positive.Positive, negative.Conditioning.Connection);
+        Assert.Equal(832, positive.Width.LiteralAsInt());
+        Assert.Equal(1216, positive.Height.LiteralAsInt());
         Assert.Equal(1, edit.StartAtStep.LiteralAsInt());
 
-        SwarmMiniMaxH3ImageCollectReferencesNode collector =
-            Assert.IsType<SwarmMiniMaxH3ImageCollectReferencesNode>(positive.MinimaxRefs.Connection.Node);
-        INodeInput anchor = Assert.Single(collector.RefImages.Items);
+        INodeInput anchor = Assert.Single(positive.Images.Items);
         IVaeDecode source = Assert.IsAssignableFrom<IVaeDecode>(anchor.Connection.Node);
         Assert.Equal(tiled ? "VAEDecodeTiled" : "VAEDecode", anchor.Connection.Node.ClassTypeName);
         Assert.Equal("10", source.Samples.Connection.Node.Id);
@@ -176,8 +219,8 @@ public class MiniMaxH3ImageTests
         Assert.Equal(tiled ? "VAEEncodeTiled" : "VAEEncode", edit.LatentImage.Connection.Node.ClassTypeName);
         Assert.Same(encoded.LATENT, edit.LatentImage.Connection);
         Assert.Same(anchor.Connection, encoded.Pixels.Connection);
-        Assert.Same(collector.Vae.Connection, encoded.Vae.Connection);
-        AssertSavedEdit(bridge, edit, collector);
+        Assert.Same(positive.Vae.Connection, encoded.Vae.Connection);
+        AssertSavedEdit(bridge, edit, positive);
         Assert.Empty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
     }
 
@@ -186,29 +229,32 @@ public class MiniMaxH3ImageTests
     {
         JObject workflow = Generate("Refiner", "base <edit>edit it <b2eimage[prompt0]> <b2eimage[base]>", input =>
         {
+            input.Set(Base2EditExtension.EditControl, 1.0);
             input.Set(Base2EditExtension.EditUpscale, 1.1);
             input.Set(Base2EditExtension.EditUpscaleMethod, "pixel-lanczos");
             input.Set(T2IParamTypes.BatchSize, 3);
+            input.Set(T2IParamTypes.NegativePrompt, "base negative <edit>avoid blur");
             using MagickImage pixels = new(MagickColors.Black, 16, 16);
             input.Set(T2IParamTypes.PromptImages, new List<Image> { new(pixels) });
         });
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
         KSamplerAdvancedNode edit = GetEditSampler(bridge);
-        SwarmTextEncodeAdvancedNode positive = Assert.IsType<SwarmTextEncodeAdvancedNode>(edit.Positive.Connection.Node);
-        SwarmMiniMaxH3ImageCollectReferencesNode collector =
-            Assert.IsType<SwarmMiniMaxH3ImageCollectReferencesNode>(positive.MinimaxRefs.Connection.Node);
-        Assert.Equal(3, collector.RefImages.Count);
-        ImageScaleNode scale = Assert.IsType<ImageScaleNode>(collector.RefImages[0].Connection.Node);
-        Assert.IsType<LoadImageNode>(collector.RefImages[1].Connection.Node);
-        Assert.Same(scale.Image.Connection, collector.RefImages[2].Connection);
+        MiniMaxH3ImageConditioningNode positive = Assert.IsType<MiniMaxH3ImageConditioningNode>(edit.Positive.Connection.Node);
+        CLIPTextEncodeNode negative = Assert.IsType<CLIPTextEncodeNode>(edit.Negative.Connection.Node);
+        Assert.Equal("avoid blur", negative.Text.LiteralAsString()?.Trim());
+        Assert.Same(positive.Clip.Connection, negative.Clip.Connection);
+        Assert.Equal(3, positive.Images.Count);
+        ImageScaleNode scale = Assert.IsType<ImageScaleNode>(positive.Images[0].Connection.Node);
+        Assert.IsType<LoadImageNode>(positive.Images[1].Connection.Node);
+        Assert.Same(scale.Image.Connection, positive.Images[2].Connection);
         IVaeEncode encoded = Assert.IsType<VAEEncodeNode>(edit.LatentImage.Connection.Node);
         Assert.Same(scale.IMAGE, encoded.Pixels.Connection);
-        Assert.Same(collector.Vae.Connection, encoded.Vae.Connection);
-        Assert.Equal(896, positive.TargetWidth.LiteralAsInt());
-        Assert.Equal(1312, positive.TargetHeight.LiteralAsInt());
-        Assert.Equal(scale.Width.LiteralAsInt(), positive.TargetWidth.LiteralAsInt());
-        Assert.Equal(scale.Height.LiteralAsInt(), positive.TargetHeight.LiteralAsInt());
-        AssertSavedEdit(bridge, edit, collector);
+        Assert.Same(positive.Vae.Connection, encoded.Vae.Connection);
+        Assert.Equal(896, positive.Width.LiteralAsInt());
+        Assert.Equal(1312, positive.Height.LiteralAsInt());
+        Assert.Equal(scale.Width.LiteralAsInt(), positive.Width.LiteralAsInt());
+        Assert.Equal(scale.Height.LiteralAsInt(), positive.Height.LiteralAsInt());
+        AssertSavedEdit(bridge, edit, positive);
     }
 
     [Fact]
@@ -242,14 +288,12 @@ public class MiniMaxH3ImageTests
         IVaeDecode source = Assert.IsAssignableFrom<IVaeDecode>(scaled.Image.Connection.Node);
         Assert.Equal("10", source.Samples.Connection.Node.Id);
         Assert.Same(encoded.LATENT, edit.LatentImage.Connection);
-        SwarmTextEncodeAdvancedNode positive = Assert.IsType<SwarmTextEncodeAdvancedNode>(edit.Positive.Connection.Node);
-        SwarmMiniMaxH3ImageCollectReferencesNode collector =
-            Assert.IsType<SwarmMiniMaxH3ImageCollectReferencesNode>(positive.MinimaxRefs.Connection.Node);
-        Assert.Same(scaled.IMAGE, Assert.Single(collector.RefImages.Items).Connection);
-        Assert.Same(collector.Vae.Connection, encoded.Vae.Connection);
-        Assert.Equal(992, positive.TargetWidth.LiteralAsInt());
-        Assert.Equal(1472, positive.TargetHeight.LiteralAsInt());
-        AssertSavedEdit(bridge, edit, collector);
+        MiniMaxH3ImageConditioningNode positive = Assert.IsType<MiniMaxH3ImageConditioningNode>(edit.Positive.Connection.Node);
+        Assert.Same(scaled.IMAGE, Assert.Single(positive.Images.Items).Connection);
+        Assert.Same(positive.Vae.Connection, encoded.Vae.Connection);
+        Assert.Equal(992, positive.Width.LiteralAsInt());
+        Assert.Equal(1472, positive.Height.LiteralAsInt());
+        AssertSavedEdit(bridge, edit, positive);
     }
 
     [Fact]
@@ -263,7 +307,7 @@ public class MiniMaxH3ImageTests
         IVaeDecode source = Assert.IsAssignableFrom<IVaeDecode>(encoded.Pixels.Connection.Node);
         Assert.Equal("10", source.Samples.Connection.Node.Id);
         Assert.Equal(1, edit.StartAtStep.LiteralAsInt());
-        Assert.Empty(bridge.Graph.NodesOfType<SwarmMiniMaxH3ImageCollectReferencesNode>());
+        Assert.Empty(bridge.Graph.NodesOfType<MiniMaxH3ImageConditioningNode>());
         Assert.Empty(bridge.Graph.NodesOfType<ReferenceLatentNode>());
     }
 
@@ -278,7 +322,7 @@ public class MiniMaxH3ImageTests
         });
         using WorkflowBridge bridge = WorkflowBridge.Create(workflow);
         Assert.Equal("10", Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>()).Id);
-        Assert.Empty(bridge.Graph.NodesOfType<SwarmMiniMaxH3ImageCollectReferencesNode>());
+        Assert.Empty(bridge.Graph.NodesOfType<MiniMaxH3ImageConditioningNode>());
         SaveImageNode save = Assert.IsType<SaveImageNode>(bridge.Graph.GetNode("9"));
         ImageScaleNode upscale = Assert.IsType<ImageScaleNode>(save.ImagesInput.Connection.Node);
         Assert.Equal(1248, upscale.Width.LiteralAsInt());
@@ -288,16 +332,16 @@ public class MiniMaxH3ImageTests
     private static KSamplerAdvancedNode GetEditSampler(WorkflowBridge bridge) =>
         Assert.Single(bridge.Graph.NodesOfType<KSamplerAdvancedNode>(), sampler => sampler.Id != "10");
 
-    private static void AssertSavedEdit(WorkflowBridge bridge, KSamplerAdvancedNode edit, SwarmMiniMaxH3ImageCollectReferencesNode collector)
+    private static void AssertSavedEdit(WorkflowBridge bridge, KSamplerAdvancedNode edit, MiniMaxH3ImageConditioningNode positive)
     {
         SaveImageNode save = Assert.IsType<SaveImageNode>(bridge.Graph.GetNode("9"));
         IVaeDecode output = Assert.IsAssignableFrom<IVaeDecode>(save.ImagesInput.Connection.Node);
         Assert.Same(edit.Outputs[0], output.Samples.Connection);
-        Assert.Same(collector.Vae.Connection, output.Vae.Connection);
-        VAELoaderNode vae = Assert.IsType<VAELoaderNode>(collector.Vae.Connection.Node);
+        Assert.Same(positive.Vae.Connection, output.Vae.Connection);
+        VAELoaderNode vae = Assert.IsType<VAELoaderNode>(positive.Vae.Connection.Node);
         Assert.Equal("MiniMaxVae.safetensors", vae.VaeName.LiteralAsString());
         CLIPLoaderNode clip = Assert.IsType<CLIPLoaderNode>(
-            Assert.IsType<SwarmTextEncodeAdvancedNode>(edit.Positive.Connection.Node).Clip.Connection.Node);
+            positive.Clip.Connection.Node);
         Assert.Equal("minimax", clip.Type.LiteralAsString());
         Assert.Contains(EditModelName, edit.Model.Connection.Node.Inputs.Select(input => input.LiteralAsString()));
     }
