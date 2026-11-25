@@ -14,6 +14,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 {
     private const int PreEditImageSaveId = 50200;
     private const int MiniMaxLatentDownscale = 16;
+    private const int SenseNovaPatchSize = 32;
 
     public void RunStage(
         bool isFinalStep,
@@ -43,10 +44,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
             bool skipSampler = ctx.Stage.Control == 0 && ctx.Stage.Upscale != 1;
             bool useMiniMaxReferences = g.IsMiniMaxH3Image() && !ctx.Stage.RefineOnly && !skipSampler;
-            WGNodeData currentSamples = useMiniMaxReferences && currentImageOut is not null
+            // SwarmUI classifies the U1.5 and U1.6 checkpoints together.
+            bool useSenseNova = g.IsSenseNovaU15() && !skipSampler;
+            bool useSourcePixels = useMiniMaxReferences || useSenseNova;
+            WGNodeData currentSamples = useSourcePixels && currentImageOut is not null
                 ? null
                 : WGNodeDataUtil.TryGetCurrentLatent(g);
-            bool needsPreEditImage = useMiniMaxReferences || shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
+            bool needsPreEditImage = useSourcePixels || shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
             WGNodeData preEditImageTailRef = currentImageOut;
             WGNodeData preEditConsumerSourceRef = preEditImageTailRef;
             if (isFinalStep && currentSamples is not null)
@@ -76,7 +80,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 SavePreEditImageIfNeeded(ctx);
             }
 
-            if (!useMiniMaxReferences && !ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
+            if (!useSourcePixels && !ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
                 && currentSamples is not null
                 && g.CurrentMedia?.IsLatentData != true)
             {
@@ -89,20 +93,26 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 };
             }
 
-            if (!useMiniMaxReferences)
+            if (!useSourcePixels)
             {
                 ReencodeIfNeeded(ctx, new ReencodeOptions(
                     ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
                 ));
             }
             (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx,
-                skipLatentEncode: skipSampler, useMiniMaxReferences: useMiniMaxReferences);
+                skipLatentEncode: skipSampler || useSenseNova, useMiniMaxReferences: useMiniMaxReferences);
             if (useMiniMaxReferences && g.CurrentMedia?.IsRawMedia == true)
             {
                 PrepareMiniMaxSamples(ctx);
                 // The VAE crops to full latent cells when the source size is not aligned.
                 stageWidth = stageWidth / MiniMaxLatentDownscale * MiniMaxLatentDownscale;
                 stageHeight = stageHeight / MiniMaxLatentDownscale * MiniMaxLatentDownscale;
+            }
+            if (useSenseNova)
+            {
+                // The empty pixel latent requires at least 64 pixels per side.
+                stageWidth = Math.Max(64, stageWidth / SenseNovaPatchSize * SenseNovaPatchSize);
+                stageHeight = Math.Max(64, stageHeight / SenseNovaPatchSize * SenseNovaPatchSize);
             }
             ctx.Parameters = new Parameters(
                 Width: stageWidth,
@@ -123,7 +133,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             else
             {
                 ctx.Conditioning = CreateConditioning(ctx, prompts, useMiniMaxReferences);
-                ExecuteSampler(ctx);
+                ExecuteSampler(ctx, useSenseNova);
             }
 
             if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
@@ -652,6 +662,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             return CreateMiniMaxH3ImageConditioning(ctx, imageRefs, resolver);
         }
+        if (g.IsSenseNovaU15())
+        {
+            return CreateSenseNovaConditioning(ctx, imageRefs, resolver);
+        }
         if (g.IsHiDreamO1())
         {
             return CreateHiDreamO1Conditioning(ctx, cleanedPrompts, imageRefs, resolver);
@@ -715,6 +729,90 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         return new Conditioning(positiveConditioning, [BuildPromptEncoder(bridge, clip, cleanedPrompts.Negative, editParams), 0]);
+    }
+
+    private Conditioning CreateSenseNovaConditioning(
+        EditStageContext ctx,
+        PromptParser.ImagePromptParseResult imageRefs,
+        StageResolver resolver)
+    {
+        List<JArray> images = [];
+        JArray currentImage = null;
+        if (!ctx.Parameters.RefineOnly)
+        {
+            currentImage = StageResolver.TryFindExistingImage(g, g.CurrentMedia)
+                ?? g.CurrentMedia?.AsRawImage(ctx.ModelState.Vae)?.Path
+                ?? throw new SwarmReadableErrorException("Base2Edit: No image anchor is available for SenseNova editing.");
+            images = resolver.ResolveImagePixels(imageRefs.References, ctx.Stage.Id);
+            images.RemoveAll(image => JToken.DeepEquals(image, currentImage));
+        }
+        else if (imageRefs.References.Count > 0)
+        {
+            Logs.Warning($"Base2Edit: Ignoring <b2eimage[...]> in stage {ctx.Stage.Id}: Refine Only is enabled.");
+        }
+
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        CLIPTextEncodeNode Encode(string prompt)
+        {
+            CLIPTextEncodeNode encoder = bridge.AddEditNode(new CLIPTextEncodeNode().With(Text: prompt));
+            encoder.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
+            return encoder;
+        }
+
+        CLIPTextEncodeNode positive = Encode(imageRefs.Prompts.Positive);
+        CLIPTextEncodeNode negative = Encode(imageRefs.Prompts.Negative);
+        if (currentImage is null)
+        {
+            return new Conditioning(positive.CONDITIONING.ToPath(), negative.CONDITIONING.ToPath());
+        }
+
+        HiDreamO1ReferenceImagesNode references = bridge.AddEditNode(new HiDreamO1ReferenceImagesNode());
+        references.PositiveInput.ConnectTo(positive.CONDITIONING);
+        references.NegativeInput.ConnectTo(negative.CONDITIONING);
+        // Reserve the final socket for the stage image when all reference sockets are in use.
+        foreach (JArray image in images.Take(references.Images.Max - 1).Append(currentImage))
+        {
+            ImageScaleToTotalPixelsNode resize = bridge.AddEditNode(new ImageScaleToTotalPixelsNode().With(
+                UpscaleMethod: "area",
+                Megapixels: 4.0,
+                ResolutionSteps: SenseNovaPatchSize));
+            resize.Image.ConnectToUntyped(EnsureRgbImage(bridge, image));
+            references.Images.Add(resize.IMAGE);
+        }
+
+        SenseNovaConditioningNode conditioning = bridge.AddEditNode(new SenseNovaConditioningNode().With(Task: "image"));
+        conditioning.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
+        conditioning.ConditioningInput.ConnectTo(references.Positive);
+        conditioning.NegativeInput.ConnectTo(references.Negative);
+        return new Conditioning(conditioning.Conditioning.ToPath(), conditioning.Negative.ToPath());
+    }
+
+    private JArray CreateSenseNovaSamples(EditStageContext ctx)
+    {
+        Parameters parameters = ctx.Parameters;
+        if (!parameters.RefineOnly && parameters.Control == 1)
+        {
+            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+            EmptyHiDreamO1LatentImageNode empty = bridge.AddEditNode(new EmptyHiDreamO1LatentImageNode().With(
+                Width: parameters.Width, Height: parameters.Height, BatchSize: 1));
+            return empty.LATENT.ToPath();
+        }
+
+        WGNodeData vae = ctx.ModelState.Vae;
+        WGNodeData source = StageResolver.TryFindExistingImageNode(g, g.CurrentMedia)
+            ?? g.CurrentMedia?.AsRawImage(vae)
+            ?? throw new SwarmReadableErrorException("Base2Edit: No image anchor is available for SenseNova sampling.");
+        JArray pixels;
+        using (WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow))
+        {
+            ImageScaleNode resize = bridge.AddEditNode(new ImageScaleNode().With(
+                Width: parameters.Width, Height: parameters.Height,
+                UpscaleMethod: ImageScaleNode.UpscaleMethodValues.Lanczos,
+                Crop: ImageScaleNode.CropValues.Disabled));
+            resize.Image.ConnectToUntyped(EnsureRgbImage(bridge, source.Path));
+            pixels = resize.IMAGE.ToPath();
+        }
+        return source.WithPath(pixels).EncodeToLatent(vae).Path;
     }
 
     private Conditioning CreateMiniMaxH3ImageConditioning(
@@ -1037,7 +1135,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         return node.Id;
     }
 
-    private void ExecuteSampler(EditStageContext ctx)
+    private void ExecuteSampler(EditStageContext ctx, bool useSenseNova)
     {
         WGNodeData model = ctx.ModelState.Model;
         Conditioning conditioning = ctx.Conditioning;
@@ -1047,7 +1145,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             g.UserInput.Remove(T2IParamTypes.PromptImages);
         }
-        bool clearArchInputs = g.IsHiDreamO1() || g.IsQwenImage21();
+        bool clearArchInputs = useSenseNova || g.IsHiDreamO1() || g.IsQwenImage21();
         WGNodeData savedBasicInputImage = clearArchInputs ? g.BasicInputImage : null;
         WorkflowGenerator.ImageMaskCropData savedMaskShrunkInfo = clearArchInputs ? g.MaskShrunkInfo : null;
         if (clearArchInputs)
@@ -1060,7 +1158,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
             int stageSectionId = ctx.SectionId;
-            JArray currentStageSamples = EnsureCurrentSamplesForEdit(preferredVae: null);
+            JArray currentStageSamples = useSenseNova
+                ? CreateSenseNovaSamples(ctx)
+                : EnsureCurrentSamplesForEdit(preferredVae: null);
             string samplerNode = g.CreateKSampler(
                 model.Path,
                 conditioning.Positive,
@@ -1073,6 +1173,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 editParams.Seed,
                 returnWithLeftoverNoise: false,
                 addNoise: true,
+                defsampler: useSenseNova ? "euler" : null,
+                defscheduler: useSenseNova ? "simple" : null,
                 explicitSampler: editParams.Sampler,
                 explicitScheduler: editParams.Scheduler,
                 sectionId: stageSectionId

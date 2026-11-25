@@ -59,6 +59,10 @@ The edit stage sends its input image and any `<b2eimage[...]>` references to Qwe
 
 Krea 2 is also supported as the **Edit Model**. It uses SwarmUI's Krea 2 text encoder and sends the stage image and `<b2eimage[...]>` references to both prompt encodings. The core **Text Encoded Image** setting controls image encoding (384px by default). Each stage has an **Edit Reference Latents** setting, available regardless of the base model. **Auto** uses the core **Enable Reference Latents** setting (which defaults to **None**); choose **Index Timestep Zero** for Ostris edit LoRAs or **Index** for Identity Edit LoRAs. Explicit reference images are resized to the edit stage’s pixel area before VAE encoding. **Refine Only** disables both image encoding and reference latents for the stage.
 
+SenseNova U1.6 supports single-pass editing. Select the [ComfyUI checkpoint](https://huggingface.co/Comfy-Org/SenseNova-U1) as the **Edit Model** and use **Euler**, **Simple**, **50 steps**, and **CFG 4** for the workflow’s quality settings. With the 8-step LoRA, use **8 steps** and **CFG 1**.
+
+Base2Edit prepares the stage image and any `<b2eimage[...]>` references at about 4 megapixels. The output uses the edit stage dimensions aligned to multiples of 32. **Edit Control** below 1 starts sampling from the source image. **Refine Only** samples from the source with text conditioning alone.
+
 ## Options
 
 - **Keep Pre-Edit Image** - Save the image before editing so you can compare
