@@ -112,6 +112,7 @@ internal static class Base2EditSpecParser
             ["ApplyAfter"] = applyAfter,
             ["KeepPreEditImage"] = g.UserInput.Get(Base2EditExtension.KeepPreEditImage),
             ["RefineOnly"] = g.UserInput.Get(Base2EditExtension.EditRefineOnly),
+            ["ReferenceLatents"] = g.UserInput.Get(Base2EditExtension.EditReferenceLatents, "auto"),
             ["Control"] = g.UserInput.Get(Base2EditExtension.EditControl),
         };
         if (g.UserInput.TryGet(Base2EditExtension.EditModel, out string editModel)
@@ -221,6 +222,7 @@ internal static class Base2EditSpecParser
             CfgScale: NormalizeCfgScale(GetOptionalDouble(obj, "CfgScale", g.UserInput.Get(T2IParamTypes.CFGScale, DefaultCfgScale), locationPrefix)),
             Sampler: ParseOptionalString(obj, "Sampler", locationPrefix),
             Scheduler: ParseOptionalString(obj, "Scheduler", locationPrefix),
+            ReferenceLatents: GetOptionalString(obj, "ReferenceLatents", "auto", locationPrefix, allowEmpty: false),
             PositivePrompt: EditPresets.ApplyPrompt(g.UserInput, T2IParamTypes.Prompt, stageId,
                 PromptParser.ExtractPrompt(posPrompt, posOriginal, stageId)),
             NegativePrompt: EditPresets.ApplyPrompt(g.UserInput, T2IParamTypes.NegativePrompt, stageId,
@@ -547,6 +549,7 @@ internal static class Base2EditSpecParser
     [
         (Base2EditExtension.KeepPreEditImage.Type, "KeepPreEditImage"),
         (Base2EditExtension.EditRefineOnly.Type, "RefineOnly"),
+        (Base2EditExtension.EditReferenceLatents.Type, "ReferenceLatents"),
         (Base2EditExtension.EditControl.Type, "Control"),
         (Base2EditExtension.EditModel.Type, "Model"),
         (Base2EditExtension.EditVAE.Type, "Vae"),

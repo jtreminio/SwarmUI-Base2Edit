@@ -60,15 +60,28 @@ const callFor = (id: string) =>
     )?.[0] as Record<string, unknown> | undefined;
 
 describe("buildFieldsForStage", () => {
-    it("returns 12 parts and calls getHtmlForParam 12 times", () => {
+    it("returns 13 parts and calls getHtmlForParam 13 times", () => {
         const stage = makeStage({ applyAfter: "Refiner" });
         const applyValues = ["Refiner", "Hires"];
 
         const result = buildFieldsForStage(stage, "prefix_", applyValues);
 
-        expect(result.length).toBe(12);
+        expect(result.length).toBe(13);
         // biome-ignore lint/style/noNonNullAssertion: set in beforeEach
-        expect(globals.getHtmlForParam!.mock.calls.length).toBe(12);
+        expect(globals.getHtmlForParam!.mock.calls.length).toBe(13);
+    });
+
+    it("exposes Krea reference modes without a base-model feature restriction", () => {
+        buildFieldsForStage(
+            makeStage({ referenceLatents: "index" }),
+            "prefix_",
+            ["Refiner"],
+        );
+        expect(callFor("editreferencelatents")).toMatchObject({
+            default: "index",
+            values: ["auto", "none", "index_timestep_zero", "index"],
+            feature_flag: null,
+        });
     });
 
     it("uses stage.applyAfter as default when it is in applyValues", () => {

@@ -7,6 +7,9 @@ export const getRootStage = (): RootStage => {
             "input_refineonly",
         ) as HTMLInputElement,
         control: utils.getInputElement("input_editcontrol") as HTMLInputElement,
+        referenceLatents: utils.getSelectElement(
+            "input_editreferencelatents",
+        ) as HTMLSelectElement,
         upscale: utils.getInputElement("input_editupscale") as HTMLInputElement,
         upscaleMethod: utils.getSelectElement(
             "input_editupscalemethod",
@@ -49,6 +52,7 @@ export const createStage = (applyAfter: string): Stage => {
             utils.getInputElement("input_refineonly") as HTMLInputElement
         ).checked,
         applyAfter: applyAfter,
+        referenceLatents: readToggleableRoot("editreferencelatents") ?? "auto",
         expanded: true,
         skipped: false,
         control: parseFloat(

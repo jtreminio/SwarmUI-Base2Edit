@@ -21,7 +21,7 @@ namespace Base2Edit.Tests;
 ///
 /// This test recreates the production precondition deterministically: the 3000–3009 stable-id slots
 /// are pre-filled and <c>LastID</c> parked at 3010, then a cross-compat edit stage (forces re-encode)
-/// with a global LoRA runs. Without the <c>SyncLastId</c> guard the generated graph fails strict
+/// with a global LoRA runs. Without the <c>AdvancePastOccupiedIds</c> guard the generated graph fails strict
 /// re-parse / wires a sampler model to a VAEEncode; with it, ids stay distinct.
 /// </summary>
 [Collection("Base2EditTests")]

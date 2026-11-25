@@ -8,6 +8,13 @@ import {
 import { updateStageFromUi } from "./stagesIO";
 
 describe("updateStageFromUi", () => {
+    it("persists the selected reference mode", () => {
+        const stage = makeStage({ referenceLatents: "auto" });
+        addInput("base2edit_stage_1_editreferencelatents", "index");
+        updateStageFromUi("base2edit_stage_1_", stage);
+        expect(stage.referenceLatents).toBe("index");
+    });
+
     describe("all toggles enabled", () => {
         it("updates every field when all toggles are checked and inputs are populated", () => {
             const prefix = "base2edit_stage_1_";

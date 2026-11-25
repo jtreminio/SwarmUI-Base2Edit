@@ -68,6 +68,31 @@ export const buildFieldsForStage = (
     parts.push(
         getHtmlForParam(
             {
+                id: "editreferencelatents",
+                name: "Edit Reference Latents",
+                description:
+                    "Krea 2 reference mode. Auto uses the core setting; None is for the base model, Index Timestep Zero for Ostris edit LoRAs, and Index for Identity Edit LoRAs. Ignored by other models and Refine Only.",
+                type: "dropdown",
+                values: ["auto", "none", "index_timestep_zero", "index"],
+                value_names: [
+                    "Auto (Use Core Setting)",
+                    "None (Text Encoder Only)",
+                    "Index Timestep Zero (Ostris)",
+                    "Index (Identity Edit)",
+                ],
+                default:
+                    stage.referenceLatents ??
+                    rootStage.referenceLatents?.value ??
+                    "auto",
+                toggleable: false,
+                feature_flag: null,
+            },
+            prefix,
+        ),
+    );
+    parts.push(
+        getHtmlForParam(
+            {
                 id: "applyafter",
                 name: "Apply After",
                 description: "",

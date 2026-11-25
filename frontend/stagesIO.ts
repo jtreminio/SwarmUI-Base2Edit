@@ -53,6 +53,7 @@ export const updateStageFromUi = (prefix: string, stage: Stage): void => {
 
     stage.keepPreEditImage = !!val("keeppreeditimage", true);
     stage.refineOnly = !!val("editrefineonly", true);
+    stage.referenceLatents = `${val("editreferencelatents") || stage.referenceLatents || "auto"}`;
     stage.applyAfter = `${val("applyafter") || stage.applyAfter}`;
     stage.control = parseFloat(String(val("editcontrol") ?? stage.control));
     stage.upscale = parseFloat(String(val("editupscale") ?? stage.upscale));

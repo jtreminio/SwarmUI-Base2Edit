@@ -27,5 +27,6 @@ public sealed record StageSpec(
     StageLoras Loras,
     long Seed,
     double Guidance,
-    List<StageSpec> Children = default!
+    List<StageSpec> Children = default!,
+    string ReferenceLatents = "auto"
 );

@@ -231,7 +231,7 @@ public class EditStage
             string branchSaveNodeId = g.GetStableDynamicID(BranchEditSaveId, branchId);
             WrapImage(branchImageOut.Path).SaveOutput(null, null, id: branchSaveNodeId);
             Base2EditExtension.RecordStageOutputNode(g, branchSaveNodeId, $"Edit Stage {branchId} (branch output)");
-            BridgeSync.SyncLastId(g);
+            EditNodeIds.AdvancePastOccupiedIds(g);
         }
     }
 

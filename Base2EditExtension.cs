@@ -18,6 +18,7 @@ public class Base2EditExtension : Extension
     public static T2IParamGroup Base2EditGroup;
     public static T2IRegisteredParam<bool> KeepPreEditImage;
     public static T2IRegisteredParam<bool> EditRefineOnly;
+    public static T2IRegisteredParam<string> EditReferenceLatents;
     public static T2IRegisteredParam<string> ApplyEditAfter;
     public static T2IRegisteredParam<string> EditStages;
     public static T2IRegisteredParam<string> EditModel;
@@ -167,6 +168,20 @@ public class Base2EditExtension : Extension
             Default: "false",
             Group: Base2EditGroup,
             OrderPriority: 1.5,
+            FeatureFlag: "comfyui",
+            CanSectionalize: true
+        ));
+
+        EditReferenceLatents = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "Edit Reference Latents",
+            Description: "Reference latent mode for Krea 2 edits. Auto uses the core Enable Reference Latents setting. "
+                + "None is for the base model, Index Timestep Zero for Ostris edit LoRAs, and Index for Identity Edit LoRAs. "
+                + "Ignored by other edit models and when Refine Only is enabled.",
+            Default: "auto",
+            GetValues: _ => ["auto///Auto (Use Core Setting)", "none///None (Text Encoder Only)",
+                "index_timestep_zero///Index Timestep Zero (Ostris)", "index///Index (Identity Edit)"],
+            Group: Base2EditGroup,
+            OrderPriority: 1.6,
             FeatureFlag: "comfyui",
             CanSectionalize: true
         ));

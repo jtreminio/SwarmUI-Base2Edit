@@ -13,6 +13,14 @@ const setupBaseline = (): void => {
 };
 
 describe("cfgScale numeric coercion", () => {
+    it("copies the root reference mode into new stages", () => {
+        setupBaseline();
+        addInput("input_editreferencelatents", "index_timestep_zero");
+        expect(createStage("Refiner").referenceLatents).toBe(
+            "index_timestep_zero",
+        );
+    });
+
     it("toggle off → cfgScale is NaN", () => {
         setupBaseline();
         addInput("input_editcfgscale", "7.5");

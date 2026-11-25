@@ -21,7 +21,7 @@ namespace Base2Edit.Tests;
 /// non-final stage forces a re-encode (e.g. SDXL → Flux); this test recreates the exact precondition
 /// deterministically with a single cross-compat edit stage that forces a re-encode.
 ///
-/// The fix is <c>BridgeSync.SyncLastId(g)</c> immediately after the save, advancing <c>LastID</c> past
+/// The fix is <c>EditNodeIds.AdvancePastOccupiedIds(g)</c> immediately after the save, advancing <c>LastID</c> past
 /// the stable id so the re-encode <c>VAEEncode</c> cannot land on it. Without the fix the pre-edit
 /// SaveImage node is replaced by a VAEEncode and the assertions below fail.
 /// </summary>
@@ -90,7 +90,7 @@ public class PreEditSaveIdCollisionTests
         Assert.NotEmpty(bridge.Graph.NodesOfType<VAEEncodeNode>());
 
         // The pre-edit SaveImage node must survive that re-encode (not be overwritten by a VAEEncode
-        // reusing its id). Without the SyncLastId fix this collection is empty — the save is clobbered
+        // reusing its id). Without the AdvancePastOccupiedIds fix this collection is empty — the save is clobbered
         // and the output is one image short.
         Assert.NotEmpty(bridge.Graph.NodesOfType<SaveImageNode>());
     }

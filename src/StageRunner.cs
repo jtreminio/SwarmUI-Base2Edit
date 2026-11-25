@@ -7,6 +7,7 @@ using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using Image = SwarmUI.Utils.Image;
+using SwarmTextEncodeAdvancedNode = Base2Edit.Generated.SwarmTextEncodeAdvancedNode;
 using TextEncodeQwenImage21Node = Base2Edit.Generated.TextEncodeQwenImage21Node;
 
 namespace Base2Edit;
@@ -353,7 +354,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         (model, clip, vae) = ResolveModelStack(ctx.Stage.ModelSource, editModel, isFinalStep, stageSectionId, model, clip, vae);
         (vae, mustReencode) = ResolveVae(ctx.Stage, isFinalStep, vae, mustReencode);
         (model, clip) = ApplyLoraStack(ctx.Stage, stageSectionId, model, clip);
-        BridgeSync.SyncLastId(g);
+        EditNodeIds.AdvancePastOccupiedIds(g);
 
         if (mustReencode
             && preEditVae is not null
@@ -522,7 +523,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             {
                 new WGNodeData(currentImageOut.Path, g, WGNodeData.DT_IMAGE, g.CurrentCompat()).SaveOutput(null, null, id: preEditSaveNodeId);
                 Base2EditExtension.RecordStageOutputNode(g, preEditSaveNodeId, $"Edit Stage {stageIndex} (pre-edit input)");
-                BridgeSync.SyncLastId(g);
+                EditNodeIds.AdvancePastOccupiedIds(g);
             }
             Logs.Debug("Base2Edit: Saved pre-edit image");
         }
@@ -623,6 +624,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             return CreateQwenImage21Conditioning(ctx, cleanedPrompts, imageRefs, resolver);
         }
+        if (g.IsKrea2())
+        {
+            return CreateKrea2Conditioning(ctx, cleanedPrompts, imageRefs, resolver);
+        }
 
         List<JArray> referencedLatents = !editParams.RefineOnly
             ? resolver.ResolveImageLatents(imageRefs.References, currentStageVae.Path, stageIndex)
@@ -650,7 +655,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             }
         }
 
-        using WorkflowBridge bridge = BridgeSync.For(g);
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
         JArray positiveConditioning = [BuildPromptEncoder(bridge, clip, cleanedPrompts.Positive, editParams, mingImages), 0];
 
         if (!editParams.RefineOnly)
@@ -674,6 +679,115 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         return new Conditioning(positiveConditioning, [BuildPromptEncoder(bridge, clip, cleanedPrompts.Negative, editParams), 0]);
+    }
+
+    private Conditioning CreateKrea2Conditioning(
+        EditStageContext ctx,
+        PromptParser.EditPrompts prompts,
+        PromptParser.ImagePromptParseResult imageRefs,
+        StageResolver resolver)
+    {
+        Parameters parameters = ctx.Parameters;
+        string textImageMode = ComfyUIBackendExtension.TextEncodedImage is null
+            ? "auto" : g.UserInput.Get(ComfyUIBackendExtension.TextEncodedImage, "auto");
+        string referenceMethod = ctx.Stage.ReferenceLatents;
+        if (referenceMethod == "auto")
+        {
+            referenceMethod = ComfyUIBackendExtension.EnableReferenceLatents is null
+                ? "none" : g.UserInput.Get(ComfyUIBackendExtension.EnableReferenceLatents, "none");
+        }
+        List<JArray> images = [];
+        List<JArray> latents = [];
+        if (!parameters.RefineOnly)
+        {
+            if (textImageMode != "none")
+            {
+                images = resolver.ResolveImagePixels(imageRefs.References, ctx.Stage.Id);
+                JArray currentImage = StageResolver.TryFindExistingImage(g, g.CurrentMedia)
+                    ?? g.CurrentMedia?.AsRawImage(ctx.ModelState.Vae)?.Path;
+                if (currentImage is not null)
+                {
+                    images.RemoveAll(image => JToken.DeepEquals(image, currentImage));
+                    images.Add(currentImage);
+                    // Core accepts ten text-encoder images. Keep the current stage anchor last.
+                    if (images.Count > 10)
+                    {
+                        images.RemoveRange(9, images.Count - 10);
+                    }
+                }
+            }
+            if (referenceMethod != "none")
+            {
+                latents = resolver.ResolveImageLatents(imageRefs.References, ctx.ModelState.Vae.Path, ctx.Stage.Id,
+                    targetPixelArea: parameters.Width * parameters.Height);
+                JArray currentSamples = TryEnsureCurrentSamplesForEdit(ctx.ModelState.Vae);
+                if (currentSamples is not null)
+                {
+                    latents.Add(currentSamples);
+                }
+            }
+        }
+        else if (imageRefs.References.Count > 0)
+        {
+            Logs.Warning($"Base2Edit: Ignoring <b2eimage[...]> in stage {ctx.Stage.Id}: Refine Only is enabled.");
+        }
+
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        JArray imageBatch = null;
+        // Match core's 384px default, explicit small/large modes, and smart-resizing opt-out.
+        double targetPixels = textImageMode == "large" ? 1024 * 1024
+            : textImageMode == "small" || g.UserInput.Get(T2IParamTypes.SmartImagePromptResizing, true)
+                ? 384 * 384 : (double)parameters.Width * parameters.Height;
+        foreach (JArray image in images.Take(10))
+        {
+            INodeOutput pixels = EnsureRgbImage(bridge, image);
+            ImageScaleToTotalPixelsNode scale = bridge.AddEditNode(new ImageScaleToTotalPixelsNode());
+            scale.Image.ConnectToUntyped(pixels);
+            scale.UpscaleMethod.Set("lanczos");
+            scale.Megapixels.Set(targetPixels / (1024 * 1024));
+            JArray imagePath = scale.Outputs[0].ToPath();
+            if (imageBatch is null)
+            {
+                imageBatch = imagePath;
+            }
+            else
+            {
+                ImageBatchNode batch = bridge.AddEditNode(new ImageBatchNode());
+                batch.Image1.ConnectFromPath(bridge, imageBatch);
+                batch.Image2.ConnectFromPath(bridge, imagePath);
+                imageBatch = batch.IMAGE.ToPath();
+            }
+        }
+
+        JArray encode(string prompt)
+        {
+            SwarmTextEncodeAdvancedNode encoder = bridge.AddEditNode(new SwarmTextEncodeAdvancedNode().With(
+                Steps: parameters.Steps, Prompt: prompt,
+                Width: parameters.Width, Height: parameters.Height,
+                TargetWidth: parameters.Width, TargetHeight: parameters.Height,
+                Guidance: parameters.Guidance, LlamaTemplate: "krea2"));
+            encoder.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
+            if (imageBatch is not null)
+            {
+                encoder.Images.ConnectFromPath(bridge, imageBatch);
+            }
+            return encoder.CONDITIONING.ToPath();
+        }
+
+        JArray positive = encode(prompts.Positive);
+        JArray negative = encode(prompts.Negative);
+        foreach (JArray latent in latents)
+        {
+            positive = [AddReferenceLatent(bridge, positive, latent), 0];
+        }
+        if (latents.Count > 0)
+        {
+            FluxKontextMultiReferenceLatentMethodNode method = bridge.AddEditNode(new FluxKontextMultiReferenceLatentMethodNode());
+            method.Conditioning.ConnectFromPath(bridge, positive);
+            method.ReferenceLatentsMethod.Set(referenceMethod);
+            positive = method.Outputs[0].ToPath();
+        }
+        return new Conditioning(positive, negative);
     }
 
     private Conditioning CreateQwenImage21Conditioning(
@@ -700,8 +814,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             Logs.Warning($"Base2Edit: Ignoring <b2eimage[...]> in stage {ctx.Stage.Id}: Refine Only is enabled.");
         }
 
-        using WorkflowBridge bridge = BridgeSync.For(g);
-        TextEncodeQwenImage21Node encoder = bridge.AddNode(new TextEncodeQwenImage21Node());
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        TextEncodeQwenImage21Node encoder = bridge.AddEditNode(new TextEncodeQwenImage21Node());
         encoder.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
         encoder.Vae.ConnectFromPath(bridge, ctx.ModelState.Vae.Path);
         encoder.Prompt.Set(prompts.Positive);
@@ -724,7 +838,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         Parameters editParams = ctx.Parameters;
         int stageIndex = ctx.Stage.Id;
 
-        using WorkflowBridge bridge = BridgeSync.For(g);
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
         JArray positiveConditioning = [BuildPromptEncoder(bridge, clip, cleanedPrompts.Positive, editParams), 0];
         JArray negativeConditioning = [BuildPromptEncoder(bridge, clip, cleanedPrompts.Negative, editParams), 0];
 
@@ -751,7 +865,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             return new Conditioning(positiveConditioning, negativeConditioning);
         }
 
-        HiDreamO1ReferenceImagesNode refNode = bridge.AddNode(new HiDreamO1ReferenceImagesNode());
+        HiDreamO1ReferenceImagesNode refNode = bridge.AddEditNode(new HiDreamO1ReferenceImagesNode());
         refNode.PositiveInput.ConnectFromPath(bridge, positiveConditioning);
         refNode.NegativeInput.ConnectFromPath(bridge, negativeConditioning);
         int slotCount = Math.Min(refImages.Count, 10);
@@ -778,7 +892,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             .FirstOrDefault(node => node.Image.Connection == source);
         if (split is null)
         {
-            split = bridge.AddNode(new SplitImageWithAlphaNode());
+            split = bridge.AddEditNode(new SplitImageWithAlphaNode());
             split.Image.ConnectToUntyped(source);
         }
         return split.IMAGE;
@@ -791,7 +905,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         Parameters editParams,
         List<JArray> referenceImages = null)
     {
-        SwarmClipTextEncodeAdvancedNode node = bridge.AddNode(
+        SwarmClipTextEncodeAdvancedNode node = bridge.AddEditNode(
             new SwarmClipTextEncodeAdvancedNode().With(
                 Steps: editParams.Steps,
                 Prompt: prompt,
@@ -810,7 +924,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 JArray imagePath = EnsureRgbImage(bridge, image).ToPath();
                 if (referenceImages.Count > 1)
                 {
-                    ImageScaleNode scaled = bridge.AddNode(new ImageScaleNode().With(
+                    ImageScaleNode scaled = bridge.AddEditNode(new ImageScaleNode().With(
                         UpscaleMethod: ImageScaleNode.UpscaleMethodValues.Lanczos,
                         Width: editParams.Width,
                         Height: editParams.Height,
@@ -824,7 +938,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 }
                 else
                 {
-                    ImageBatchNode batch = bridge.AddNode(new ImageBatchNode());
+                    ImageBatchNode batch = bridge.AddEditNode(new ImageBatchNode());
                     batch.Image1.ConnectFromPath(bridge, imageBatch);
                     batch.Image2.ConnectFromPath(bridge, imagePath);
                     imageBatch = batch.IMAGE.ToPath();
@@ -837,7 +951,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
     private string AddReferenceLatent(WorkflowBridge bridge, JArray conditioning, JArray latent)
     {
-        ReferenceLatentNode node = bridge.AddNode(new ReferenceLatentNode());
+        ReferenceLatentNode node = bridge.AddEditNode(new ReferenceLatentNode());
         node.Conditioning.ConnectFromPath(bridge, conditioning);
         node.Latent.ConnectFromPath(bridge, latent);
         return node.Id;
@@ -970,12 +1084,12 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 return (baseWidth, baseHeight);
             }
 
-            using WorkflowBridge bridge = BridgeSync.For(g);
+            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
             JArray upscaledImageRef;
             if (upscaleMethod.StartsWith("pixel-", StringComparison.OrdinalIgnoreCase))
             {
                 string pixelMethod = upscaleMethod["pixel-".Length..];
-                ImageScaleNode scaledPixel = bridge.AddNode(new ImageScaleNode().With(
+                ImageScaleNode scaledPixel = bridge.AddEditNode(new ImageScaleNode().With(
                     Width: width,
                     Height: height,
                     UpscaleMethod: pixelMethod,
@@ -986,11 +1100,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             else
             {
                 string modelName = upscaleMethod["model-".Length..];
-                UpscaleModelLoaderNode loader = bridge.AddNode(new UpscaleModelLoaderNode().With(ModelName: modelName));
-                ImageUpscaleWithModelNode modelUpscale = bridge.AddNode(new ImageUpscaleWithModelNode());
+                UpscaleModelLoaderNode loader = bridge.AddEditNode(new UpscaleModelLoaderNode().With(ModelName: modelName));
+                ImageUpscaleWithModelNode modelUpscale = bridge.AddEditNode(new ImageUpscaleWithModelNode());
                 modelUpscale.UpscaleModel.ConnectFromPath(bridge, loader.UPSCALEMODEL.ToPath());
                 modelUpscale.Image.ConnectFromPath(bridge, decoded.Path);
-                ImageScaleNode scaledModel = bridge.AddNode(new ImageScaleNode().With(
+                ImageScaleNode scaledModel = bridge.AddEditNode(new ImageScaleNode().With(
                     Width: width,
                     Height: height,
                     UpscaleMethod: ImageScaleNode.UpscaleMethodValues.Lanczos,
@@ -1046,8 +1160,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
             g.CurrentMedia = new WGNodeData(latentMedia.Path, g, WGNodeData.DT_LATENT_IMAGE, g.CurrentCompat());
             string latentMethod = upscaleMethod["latent-".Length..];
-            using WorkflowBridge bridge = BridgeSync.For(g);
-            LatentUpscaleByNode latentUpscale = bridge.AddNode(new LatentUpscaleByNode().With(
+            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+            LatentUpscaleByNode latentUpscale = bridge.AddEditNode(new LatentUpscaleByNode().With(
                 UpscaleMethod: latentMethod,
                 ScaleBy: upscale));
             latentUpscale.Samples.ConnectFromPath(bridge, g.CurrentMedia.Path);
@@ -1066,11 +1180,11 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             T2IModel pidModel = ComfyUIBackendExtension.GetPidModel(upscaleMethod["pidmodel-".Length..], g.UserInput.SourceSession);
             WGNodeData decoded = g.CreatePixelDecode(pidModel, g.CurrentMedia, stageVae, ctx.Stage.Seed + 2);
 
-            using WorkflowBridge bridge = BridgeSync.For(g);
+            using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
             JArray upscaledImageRef = decoded.Path;
             if (decoded.Width != width || decoded.Height != height)
             {
-                ImageScaleNode scaledPid = bridge.AddNode(new ImageScaleNode().With(
+                ImageScaleNode scaledPid = bridge.AddEditNode(new ImageScaleNode().With(
                     Width: width,
                     Height: height,
                     UpscaleMethod: ImageScaleNode.UpscaleMethodValues.Lanczos,

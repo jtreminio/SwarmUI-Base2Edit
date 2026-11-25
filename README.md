@@ -57,6 +57,8 @@ The base model (and refiner if you enabled it) generates the girl, then the edit
 Qwen Image 2.1 can be selected as the **Edit Model** with a SwarmUI/ComfyUI version that supports it.
 The edit stage sends its input image and any `<b2eimage[...]>` references to Qwen's vision encoder and both conditioning branches. **Refine Only** disables these image references.
 
+Krea 2 is also supported as the **Edit Model**. It uses SwarmUI's Krea 2 text encoder and sends the stage image and `<b2eimage[...]>` references to both prompt encodings. The core **Text Encoded Image** setting controls image encoding (384px by default). Each stage has an **Edit Reference Latents** setting, available regardless of the base model. **Auto** uses the core **Enable Reference Latents** setting (which defaults to **None**); choose **Index Timestep Zero** for Ostris edit LoRAs or **Index** for Identity Edit LoRAs. Explicit reference images are resized to the edit stage’s pixel area before VAE encoding. **Refine Only** disables both image encoding and reference latents for the stage.
+
 ## Options
 
 - **Keep Pre-Edit Image** - Save the image before editing so you can compare

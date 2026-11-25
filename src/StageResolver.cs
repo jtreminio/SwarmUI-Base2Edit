@@ -4,6 +4,7 @@ using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using ComfyTyped.Core;
 using ComfyTyped.Families;
+using ComfyTyped.Generated;
 using Image = SwarmUI.Utils.Image;
 
 namespace Base2Edit;
@@ -20,7 +21,8 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
     public List<JArray> ResolveImageLatents(
         IReadOnlyList<ImageReference> references,
         JArray currentVae,
-        int? index = null)
+        int? index = null,
+        int? targetPixelArea = null)
     {
         List<JArray> resolved = [];
         WGNodeData targetVae = currentVae is null
@@ -43,7 +45,13 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
                 continue;
             }
 
-            JArray resolvedLatent = MediaToLatent(media, sourceVae, targetVae, out warning);
+            if (targetPixelArea is not null && reference.Kind == StageRefStore.StageKind.Prompt)
+            {
+                (int width, int height) = g.UserInput.Get(T2IParamTypes.PromptImages)[reference.Index].GetResolution();
+                media.Width = width;
+                media.Height = height;
+            }
+            JArray resolvedLatent = MediaToLatent(media, sourceVae, targetVae, out warning, targetPixelArea);
             if (resolvedLatent is null)
             {
                 if (!string.IsNullOrEmpty(warning))
@@ -204,7 +212,8 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
         WGNodeData media,
         WGNodeData sourceVae,
         WGNodeData targetVae,
-        out string warning)
+        out string warning,
+        int? targetPixelArea = null)
     {
         warning = "";
 
@@ -217,6 +226,34 @@ public class StageResolver(WorkflowGenerator g, StageRefStore store)
         {
             warning = "current stage VAE is unavailable.";
             return null;
+        }
+
+        if (targetPixelArea is int area)
+        {
+            int width = media.Width ?? g.UserInput.GetImageWidth();
+            int height = media.Height ?? g.UserInput.GetImageHeight();
+            int actual = (int)Math.Sqrt((double)width * height);
+            int target = (int)Math.Sqrt(area);
+            if (Math.Abs(actual - target) > 64)
+            {
+                JArray sourcePixels = MediaToPixels(media, sourceVae, out warning);
+                if (sourcePixels is null)
+                {
+                    return null;
+                }
+                (width, height) = Utilities.ResToModelFit(width, height, target * target, precision: 64);
+                using (WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow))
+                {
+                    ImageScaleNode scale = bridge.AddEditNode(new ImageScaleNode().With(
+                        Width: width, Height: height, UpscaleMethod: ImageScaleNode.UpscaleMethodValues.Lanczos,
+                        Crop: ImageScaleNode.CropValues.Disabled));
+                    scale.Image.ConnectFromPath(bridge, sourcePixels);
+                    media = new WGNodeData(scale.IMAGE.ToPath(), g, WGNodeData.DT_IMAGE, g.CurrentCompat())
+                    {
+                        Width = width, Height = height
+                    };
+                }
+            }
         }
 
         if (!media.IsLatentData)
