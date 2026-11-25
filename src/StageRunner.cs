@@ -13,6 +13,7 @@ namespace Base2Edit;
 class StageRunner(WorkflowGenerator g, StageRefStore store)
 {
     private const int PreEditImageSaveId = 50200;
+    private const int MiniMaxLatentDownscale = 16;
 
     public void RunStage(
         bool isFinalStep,
@@ -39,10 +40,12 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             bool shouldSavePreEdit = g.UserInput.Get(T2IParamTypes.OutputIntermediateImages, false)
                 || ctx.Stage.KeepPreEditImage;
             string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
-            WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
             WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
             bool skipSampler = ctx.Stage.Control == 0 && ctx.Stage.Upscale != 1;
             bool useMiniMaxReferences = g.IsMiniMaxH3Image() && !ctx.Stage.RefineOnly && !skipSampler;
+            WGNodeData currentSamples = useMiniMaxReferences && currentImageOut is not null
+                ? null
+                : WGNodeDataUtil.TryGetCurrentLatent(g);
             bool needsPreEditImage = useMiniMaxReferences || shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
             WGNodeData preEditImageTailRef = currentImageOut;
             WGNodeData preEditConsumerSourceRef = preEditImageTailRef;
@@ -92,12 +95,14 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                     ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
                 ));
             }
-            (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx, skipLatentEncode: skipSampler || useMiniMaxReferences);
-            if (useMiniMaxReferences)
+            (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx,
+                skipLatentEncode: skipSampler, useMiniMaxReferences: useMiniMaxReferences);
+            if (useMiniMaxReferences && g.CurrentMedia?.IsRawMedia == true)
             {
-                int precision = T2IModelClassSorter.CompatMiniMaxH3Image.ResolutionPrecision;
-                stageWidth = Math.Max(precision, stageWidth / precision * precision);
-                stageHeight = Math.Max(precision, stageHeight / precision * precision);
+                PrepareMiniMaxSamples(ctx);
+                // The VAE crops to full latent cells when the source size is not aligned.
+                stageWidth = stageWidth / MiniMaxLatentDownscale * MiniMaxLatentDownscale;
+                stageHeight = stageHeight / MiniMaxLatentDownscale * MiniMaxLatentDownscale;
             }
             ctx.Parameters = new Parameters(
                 Width: stageWidth,
@@ -118,7 +123,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             else
             {
                 ctx.Conditioning = CreateConditioning(ctx, prompts, useMiniMaxReferences);
-                ExecuteSampler(ctx, useMiniMaxReferences);
+                ExecuteSampler(ctx);
             }
 
             if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
@@ -589,6 +594,24 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             ?? throw new SwarmReadableErrorException("Base2Edit: No latent anchor is available for edit-stage sampling.");
     }
 
+    private void PrepareMiniMaxSamples(EditStageContext ctx)
+    {
+        if (g.CurrentMedia is { IsRawMedia: true } image)
+        {
+            (string sourceType, JObject inputs) = image.SourceNodeData;
+            WGNodeData editVae = ctx.ModelState.Vae;
+            if (sourceType is "VAEDecode" or "VAEDecodeTiled"
+                && JToken.DeepEquals(inputs["vae"], editVae.Path)
+                && inputs["samples"] is JArray samples)
+            {
+                g.CurrentMedia = image.WithPath(samples, WGNodeData.DT_LATENT_IMAGE, editVae.Compat);
+                return;
+            }
+        }
+
+        ReencodeIfNeeded(ctx, new ReencodeOptions(ForceFromCurrentImage: true));
+    }
+
     private JArray TryEnsureCurrentSamplesForEdit(WGNodeData preferredVae)
     {
         WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
@@ -1014,7 +1037,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         return node.Id;
     }
 
-    private void ExecuteSampler(EditStageContext ctx, bool useMiniMaxReferences)
+    private void ExecuteSampler(EditStageContext ctx)
     {
         WGNodeData model = ctx.ModelState.Model;
         Conditioning conditioning = ctx.Conditioning;
@@ -1037,9 +1060,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
             int stageSectionId = ctx.SectionId;
-            JArray currentStageSamples = useMiniMaxReferences
-                ? g.EmptyImage(editParams.Width, editParams.Height, g.UserInput.Get(T2IParamTypes.BatchSize, 1)).Path
-                : EnsureCurrentSamplesForEdit(preferredVae: null);
+            JArray currentStageSamples = EnsureCurrentSamplesForEdit(preferredVae: null);
             string samplerNode = g.CreateKSampler(
                 model.Path,
                 conditioning.Positive,
@@ -1116,7 +1137,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
     }
 
-    private (int Width, int Height) ApplyEditUpscaleIfNeeded(EditStageContext ctx, bool skipLatentEncode)
+    private (int Width, int Height) ApplyEditUpscaleIfNeeded(EditStageContext ctx, bool skipLatentEncode, bool useMiniMaxReferences)
     {
         WGNodeData stageVae = ctx.ModelState.Vae;
         int baseWidth = Math.Max(g.CurrentMedia?.Width ?? g.UserInput.GetImageWidth(), 16);
@@ -1130,8 +1151,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         int width = (int)Math.Round(baseWidth * upscale);
         int height = (int)Math.Round(baseHeight * upscale);
-        width = Math.Max(16, (width / 16) * 16);
-        height = Math.Max(16, (height / 16) * 16);
+        int precision = useMiniMaxReferences ? T2IModelClassSorter.CompatMiniMaxH3Image.ResolutionPrecision : 16;
+        width = Math.Max(precision, (width / precision) * precision);
+        height = Math.Max(precision, (height / precision) * precision);
 
         if (upscaleMethod.StartsWith("pixel-", StringComparison.OrdinalIgnoreCase)
             || upscaleMethod.StartsWith("model-", StringComparison.OrdinalIgnoreCase))
@@ -1198,6 +1220,13 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
         if (upscaleMethod.StartsWith("latent-", StringComparison.OrdinalIgnoreCase))
         {
+            if (useMiniMaxReferences)
+            {
+                PrepareMiniMaxSamples(ctx);
+                // LatentUpscaleBy rounds in latent units, so scale the encoded dimensions.
+                width = (int)Math.Round((baseWidth / MiniMaxLatentDownscale) * upscale) * MiniMaxLatentDownscale;
+                height = (int)Math.Round((baseHeight / MiniMaxLatentDownscale) * upscale) * MiniMaxLatentDownscale;
+            }
             WGNodeData latentMedia = WGNodeDataUtil.TryGetCurrentLatent(g);
             if (latentMedia is null)
             {
