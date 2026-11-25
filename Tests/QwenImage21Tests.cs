@@ -1,5 +1,6 @@
 using ComfyTyped.Core;
 using ComfyTyped.Generated;
+using ImageMagick;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Core;
@@ -221,7 +222,7 @@ public class QwenImage21Tests
         input.Set(Base2EditExtension.ApplyEditAfter, applyAfter);
         input.Set(Base2EditExtension.EditControl, control);
         input.Set(Base2EditExtension.EditSteps, 20);
-        using SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgb24> reference = new(1220, 1850);
+        using MagickImage reference = new(MagickColors.Black, 1220, 1850);
         Image promptImage = new(reference);
         input.Set(T2IParamTypes.PromptImages, new List<Image> { promptImage });
 

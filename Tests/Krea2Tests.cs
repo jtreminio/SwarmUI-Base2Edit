@@ -1,5 +1,6 @@
 using ComfyTyped.Core;
 using ComfyTyped.Generated;
+using ImageMagick;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Core;
@@ -232,7 +233,7 @@ public class Krea2Tests
         T2IParamInput input = BuildInput("global <edit>use this <b2eimage[prompt0]>");
         input.Set(Base2EditExtension.EditReferenceLatents, "index");
         input.Set(ComfyUIBackendExtension.TextEncodedImage, "none");
-        using SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgb24> pixels = new(width, height);
+        using MagickImage pixels = new(MagickColors.Black, (uint)width, (uint)height);
         Image uploaded = new(pixels);
         input.Set(T2IParamTypes.PromptImages, new List<Image> { uploaded });
         using WorkflowBridge bridge = WorkflowBridge.Create(Generate(input));

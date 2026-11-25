@@ -81,7 +81,7 @@ public static class VaeNodeReuse
 
         foreach ((ComfyNode node, _) in bridge.Graph.FindInputsConnectedTo(samples))
         {
-            if (node is VAEDecodeNode dec)
+            if (node is IVaeDecode dec)
             {
                 imageOut = dec.IMAGE;
                 return true;

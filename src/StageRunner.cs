@@ -41,7 +41,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             string preEditSaveNodeId = g.GetStableDynamicID(PreEditImageSaveId, stageIndex);
             WGNodeData currentSamples = WGNodeDataUtil.TryGetCurrentLatent(g);
             WGNodeData currentImageOut = g.CurrentMedia?.IsRawMedia == true ? g.CurrentMedia : null;
-            bool needsPreEditImage = shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
+            bool skipSampler = ctx.Stage.Control == 0 && ctx.Stage.Upscale != 1;
+            bool useMiniMaxReferences = g.IsMiniMaxH3Image() && !ctx.Stage.RefineOnly && !skipSampler;
+            bool needsPreEditImage = useMiniMaxReferences || shouldSavePreEdit || ctx.ModelState.MustReencode || currentSamples is null;
             WGNodeData preEditImageTailRef = currentImageOut;
             WGNodeData preEditConsumerSourceRef = preEditImageTailRef;
             if (isFinalStep && currentSamples is not null)
@@ -51,7 +53,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 {
                     foreach ((ComfyNode node, INodeInput input) in bridge.Graph.FindInputsConnectedTo(samplesOut))
                     {
-                        if (node is VAEDecodeNode
+                        if (node is IVaeDecode
                             && (StringUtils.Equals(input.Name, "samples") || StringUtils.Equals(input.Name, "latent")))
                         {
                             preEditConsumerSourceRef = new WGNodeData([node.Id, 0], g, WGNodeData.DT_IMAGE, g.CurrentCompat());
@@ -71,7 +73,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 SavePreEditImageIfNeeded(ctx);
             }
 
-            if (!ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
+            if (!useMiniMaxReferences && !ctx.ModelState.MustReencode && !options.ForceReencodeFromCurrentImage
                 && currentSamples is not null
                 && g.CurrentMedia?.IsLatentData != true)
             {
@@ -84,11 +86,19 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
                 };
             }
 
-            ReencodeIfNeeded(ctx, new ReencodeOptions(
-                ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
-            ));
-            bool skipSampler = ctx.Stage.Control == 0 && ctx.Stage.Upscale != 1;
-            (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx, skipLatentEncode: skipSampler);
+            if (!useMiniMaxReferences)
+            {
+                ReencodeIfNeeded(ctx, new ReencodeOptions(
+                    ForceFromCurrentImage: options.ForceReencodeFromCurrentImage
+                ));
+            }
+            (int stageWidth, int stageHeight) = ApplyEditUpscaleIfNeeded(ctx, skipLatentEncode: skipSampler || useMiniMaxReferences);
+            if (useMiniMaxReferences)
+            {
+                int precision = T2IModelClassSorter.CompatMiniMaxH3Image.ResolutionPrecision;
+                stageWidth = Math.Max(precision, stageWidth / precision * precision);
+                stageHeight = Math.Max(precision, stageHeight / precision * precision);
+            }
             ctx.Parameters = new Parameters(
                 Width: stageWidth,
                 Height: stageHeight,
@@ -107,8 +117,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
             }
             else
             {
-                ctx.Conditioning = CreateConditioning(ctx, prompts);
-                ExecuteSampler(ctx);
+                ctx.Conditioning = CreateConditioning(ctx, prompts, useMiniMaxReferences);
+                ExecuteSampler(ctx, useMiniMaxReferences);
             }
 
             if (ctx.ModelState.Vae is not null && g.CurrentCompat() is not null)
@@ -604,7 +614,8 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
 
     private Conditioning CreateConditioning(
         EditStageContext ctx,
-        PromptParser.EditPrompts prompts)
+        PromptParser.EditPrompts prompts,
+        bool useMiniMaxReferences)
     {
         WGNodeData clip = ctx.ModelState.Clip;
         Parameters editParams = ctx.Parameters;
@@ -614,6 +625,10 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         PromptParser.EditPrompts cleanedPrompts = imageRefs.Prompts;
         StageResolver resolver = new(g, store);
 
+        if (useMiniMaxReferences)
+        {
+            return CreateMiniMaxH3ImageConditioning(ctx, imageRefs, resolver);
+        }
         if (g.IsHiDreamO1())
         {
             return CreateHiDreamO1Conditioning(ctx, cleanedPrompts, imageRefs, resolver);
@@ -677,6 +692,50 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         }
 
         return new Conditioning(positiveConditioning, [BuildPromptEncoder(bridge, clip, cleanedPrompts.Negative, editParams), 0]);
+    }
+
+    private Conditioning CreateMiniMaxH3ImageConditioning(
+        EditStageContext ctx,
+        PromptParser.ImagePromptParseResult imageRefs,
+        StageResolver resolver)
+    {
+        WGNodeData vae = ctx.ModelState.Vae;
+        JArray currentImage = StageResolver.TryFindExistingImage(g, g.CurrentMedia)
+            ?? g.CurrentMedia?.AsRawImage(vae)?.Path
+            ?? throw new SwarmReadableErrorException("Base2Edit: No image anchor is available for MiniMax H3 Image editing.");
+        List<JArray> images = resolver.ResolveImagePixels(imageRefs.References, ctx.Stage.Id);
+        images.RemoveAll(image => JToken.DeepEquals(image, currentImage));
+        // MiniMax interprets the first picture as the image to edit.
+        images.Insert(0, currentImage);
+
+        using WorkflowBridge bridge = WorkflowBridge.Create(g.Workflow);
+        SwarmMiniMaxH3ImageCollectReferencesNode collector = bridge.AddEditNode(new SwarmMiniMaxH3ImageCollectReferencesNode());
+        collector.Vae.ConnectFromPath(bridge, vae.Path);
+        foreach (JArray image in images.Take(collector.RefImages.Max))
+        {
+            collector.RefImages.AddFromUntyped(bridge.ResolvePath(image));
+        }
+
+        Parameters parameters = ctx.Parameters;
+        bool enhance = g.UserInput.Get(T2IParamTypes.ModelSpecificEnhancements, true);
+        SwarmTextEncodeAdvancedNode AddEncoder(string prompt, double sizeMultiplier)
+        {
+            SwarmTextEncodeAdvancedNode encoder = bridge.AddEditNode(new SwarmTextEncodeAdvancedNode().With(
+                Steps: parameters.Steps,
+                Prompt: prompt,
+                Width: enhance ? (int)Utilities.RoundToPrecision(parameters.Width * sizeMultiplier, 64) : parameters.Width,
+                Height: enhance ? (int)Utilities.RoundToPrecision(parameters.Height * sizeMultiplier, 64) : parameters.Height,
+                TargetWidth: parameters.Width,
+                TargetHeight: parameters.Height,
+                Guidance: parameters.Guidance));
+            encoder.Clip.ConnectFromPath(bridge, ctx.ModelState.Clip.Path);
+            return encoder;
+        }
+
+        SwarmTextEncodeAdvancedNode positive = AddEncoder(imageRefs.Prompts.Positive, 1.5);
+        positive.MinimaxRefs.ConnectTo(collector.MiniMaxReferences);
+        SwarmTextEncodeAdvancedNode negative = AddEncoder(imageRefs.Prompts.Negative, 0.8);
+        return new Conditioning(positive.CONDITIONING.ToPath(), negative.CONDITIONING.ToPath());
     }
 
     private Conditioning CreateKrea2Conditioning(
@@ -955,7 +1014,7 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         return node.Id;
     }
 
-    private void ExecuteSampler(EditStageContext ctx)
+    private void ExecuteSampler(EditStageContext ctx, bool useMiniMaxReferences)
     {
         WGNodeData model = ctx.ModelState.Model;
         Conditioning conditioning = ctx.Conditioning;
@@ -978,7 +1037,9 @@ class StageRunner(WorkflowGenerator g, StageRefStore store)
         {
             int startStep = (int)Math.Round(editParams.Steps * (1 - editParams.Control));
             int stageSectionId = ctx.SectionId;
-            JArray currentStageSamples = EnsureCurrentSamplesForEdit(preferredVae: null);
+            JArray currentStageSamples = useMiniMaxReferences
+                ? g.EmptyImage(editParams.Width, editParams.Height, g.UserInput.Get(T2IParamTypes.BatchSize, 1)).Path
+                : EnsureCurrentSamplesForEdit(preferredVae: null);
             string samplerNode = g.CreateKSampler(
                 model.Path,
                 conditioning.Positive,
